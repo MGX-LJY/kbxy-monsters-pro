@@ -8,6 +8,8 @@ from .middleware import TraceIDMiddleware
 from .routes import skills_admin
 from .routes import utils
 from .routes import backup
+from .routes import tags  # 新增
+
 
 # 路由
 from .routes import health, monsters, importing, tags, recalc, tasks, skills
@@ -46,6 +48,7 @@ app.include_router(skills.router)
 app.include_router(skills_admin.router)
 app.include_router(utils.router)
 app.include_router(backup.router)
+app.include_router(tags.router)
 if HAS_ROLES:
     app.include_router(roles.router)
 
