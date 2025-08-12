@@ -1,0 +1,11 @@
+{
+  "version": "rules-2025.08.01",
+  "weights": {
+    "offense": 1.0,
+    "survive": 1.0,
+    "control": 1.0,
+    "tempo": 1.0,
+    "pp": 1.0
+  },
+  "notes": "示例规则，仅用于演示。"
+}
