@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from ..db import SessionLocal
 from ..models import Task, Monster
 from ..services.rules_engine import calc_scores
+from ..services.monsters_service import upsert_tags
 
 router = APIRouter()
 
@@ -35,12 +36,18 @@ def _run_recalc(task_id: str, weights: Optional[Dict[str, float]]):
                 "base_pp": m.base_pp
             }, weights)
             m.explain_json = r.explain
+            # 合并计算标签
+            existing = [t.name for t in m.tags]
+            merged = sorted(set(existing) | set(r.tags))
+            m.tags = upsert_tags(db, merged)
+
             done += 1
             if done % 50 == 0:
                 t = db.get(Task, task_id)
                 t.progress = done
                 t.total = total
                 db.commit()
+        # final commit
         t = db.get(Task, task_id)
         t.progress = done
         t.total = total
