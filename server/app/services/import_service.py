@@ -9,16 +9,31 @@ from .monsters_service import upsert_tags, apply_scores
 REQUIRED = ["name_final"]
 OPTIONAL = ["element","role","base_offense","base_survive","base_control","base_tempo","base_pp","tags"]
 
-# 中文/别名 -> 标准字段映射
+# 列名映射（中文/英文/别名 -> 内部字段）
 HEADER_MAP = {
+    # 名称
     "名称":"name_final", "最终名称":"name_final", "名字":"name_final", "name":"name_final",
-    "元素":"element", "属性":"element",
-    "定位":"role", "位置":"role",
-    "攻":"base_offense", "攻击":"base_offense", "offense":"base_offense",
-    "生":"base_survive", "生命":"base_survive", "体力":"base_survive", "survive":"base_survive",
-    "控":"base_control", "控制":"base_control", "control":"base_control",
-    "速":"base_tempo", "速度":"base_tempo", "tempo":"base_tempo", "speed":"base_tempo",
-    "PP":"base_pp", "pp":"base_pp",
+
+    # 元素 / 角色
+    "元素":"element", "属性":"element", "element":"element",
+    "定位":"role", "位置":"role", "role":"role",
+
+    # 五维（中文）
+    "攻":"base_offense", "攻击":"base_offense",
+    "生":"base_survive", "生命":"base_survive", "体力":"base_survive",
+    "控":"base_control", "控制":"base_control",
+    "速":"base_tempo", "速度":"base_tempo",
+    "pp":"base_pp", "PP":"base_pp",
+
+    # 五维（英文：你这份 CSV 使用的）
+    "hp":"base_survive",
+    "speed":"base_tempo",
+    "attack":"base_offense",
+    "defense":"base_control",   # 这里选择把 defense 映射到“控”
+    "magic":"base_control",     # 如果你想把 magic 算到别的维度再说
+    "resist":"base_pp",         # 暂用 resist 映射为 PP
+
+    # 标签
     "标签":"tags", "tag":"tags", "tags":"tags",
 }
 
@@ -36,7 +51,7 @@ def _sniff_delimiter(sample: str) -> str:
 def _to_float(v: str | None) -> float:
     s = _clean(v)
     if not s: return 0.0
-    s = s.replace(",", "")  # 去千分位
+    s = s.replace(",", "")  # 去千位分隔
     try:
         return float(s)
     except Exception:
@@ -46,6 +61,11 @@ def _split_tags(s: str | None) -> List[str]:
     parts = re.split(r"[\|,;\/\s]+", _clean(s))
     return [p for p in parts if p]
 
+def _map_col(col: str) -> str:
+    key = _clean(col)
+    low = key.lower()
+    return HEADER_MAP.get(key) or HEADER_MAP.get(low) or key
+
 def parse_csv(file_bytes: bytes) -> Tuple[List[str], List[Dict]]:
     text = file_bytes.decode("utf-8", errors="ignore")
     text = _clean(text)
@@ -54,18 +74,14 @@ def parse_csv(file_bytes: bytes) -> Tuple[List[str], List[Dict]]:
     rdr = csv.DictReader(io.StringIO(text), delimiter=delim)
     raw_cols = rdr.fieldnames or []
 
-    # 规范化列名（清洗 + 中文映射）
-    cols: List[str] = []
-    for c in raw_cols:
-        key = _clean(c)
-        cols.append(HEADER_MAP.get(key, key))
+    # 规范化列名（清洗 + 大小写不敏感 + 中英映射）
+    cols: List[str] = [_map_col(c) for c in raw_cols]
 
     rows: List[Dict] = []
     for r in rdr:
         nr: Dict[str, str] = {}
         for k, v in r.items():
-            key = HEADER_MAP.get(_clean(k), _clean(k))
-            nr[key] = _clean(v)
+            nr[_map_col(k)] = _clean(v)
         rows.append(nr)
 
     return cols, rows
@@ -112,6 +128,7 @@ def commit(db: Session, file_bytes: bytes, *, idempotency_key: Optional[str] = N
                 if is_new:
                     m = Monster(name_final=name)
 
+                # 写入五维
                 m.element = element
                 m.role = _clean(r.get("role")) or None
                 m.base_offense = _to_float(r.get("base_offense"))
@@ -120,8 +137,10 @@ def commit(db: Session, file_bytes: bytes, *, idempotency_key: Optional[str] = N
                 m.base_tempo   = _to_float(r.get("base_tempo"))
                 m.base_pp      = _to_float(r.get("base_pp"))
 
-                tag_list = _split_tags(r.get("tags"))
-                m.tags = upsert_tags(db, tag_list)
+                # 标签
+                m.tags = upsert_tags(db, _split_tags(r.get("tags")))
+
+                # 计算解释/标签（按规则引擎）
                 apply_scores(m)
 
                 if is_new:
