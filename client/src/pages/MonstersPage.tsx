@@ -20,7 +20,7 @@ const isMeaningfulDesc = (t?: string) => {
 }
 const isValidSkillName = (name?: string) => !!(name && name.trim() && /[\u4e00-\u9fffA-Za-z]/.test(name))
 
-// —— 统一标签映射（别名→规范）+ 不贪多（最多 6 个）
+// —— 统一标签映射（别名→规范）+ 不贪多（最多 6 个）+ 去掉属性词
 const TAG_ALIAS: Record<string, string> = {
   '先制': '先手', '先手': '先手',
   '多段': '多段', '三连': '多段', '连击': '多段', '2~3次': '多段', '3~6次': '多段',
@@ -32,18 +32,14 @@ const TAG_ALIAS: Record<string, string> = {
   '控制': '控制', '眩晕': '控制', '昏迷': '控制', '束缚': '控制', '窒息': '控制', '冰冻': '控制',
   '输出': '输出', '暴击': '输出', '高攻': '输出', '无视防御': '输出',
 }
-
 function normalizeTags(candidates: string[], limit = 6) {
   const normed: string[] = []
   const seen = new Set<string>()
   for (const raw of candidates) {
     const trimmed = (raw || '').trim()
     if (!trimmed) continue
-    // 去掉“风/火/水/金/木/土/冰/雷/毒/妖/光/暗/音系”等属性词
-    if (/^(风|火|水|金|木|土|冰|雷|毒|妖|光|暗|音)系$/.test(trimmed)) continue
-    // 规范同义词
+    if (/^(风|火|水|金|木|土|冰|雷|毒|妖|光|暗|音)系$/.test(trimmed)) continue // 去属性
     let tag = TAG_ALIAS[trimmed] || trimmed
-    // 限制长度，去重
     if (!seen.has(tag)) {
       seen.add(tag); normed.push(tag)
       if (normed.length >= limit) break
@@ -52,8 +48,11 @@ function normalizeTags(candidates: string[], limit = 6) {
   return normed
 }
 
-// —— 基于六维 + 技能文本推断 role & tags（轻量启发式）
-function inferRoleAndTags(stats: { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number }, skills: SkillDTO[]) {
+// —— 基于六维 + 技能文本推断 role & tags（启发式）
+function inferRoleAndTags(
+  stats: { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number },
+  skills: SkillDTO[]
+) {
   const { hp, speed, attack, defense, magic, resist } = stats
   const tags: string[] = []
   const text = (skills || []).map(s => `${s.name} ${s.description || ''}`).join(' ')
@@ -90,7 +89,7 @@ function inferRoleAndTags(stats: { hp:number; speed:number; attack:number; defen
   return { role, tags: uniq }
 }
 
-// —— 从 explain_json.raw_stats 提取六维（没有就从基础字段兜底），确保整数
+// —— 优先从 explain_json.raw_stats 取（可含小数）；没有就从基础字段近似
 function extractIntStats(m: Monster): { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number } {
   const raw = (m as any)?.explain_json?.raw_stats as
     | { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number } | undefined
@@ -104,7 +103,6 @@ function extractIntStats(m: Monster): { hp:number; speed:number; attack:number; 
       resist: Math.round(raw.resist ?? 0),
     }
   }
-  // 没有 raw 时，仅有控=base_control，无法拆分防/法，这里近似分摊
   const ctrl = Math.round(m.base_control ?? 0)
   return {
     hp: Math.round(m.base_survive ?? 0),
@@ -194,7 +192,7 @@ export default function MonstersPage() {
     return Array.from(map.entries()).map(([name, count]) => ({ name, count }))
   }, [tags.data, list.data])
 
-  // 详情的展示用六维（显示时优先 raw）
+  // 展示用六维：优先 raw（可含小数），确保“原版导入”完整显示
   const raw = (selected as any)?.explain_json?.raw_stats as
     | { hp: number, speed: number, attack: number, defense: number, magic: number, resist: number, sum?: number }
     | undefined
@@ -240,16 +238,13 @@ export default function MonstersPage() {
   }
   const clearSelection = () => setSelectedIds(new Set())
 
-  // —— 删除（DELETE 带 JSON body；失败降级 POST）
+  // —— 删除
   const bulkDelete = async () => {
     if (!selectedIds.size) return
     if (!window.confirm(`确认删除选中的 ${selectedIds.size} 条记录？此操作不可撤销。`)) return
     const ids = Array.from(selectedIds)
     try {
-      await api.delete('/monsters/bulk_delete', {
-        data: { ids },
-        headers: { 'Content-Type': 'application/json' }
-      })
+      await api.delete('/monsters/bulk_delete', { data: { ids }, headers: { 'Content-Type': 'application/json' } })
     } catch {
       await api.post('/monsters/bulk_delete', { ids })
     }
@@ -306,7 +301,7 @@ export default function MonstersPage() {
     setIsEditing(false)
   }
 
-  // —— 进入编辑：预填原值
+  // —— 进入编辑：预填原值（编辑用整数，展示仍用原版 raw）
   const enterEdit = () => {
     if (!selected) return
     setEditName(selected.name_final || '')
@@ -392,7 +387,6 @@ export default function MonstersPage() {
     let ok = 0, fail = 0
     for (const m of target) {
       try {
-        // 拉详情 + 技能
         const fresh = (await api.get(`/monsters/${m.id}`)).data as Monster
         const sks = (await api.get(`/monsters/${m.id}/skills`)).data as SkillDTO[]
         const s = extractIntStats(fresh)

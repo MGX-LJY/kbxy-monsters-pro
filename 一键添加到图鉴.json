@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         kbxy 图鉴一键导入（六维+关键技能选择+匹配推荐）
 // @namespace    https://kbxy.local
-// @version      0.4.0
-// @description  在 4399 官方图鉴页识别六维 + 技能表，可匹配“推荐配招”，选择关键技能后一键导入到本地图鉴（FastAPI）
+// @version      0.4.1
+// @description  在 4399 官方图鉴页识别六维 + 技能表，可匹配“推荐配招”，选择关键技能后一键导入到本地图鉴（FastAPI）；同时写入原版六维到 explain_json.raw_stats 以保证显示不失真
 // @author       you
 // @match        *://news.4399.com/kabuxiyou/*
 // @match        *://m.news.4399.com/kabuxiyou/*
@@ -42,25 +42,26 @@
     .kbxy-close{position:absolute;right:12px;top:10px;background:transparent;border:none;font-size:18px;cursor:pointer}
   `);
 
-  function $(sel, root) { return (root || document).querySelector(sel); }
-  function $all(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
-  function txt(node) { return (node?.textContent || '').replace(/\s+/g, ' ').trim(); }
-  function toNum(s){ const n = Number((s||'').toString().replace(/[^\d.-]/g,'')); return Number.isFinite(n)?n:0; }
+  const $  = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const txt = (node) => (node?.textContent || '').replace(/\s+/g, ' ').trim();
+  const toNum = (s) => {
+    const n = Number((s || '').toString().replace(/[^\d.-]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  };
 
-  // 解析元素系别（风/火/水/金/木/土/冰/雷/毒/妖/光/暗/音）
   function detectElement() {
     const nav = $('.dq') || $('.topbg_3 .nav_l');
-    const a = nav ? $all('a', nav).find(a => /风系|火系|水系|金系|木系|土系|冰系|雷系|毒系|妖系|光系|暗系|音系/.test(txt(a))) : null;
+    const a = nav ? $$('.nav_l a, .dq a, a', nav).find(a => /风系|火系|水系|金系|木系|土系|冰系|雷系|毒系|妖系|光系|暗系|音系/.test(txt(a))) : null;
     const m = a ? txt(a).match(/(风|火|水|金|木|土|冰|雷|毒|妖|光|暗|音)/) : null;
     return m ? m[1] : '';
   }
 
-  // “推荐配招”解析 -> 返回技能名数组
   function parseRecommendedCombos() {
-    const cell = $all('td').find(td => /推荐配招/.test(txt(td)));
+    const cell = $$('td').find(td => /推荐配招/.test(txt(td)));
     if (!cell) return [];
     const row = cell.parentElement;
-    const tds = $all('td', row);
+    const tds = $$('td', row);
     let content = '';
     for (let i = 1; i < tds.length; i++) content += ' ' + txt(tds[i]);
     return content
@@ -70,75 +71,60 @@
       .filter(Boolean);
   }
 
-  // 找到“种族值”表：表头包含“妖怪名/体力/速度/攻击/防御/法术/抗性”
+  // 关键修复：按“最后 6 个单元格”取六维，能保留小数
   function parseStatsTable() {
-    const tables = $all('table');
+    const tables = $$('table');
     for (const t of tables) {
       const whole = txt(t);
       if (!(/妖怪名/.test(whole) && /体力/.test(whole) && /速度/.test(whole) && /攻击/.test(whole) && /防御/.test(whole) && /法术/.test(whole) && /抗性/.test(whole))) {
         continue;
       }
-      const trs = $all('tr', t);
-      // 找到表头行索引
+      const trs = $$('tr', t);
       const headIdx = trs.findIndex(tr => /妖怪名/.test(txt(tr)) && /体力/.test(txt(tr)));
       const rows = trs.slice(headIdx + 1);
       const result = [];
       for (const tr of rows) {
-        const tds = $all('td', tr);
-        if (tds.length < 7) continue; // 数据行一般 >= 7 (名字 + 6 数值)
-        // 名称取第一格（可能 colspan=2，不影响）
+        const tds = $$('td', tr);
+        if (tds.length < 7) continue;
         const name = txt(tds[0]).replace(/[:：]/g, '');
         if (!name || /表中数值为首发设定值/.test(name)) continue;
-        // 关键：按“最后 6 个单元格”映射到六维，避免 name 的 colspan 干扰
         const nums = tds.slice(-6).map(td => toNum(txt(td)));
         const [hp, speed, attack, defense, magic, resist] = nums;
+        if (!(hp || speed || attack || defense || magic || resist)) continue;
         const sum = hp + speed + attack + defense + magic + resist;
         result.push({ name, hp, speed, attack, defense, magic, resist, sum });
       }
-      if (result.length) {
-        // console.debug('kbxy stats parsed:', result);
-        return result;
-      }
+      if (result.length) return result;
     }
     return [];
   }
 
-  // 找到“技能表”
   function parseSkillTable() {
-    const tables = $all('table');
+    const tables = $$('table');
     let skillRows = [];
     for (const t of tables) {
       const headText = txt(t);
       if (/技能名称/.test(headText) && /技能描述/.test(headText)) {
-        const trs = $all('tr', t);
+        const trs = $$('tr', t);
         const headIdx = trs.findIndex(tr => /技能名称/.test(txt(tr)));
         if (headIdx === -1) continue;
         for (let i = headIdx + 1; i < trs.length; i++) {
           const tr = trs[i];
-          const tds = $all('td', tr);
+          const tds = $$('td', tr);
           if (tds.length < 2) continue;
           const first = txt(tds[0]);
           const desc = txt(tds[tds.length - 1]);
           if (!first || /表中数值/.test(desc)) continue;
           if (/^无$/.test(first)) continue;
-          skillRows.push({
-            name: first,
-            description: /^无$/.test(desc) ? '' : desc
-          });
+          skillRows.push({ name: first, description: /^无$/.test(desc) ? '' : desc });
         }
       }
     }
-    // 去重
     const seen = new Set();
-    skillRows = skillRows.filter(s => {
-      if (seen.has(s.name)) return false;
-      seen.add(s.name);
-      return true;
-    });
+    skillRows = skillRows.filter(s => (seen.has(s.name) ? false : (seen.add(s.name), true)));
     return skillRows;
   }
 
-  // API
   function apiRequest(method, url, json) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
@@ -158,23 +144,48 @@
     });
   }
 
+  // 尝试携带 explain_json；若 422 再去掉重试
+  async function safePut(url, body) {
+    try {
+      return await apiRequest('PUT', url, body);
+    } catch (e) {
+      if (String(e?.message || '').includes('HTTP 422')) {
+        const { explain_json, ...rest } = body || {};
+        return await apiRequest('PUT', url, rest);
+      }
+      throw e;
+    }
+  }
+  async function safePost(url, body) {
+    try {
+      return await apiRequest('POST', url, body);
+    } catch (e) {
+      if (String(e?.message || '').includes('HTTP 422')) {
+        const { explain_json, ...rest } = body || {};
+        return await apiRequest('POST', url, rest);
+      }
+      throw e;
+    }
+  }
+
   async function upsertMonster(base, payload) {
     const q = encodeURIComponent(payload.name_final);
     const list = await apiRequest('GET', `${base}/monsters?q=${q}`);
     const hit = (list?.items || []).find(x => x.name_final === payload.name_final && (!payload.element || x.element === payload.element));
     if (hit) {
-      await apiRequest('PUT', `${base}/monsters/${hit.id}`, {
+      await safePut(`${base}/monsters/${hit.id}`, {
         element: payload.element || null,
         role: payload.role || null,
         base_offense: payload.base_offense,
         base_survive: payload.base_survive,
         base_control: payload.base_control,
         base_tempo: payload.base_tempo,
-        base_pp: payload.base_pp
+        base_pp: payload.base_pp,
+        explain_json: payload.explain_json || undefined,
       });
       return hit.id;
     } else {
-      const created = await apiRequest('POST', `${base}/monsters`, {
+      const created = await safePost(`${base}/monsters`, {
         name_final: payload.name_final,
         element: payload.element || null,
         role: payload.role || null,
@@ -182,7 +193,8 @@
         base_survive: payload.base_survive,
         base_control: payload.base_control,
         base_tempo: payload.base_tempo,
-        base_pp: payload.base_pp
+        base_pp: payload.base_pp,
+        explain_json: payload.explain_json || undefined,
       });
       return created.id;
     }
@@ -194,7 +206,6 @@
         skills: (skills || []).map(s => ({ name: s.name, description: s.description || '' }))
       });
     } catch (e) {
-      // 405 降级 POST
       if (String(e?.message || '').includes('HTTP 405')) {
         await apiRequest('POST', `${base}/monsters/${monsterId}/skills`, {
           skills: (skills || []).map(s => ({ name: s.name, description: s.description || '' }))
@@ -205,7 +216,6 @@
     }
   }
 
-  // 初始化 UI 悬浮按钮
   function init() {
     if (!document.body) return;
     const fab = document.createElement('button');
@@ -227,35 +237,27 @@
         return;
       }
 
-      const mask = document.createElement('div');
-      mask.className = 'kbxy-mask';
-      const panel = document.createElement('div');
-      panel.className = 'kbxy-panel';
-
+      const mask = document.createElement('div'); mask.className = 'kbxy-mask';
+      const panel = document.createElement('div'); panel.className = 'kbxy-panel';
       const closeBtn = document.createElement('button');
-      closeBtn.className = 'kbxy-close';
-      closeBtn.textContent = '×';
+      closeBtn.className = 'kbxy-close'; closeBtn.textContent = '×';
       closeBtn.onclick = () => { document.body.removeChild(mask); document.body.removeChild(panel); };
 
-      // 默认选择最后一行（通常是进化后一阶）
       let currentIdx = Math.max(0, statsRows.length - 1);
       let apiBase = API_BASE;
       let filterText = '';
       let onlyLikelyCore = false;
-      const likelyCore = (s) => /(提高|降低|免疫|回复|暴击|速度|抗性|防御|命中|昏迷|窒息|先手)/.test((s.name + ' ' + (s.description||'')).toLowerCase());
+      const likelyCore = (s) => /(提高|降低|免疫|回复|暴击|速度|抗性|防御|命中|昏迷|窒息|先手)/.test((s.name + ' ' + (s.description || '')).toLowerCase());
 
       function render() {
-        panel.innerHTML = '';
-        panel.appendChild(closeBtn);
+        panel.innerHTML = ''; panel.appendChild(closeBtn);
 
         const title = document.createElement('div');
         title.className = 'kbxy-title';
         title.textContent = '一键导入到自制图鉴（选择关键技能 / 匹配推荐配招）';
         panel.appendChild(title);
 
-        // 行 1：左六维 / 右配置
         const row1 = document.createElement('div'); row1.className = 'kbxy-row';
-
         const left = document.createElement('div'); left.className = 'kbxy-card';
         left.innerHTML = `
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
@@ -290,7 +292,6 @@
         row1.appendChild(right);
         panel.appendChild(row1);
 
-        // 行 2：技能面板
         const row2 = document.createElement('div'); row2.className = 'kbxy-card';
         const header = document.createElement('div'); header.style = 'display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px';
         header.innerHTML = `
@@ -315,7 +316,7 @@
         const checked = window.__kbxy_checked;
 
         const visibleSkills = skills.filter(s => {
-          const hit = (s.name + ' ' + (s.description||'')).toLowerCase().includes((filterText||'').toLowerCase());
+          const hit = (s.name + ' ' + (s.description || '')).toLowerCase().includes((filterText || '').toLowerCase());
           const coreOK = !onlyLikelyCore || likelyCore(s);
           return hit && coreOK;
         });
@@ -339,7 +340,6 @@
         row2.appendChild(listWrap);
         panel.appendChild(row2);
 
-        // Footer（统计）
         const footer = document.createElement('div'); footer.className = 'kbxy-footer';
         const chosen = skills.filter(s => checked[`kbxy-s-${s.name}`]);
         const overlap = recCombos.length ? chosen.filter(s => recCombos.includes(s.name)).length : 0;
@@ -355,11 +355,20 @@
             const row = statsRows[currentIdx];
             const element = el;
             const name_final = row?.name || document.title.replace(/卡布西游|技能表.*/g,'').trim() || '未知';
-            const base_offense = row.attack;
-            const base_survive = row.hp;
-            const base_control = (row.defense + row.magic) / 2;
-            const base_tempo = row.speed;
-            const base_pp = row.resist;
+
+            // —— 原版六维写入 explain_json.raw_stats（保留小数）
+            const rawStats = {
+              hp: row.hp, speed: row.speed, attack: row.attack,
+              defense: row.defense, magic: row.magic, resist: row.resist,
+              sum: row.sum
+            };
+
+            // —— 兼容后端整型：base_* 取整；base_control = (防御+法术)/2 四舍五入
+            const base_offense = Math.round(row.attack);
+            const base_survive = Math.round(row.hp);
+            const base_control = Math.round((Number(row.defense) + Number(row.magic)) / 2);
+            const base_tempo = Math.round(row.speed);
+            const base_pp = Math.round(row.resist);
 
             const selectedSkills = skills.filter(s => !!checked[`kbxy-s-${s.name}`]);
 
@@ -367,7 +376,16 @@
 
             const monsterId = await upsertMonster(apiBase, {
               name_final, element, role: null,
-              base_offense, base_survive, base_control, base_tempo, base_pp
+              base_offense, base_survive, base_control, base_tempo, base_pp,
+              explain_json: {
+                raw_stats: rawStats,
+                source: {
+                  site: '4399',
+                  url: location.href,
+                  title: document.title,
+                  fetched_at: new Date().toISOString()
+                }
+              }
             });
 
             await saveSkills(apiBase, monsterId, selectedSkills);
@@ -381,41 +399,20 @@
         footer.appendChild(note); footer.appendChild(actions);
         panel.appendChild(footer);
 
-        // 事件
-        panel.querySelector('#kbxy-monster-row')?.addEventListener('change', (e) => {
-          currentIdx = Number(e.target.value);
-          render();
-        });
-        panel.querySelector('#kbxy-api')?.addEventListener('input', (e) => {
-          apiBase = e.target.value;
-        });
-        panel.querySelector('#kbxy-search')?.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { filterText = e.target.value; render(); }
-        });
-        panel.querySelector('#kbxy-core-only')?.addEventListener('change', (e) => {
-          onlyLikelyCore = e.target.checked; render();
-        });
-        panel.querySelector('#kbxy-select-all')?.addEventListener('click', () => {
-          for (const s of skills) { window.__kbxy_checked[`kbxy-s-${s.name}`] = true; }
-          render();
-        });
-        panel.querySelector('#kbxy-clear')?.addEventListener('click', () => {
-          window.__kbxy_checked = {};
-          render();
-        });
+        panel.querySelector('#kbxy-monster-row')?.addEventListener('change', (e) => { currentIdx = Number(e.target.value); render(); });
+        panel.querySelector('#kbxy-api')?.addEventListener('input', (e) => { apiBase = e.target.value; });
+        panel.querySelector('#kbxy-search')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { filterText = e.target.value; render(); } });
+        panel.querySelector('#kbxy-core-only')?.addEventListener('change', (e) => { onlyLikelyCore = e.target.checked; render(); });
+        panel.querySelector('#kbxy-select-all')?.addEventListener('click', () => { for (const s of skills) window.__kbxy_checked[`kbxy-s-${s.name}`] = true; render(); });
+        panel.querySelector('#kbxy-clear')?.addEventListener('click', () => { window.__kbxy_checked = {}; render(); });
         panel.querySelector('#kbxy-match-rec')?.addEventListener('click', () => {
           if (!recCombos.length) { alert('未识别到“推荐配招”'); return; }
-          for (const s of skills) {
-            if (recCombos.includes(s.name)) window.__kbxy_checked[`kbxy-s-${s.name}`] = true;
-          }
+          for (const s of skills) if (recCombos.includes(s.name)) window.__kbxy_checked[`kbxy-s-${s.name}`] = true;
           render();
         });
 
-        // 代理勾选
-        $all('input[type=checkbox]', listWrap).forEach(cb => {
-          cb.addEventListener('change', (e) => {
-            window.__kbxy_checked[e.target.id] = e.target.checked;
-          });
+        $$('#kbxy-panel input[type=checkbox], input[type=checkbox]', listWrap).forEach(cb => {
+          cb.addEventListener('change', (e) => { window.__kbxy_checked[e.target.id] = e.target.checked; });
         });
       }
 
