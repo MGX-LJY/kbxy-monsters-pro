@@ -1,5 +1,7 @@
-from typing import Optional
+# server/app/routes/monsters.py
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 
@@ -17,12 +19,14 @@ from ..services.derive_service import (
 
 router = APIRouter()
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 @router.get("/monsters", response_model=MonsterList)
 def list_api(
@@ -107,6 +111,7 @@ def list_api(
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
 
+
 @router.get("/monsters/{monster_id}", response_model=MonsterOut)
 def detail(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(
@@ -148,6 +153,7 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         },
     )
 
+
 @router.post("/monsters", response_model=MonsterOut)
 def create(payload: MonsterIn, db: Session = Depends(get_db)):
     m = Monster(
@@ -169,6 +175,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
     recompute_and_autolabel(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
+
 
 @router.put("/monsters/{monster_id}", response_model=MonsterOut)
 def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
@@ -193,6 +200,7 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     db.commit()
     return detail(monster_id, db)
 
+
 @router.delete("/monsters/{monster_id}")
 def delete(monster_id: int, db: Session = Depends(get_db)):
     """
@@ -211,3 +219,37 @@ def delete(monster_id: int, db: Session = Depends(get_db)):
     db.delete(m)  # MonsterDerived 走 delete-orphan 一并删
     db.commit()
     return {"ok": True}
+
+
+# -------- 新增：批量自动匹配（覆盖定位与标签，并重算派生） --------
+
+class AutoMatchIn(BaseModel):
+    ids: Optional[List[int]] = None
+
+
+@router.post("/monsters/auto_match")
+def auto_match(payload: AutoMatchIn, db: Session = Depends(get_db)):
+    """
+    批量“自动匹配”（重算 role/tags，并重算派生五维）。
+    - 若传入 ids，仅处理这些；否则不做任何事（也可改为全量处理，看需要）
+    - 行为与 /tags/monsters/{id}/retag 一致：覆盖 role，覆盖 tags（不合并）
+    """
+    ids = (payload.ids or [])
+    if not ids:
+        return {"ok": True, "updated": 0}
+
+    mons: List[Monster] = db.execute(
+        select(Monster)
+        .where(Monster.id.in_(ids))
+        .options(selectinload(Monster.skills), selectinload(Monster.tags))
+    ).scalars().all()
+
+    updated = 0
+    for m in mons:
+        # 覆盖定位与标签，然后重算派生
+        apply_role_tags(db, m, override_role_if_blank=False, merge_tags=False)
+        compute_and_persist(db, m)
+        updated += 1
+
+    db.commit()
+    return {"ok": True, "updated": updated}
