@@ -2,7 +2,7 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
-# —— Skill —— #
+# —— Skills —— #
 class SkillIn(BaseModel):
     name: str = Field(..., description="技能名")
     description: Optional[str] = Field("", description="技能描述")
@@ -15,13 +15,32 @@ class SkillOut(BaseModel):
     class Config:
         from_attributes = True
 
-# —— Monster —— #
+# —— Derived 五维 —— #
+class DerivedOut(BaseModel):
+    offense: int = 0
+    survive: int = 0
+    control: int = 0
+    tempo: int = 0
+    pp_pressure: int = 0
+
+# —— AutoMatch —— #
+class AutoMatchIn(BaseModel):
+    commit: bool = False  # True=写库（role/tags + derived），False=只返回建议
+
+class AutoMatchOut(BaseModel):
+    monster_id: int
+    role: str
+    tags: List[str]
+    derived: DerivedOut
+    committed: bool = False
+
+# —— Monsters —— #
 class MonsterIn(BaseModel):
     name_final: str
     element: Optional[str] = None
     role: Optional[str] = None
 
-    # 原始六维（只传这 6 个）
+    # 原始六维（只保留这一套）
     hp: float = 0
     speed: float = 0
     attack: float = 0
@@ -46,16 +65,11 @@ class MonsterOut(BaseModel):
     magic: float = 0
     resist: float = 0
 
-    # 派生（仅用于展示/排序，不落库）
-    sum: float = 0
-    offense: float = 0     # = attack
-    survive: float = 0     # = hp
-    control: float = 0     # = (defense + magic) / 2
-    tempo: float = 0       # = speed
-    pp: float = 0          # = resist
-
     tags: List[str] = []
     explain_json: Dict[str, Any] = {}
+
+    # 派生五维（服务端计算）
+    derived: Optional[DerivedOut] = None
 
     class Config:
         from_attributes = True

@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 import io, csv, json
 
-router = APIRouter()  # 不加 prefix，路径即为下面定义的绝对路径
+router = APIRouter()
 
 def get_db():
     db = SessionLocal()
@@ -20,17 +20,13 @@ def get_db():
     finally:
         db.close()
 
-# ====== 统计（首页卡片用） ======
 @router.get("/stats")
 def stats(db: Session = Depends(get_db)):
     total = db.scalar(select(func.count(Monster.id))) or 0
-    with_skills = db.scalar(
-        select(func.count(func.distinct(Monster.id))).join(Monster.skills)
-    ) or 0
+    with_skills = db.scalar(select(func.count(func.distinct(Monster.id))).join(Monster.skills)) or 0
     tags_total = db.scalar(select(func.count(Tag.id))) or 0
     return {"total": int(total), "with_skills": int(with_skills), "tags_total": int(tags_total)}
 
-# ====== 导出 CSV（新：六维，不再有 control） ======
 @router.get("/export/monsters.csv")
 def export_csv(
     q: Optional[str] = None,
@@ -48,17 +44,11 @@ def export_csv(
     )
     buf = io.StringIO()
     w = csv.writer(buf)
-    # 六维导出：offense/survive/defense/magic/tempo/pp
-    w.writerow([
-        "id","name_final","element","role",
-        "offense","survive","defense","magic","tempo","pp",
-        "tags"
-    ])
+    w.writerow(["id","name_final","element","role","offense","survive","control","tempo","pp","tags"])
     for m in items:
         w.writerow([
             m.id, m.name_final, m.element or "", m.role or "",
-            m.base_offense or 0, m.base_survive or 0,
-            getattr(m, "base_defense", 0) or 0, getattr(m, "base_magic", 0) or 0,
+            m.base_offense or 0, m.base_survive or 0, m.base_control or 0,
             m.base_tempo or 0, m.base_pp or 0,
             "|".join(t.name for t in (m.tags or []))
         ])
@@ -69,7 +59,6 @@ def export_csv(
         headers={"Content-Disposition": "attachment; filename=monsters.csv"}
     )
 
-# ====== 备份 JSON（嵌套结构，导出六维 + 原始 raw_stats） ======
 @router.get("/backup/export_json")
 def backup_json(db: Session = Depends(get_db)):
     monsters = db.execute(
@@ -81,23 +70,15 @@ def backup_json(db: Session = Depends(get_db)):
 
     payload = []
     for m in monsters:
-        ex = m.explain_json or {}
-        raw = ex.get("raw_stats") or {}
+        raw = (m.explain_json or {}).get("raw_stats") or {}
         payload.append({
             "id": m.id,
             "name_final": m.name_final,
             "element": m.element,
             "role": m.role,
-            # 六维（新）
-            "base_offense": m.base_offense or 0,
-            "base_survive": m.base_survive or 0,
-            "base_defense": getattr(m, "base_defense", 0) or 0,
-            "base_magic": getattr(m, "base_magic", 0) or 0,
-            "base_tempo": m.base_tempo or 0,
-            "base_pp": m.base_pp or 0,
-            # 原始六维
+            "base_offense": m.base_offense, "base_survive": m.base_survive,
+            "base_control": m.base_control, "base_tempo": m.base_tempo, "base_pp": m.base_pp,
             "raw_stats": raw,
-            # 多对多
             "tags": [t.name for t in (m.tags or [])],
             "skills": [{"name": s.name, "description": s.description or ""} for s in (m.skills or [])],
         })
@@ -108,73 +89,6 @@ def backup_json(db: Session = Depends(get_db)):
         headers={"Content-Disposition": "attachment; filename=backup.json"}
     )
 
-# ====== 恢复 JSON（Upsert，覆盖技能集合；新：写入 defense/magic） ======
-@router.post("/backup/restore_json")
-def restore_json(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    monsters = payload.get("monsters") or []
-    inserted = updated = 0
-    with db.begin():
-        for item in monsters:
-            name = (item.get("name_final") or "").strip()
-            if not name:
-                continue
-            element = (item.get("element") or None)
-
-            q = select(Monster).where(Monster.name_final == name)
-            if element:
-                q = q.where(Monster.element == element)
-            m = db.execute(q).scalar_one_or_none()
-
-            is_new = m is None
-            if is_new:
-                m = Monster(name_final=name, element=element)
-
-            # 优先读六维字段；若缺少 defense/magic，从 raw_stats 兜底；实在没有则 0
-            raw_stats = item.get("raw_stats") or {}
-            m.role = item.get("role") or m.role
-            m.base_offense = float(item.get("base_offense") or 0)
-            m.base_survive = float(item.get("base_survive") or 0)
-            # 新：defense/magic
-            base_defense = item.get("base_defense")
-            base_magic = item.get("base_magic")
-            if base_defense is None:
-                base_defense = raw_stats.get("defense", 0)
-            if base_magic is None:
-                base_magic = raw_stats.get("magic", 0)
-            # 转 float 存库
-            m.base_defense = float(base_defense or 0)
-            m.base_magic = float(base_magic or 0)
-
-            m.base_tempo   = float(item.get("base_tempo") or raw_stats.get("speed") or 0)
-            m.base_pp      = float(item.get("base_pp") or raw_stats.get("resist") or 0)
-
-            # 回写 raw_stats
-            ex = m.explain_json or {}
-            if raw_stats:
-                ex["raw_stats"] = raw_stats
-            m.explain_json = ex
-
-            # 覆盖标签
-            m.tags = upsert_tags(db, item.get("tags") or [])
-
-            # 覆盖技能集合
-            skill_pairs = [
-                ((s.get("name") or "").strip(), (s.get("description") or "").strip())
-                for s in (item.get("skills") or [])
-                if (s.get("name") or "").strip()
-            ]
-            upserted = upsert_skills(db, skill_pairs)
-            m.skills = list(upserted)
-
-            if is_new:
-                db.add(m)
-                inserted += 1
-            else:
-                updated += 1
-
-    return {"inserted": inserted, "updated": updated}
-
-# ====== 批量删除：DELETE + POST 兼容，且用 default_factory 避免可变默认 ======
 class BulkDeleteIn(BaseModel):
     ids: List[int] = Field(default_factory=list)
 

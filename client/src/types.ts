@@ -1,15 +1,32 @@
+// client/src/types.ts
+export type Derived = {
+  offense: number
+  survive: number
+  control: number
+  tempo: number
+  pp: number
+  tags: string[]
+  role_suggested?: string | null
+}
+
 export type Monster = {
   id: number
   name_final: string
   element?: string | null
   role?: string | null
+
+  // 旧五维字段（保留，但列表不展示它们）
   base_offense: number
   base_survive: number
   base_control: number
   base_tempo: number
   base_pp: number
+
   tags: string[]
   explain_json: Record<string, any>
+
+  // 新增：后端实时返回的派生五维
+  derived: Derived
 }
 
 export type MonsterListResp = {

@@ -1,3 +1,4 @@
+// client/src/pages/MonstersPage.tsx
 import React, { useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../api'
@@ -20,106 +21,12 @@ const isMeaningfulDesc = (t?: string) => {
 }
 const isValidSkillName = (name?: string) => !!(name && name.trim() && /[\u4e00-\u9fffA-Za-z]/.test(name))
 
-// —— 统一标签映射（别名→规范）+ 不贪多（最多 6 个）+ 去掉属性词
-const TAG_ALIAS: Record<string, string> = {
-  '先制': '先手', '先手': '先手',
-  '多段': '多段', '三连': '多段', '连击': '多段', '2~3次': '多段', '3~6次': '多段',
-  '强化': '强化', '增益': '强化', '提升': '强化',
-  '削弱': '削弱', '减益': '削弱', '降低': '削弱', '破防': '破防',
-  '免疫': '免疫',
-  '高速': '高速', '速度': '高速', '提速': '高速',
-  '耐久': '耐久', '回复': '耐久', '治疗': '耐久',
-  '控制': '控制', '眩晕': '控制', '昏迷': '控制', '束缚': '控制', '窒息': '控制', '冰冻': '控制',
-  '输出': '输出', '暴击': '输出', '高攻': '输出', '无视防御': '输出',
-}
-function normalizeTags(candidates: string[], limit = 6) {
-  const normed: string[] = []
-  const seen = new Set<string>()
-  for (const raw of candidates) {
-    const trimmed = (raw || '').trim()
-    if (!trimmed) continue
-    if (/^(风|火|水|金|木|土|冰|雷|毒|妖|光|暗|音)系$/.test(trimmed)) continue // 去属性
-    let tag = TAG_ALIAS[trimmed] || trimmed
-    if (!seen.has(tag)) {
-      seen.add(tag); normed.push(tag)
-      if (normed.length >= limit) break
-    }
-  }
-  return normed
-}
-
-// —— 基于六维 + 技能文本推断 role & tags（启发式）
-function inferRoleAndTags(
-  stats: { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number },
-  skills: SkillDTO[]
-) {
-  const { hp, speed, attack, defense, magic, resist } = stats
-  const tags: string[] = []
-  const text = (skills || []).map(s => `${s.name} ${s.description || ''}`).join(' ')
-  const has = (re: RegExp) => re.test(text)
-
-  // 数值标签
-  if (speed >= 110) tags.push('高速')
-  if (attack >= 115) tags.push('输出', '高攻')
-  if (hp >= 110 || (defense + magic) / 2 >= 105 || resist >= 110) tags.push('耐久')
-
-  // 技能关键词
-  if (has(/(先手|先制)/)) tags.push('先手')
-  if (has(/(2~3|3~6|多段|连击)/)) tags.push('多段')
-  if (has(/(提高|提升|强化|增益)/)) tags.push('强化')
-  if (has(/(降低|削弱|破防|命中下降)/)) tags.push('削弱', '破防')
-  if (has(/(昏迷|眩晕|束缚|窒息|冰冻|睡眠)/)) tags.push('控制')
-  if (has(/(免疫|免伤)/)) tags.push('免疫')
-
-  const uniq = normalizeTags(tags)
-
-  // role
-  let role = '通用'
-  const offensive = attack >= 115 || has(/(威力1[3-9]\d|威力[2-9]\d{2}|无视防御|暴击)/)
-  const control = has(/(昏迷|眩晕|束缚|窒息|命中下降|速度下降)/) || ((defense + magic) / 2 >= 110)
-  const support = has(/(提高|提升|强化|回复|治疗|免疫)/)
-  const tanky = hp >= 115 || resist >= 115
-
-  if (offensive && !control && !support) role = '主攻'
-  else if (control && !offensive) role = '控制'
-  else if (support && !offensive) role = '辅助'
-  else if (tanky && !offensive) role = '坦克'
-  else role = '通用'
-
-  return { role, tags: uniq }
-}
-
-// —— 优先从 explain_json.raw_stats 取（可含小数）；没有就从基础字段近似
-function extractIntStats(m: Monster): { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number } {
-  const raw = (m as any)?.explain_json?.raw_stats as
-    | { hp:number; speed:number; attack:number; defense:number; magic:number; resist:number } | undefined
-  if (raw) {
-    return {
-      hp: Math.round(raw.hp ?? 0),
-      speed: Math.round(raw.speed ?? 0),
-      attack: Math.round(raw.attack ?? 0),
-      defense: Math.round(raw.defense ?? 0),
-      magic: Math.round(raw.magic ?? 0),
-      resist: Math.round(raw.resist ?? 0),
-    }
-  }
-  const ctrl = Math.round(m.base_control ?? 0)
-  return {
-    hp: Math.round(m.base_survive ?? 0),
-    speed: Math.round(m.base_tempo ?? 0),
-    attack: Math.round(m.base_offense ?? 0),
-    defense: ctrl,
-    magic: ctrl,
-    resist: Math.round(m.base_pp ?? 0),
-  }
-}
-
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
   const [tag, setTag] = useState('')
   const [role, setRole] = useState('')
-  const [sort, setSort] = useState<'updated_at' | 'name' | 'offense' | 'survive' | 'control' | 'tempo' | 'pp'>('updated_at')
+  const [sort, setSort] = useState<'updated_at'>('updated_at') // 先只保留更新时间排序
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
 
   // 分页
@@ -135,13 +42,13 @@ export default function MonstersPage() {
   const [editName, setEditName] = useState('')
   const [editElement, setEditElement] = useState('')
   const [editRole, setEditRole] = useState('')
-  const [editTags, setEditTags] = useState('') // 空格/逗号分隔
-  const [hp, setHp] = useState(100)
-  const [speed, setSpeed] = useState(100)
-  const [attack, setAttack] = useState(100)
-  const [defense, setDefense] = useState(100)
-  const [magic, setMagic] = useState(100)
-  const [resist, setResist] = useState(100)
+  const [editTags, setEditTags] = useState('') // 空格/逗号分隔（保存到已绑定标签）
+  const [hp, setHp] = useState<number>(100)
+  const [speed, setSpeed] = useState<number>(100)
+  const [attack, setAttack] = useState<number>(100)
+  const [defense, setDefense] = useState<number>(100)
+  const [magic, setMagic] = useState<number>(100)
+  const [resist, setResist] = useState<number>(100)
   const [editSkills, setEditSkills] = useState<SkillDTO[]>([{ name: '', description: '' }])
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
@@ -155,22 +62,27 @@ export default function MonstersPage() {
       })).data as MonsterListResp
   })
 
-  // 兼容 /tags 404：失败就返回 []
+  // 兼容 /tags 不一定有
   const tags = useQuery({
     queryKey: ['tags'],
     queryFn: async () => {
       try {
         return (await api.get('/tags', { params: { with_counts: true } })).data as TagCount[]
-      } catch (e: any) {
-        if (e?.response?.status === 404) return [] as TagCount[]
-        throw e
+      } catch {
+        return [] as TagCount[]
       }
     }
   })
 
   const roles = useQuery({
     queryKey: ['roles'],
-    queryFn: async () => (await api.get('/roles')).data as RoleCount[]
+    queryFn: async () => {
+      try {
+        return (await api.get('/roles')).data as RoleCount[]
+      } catch {
+        return [] as RoleCount[]
+      }
+    }
   })
   const stats = useQuery({
     queryKey: ['stats'],
@@ -192,28 +104,16 @@ export default function MonstersPage() {
     return Array.from(map.entries()).map(([name, count]) => ({ name, count }))
   }, [tags.data, list.data])
 
-  // 展示用六维：优先 raw（可含小数），确保“原版导入”完整显示
+  // —— 展示用原始六维（只在详情展示）
   const raw = (selected as any)?.explain_json?.raw_stats as
-    | { hp: number, speed: number, attack: number, defense: number, magic: number, resist: number, sum?: number }
+    | { hp: number, speed: number, attack: number, defense: number, magic: number, resist: number }
     | undefined
   const showStats = raw ? {
     hp: raw.hp, speed: raw.speed, attack: raw.attack,
     defense: raw.defense, magic: raw.magic, resist: raw.resist,
     sum: (raw.hp||0)+(raw.speed||0)+(raw.attack||0)+(raw.defense||0)+(raw.magic||0)+(raw.resist||0),
   } : {
-    hp: selected?.base_survive ?? 0,
-    speed: selected?.base_tempo ?? 0,
-    attack: selected?.base_offense ?? 0,
-    defense: selected?.base_control ?? 0,
-    magic: selected?.base_control ?? 0,
-    resist: selected?.base_pp ?? 0,
-    sum:
-      (selected?.base_survive ?? 0) +
-      (selected?.base_tempo ?? 0) +
-      (selected?.base_offense ?? 0) +
-      (selected?.base_control ?? 0) +
-      (selected?.base_control ?? 0) +
-      (selected?.base_pp ?? 0),
+    hp: 0, speed: 0, attack: 0, defense: 0, magic: 0, resist: 0, sum: 0
   }
   const sum = useMemo(() => hp + speed + attack + defense + magic + resist, [hp, speed, attack, defense, magic, resist])
 
@@ -301,7 +201,7 @@ export default function MonstersPage() {
     setIsEditing(false)
   }
 
-  // —— 进入编辑：预填原值（编辑用整数，展示仍用原版 raw）
+  // —— 进入编辑：预填“原始六维”（从 raw_stats）
   const enterEdit = () => {
     if (!selected) return
     setEditName(selected.name_final || '')
@@ -309,20 +209,19 @@ export default function MonstersPage() {
     setEditRole(selected.role || '')
     setEditTags((selected.tags || []).join(' '))
     const r = (selected as any)?.explain_json?.raw_stats
-    if (r) {
-      setHp(Math.round(r.hp ?? 100)); setSpeed(Math.round(r.speed ?? 100)); setAttack(Math.round(r.attack ?? 100))
-      setDefense(Math.round(r.defense ?? 100)); setMagic(Math.round(r.magic ?? 100)); setResist(Math.round(r.resist ?? 100))
-    } else {
-      setHp(Math.round(selected.base_survive ?? 100)); setSpeed(Math.round(selected.base_tempo ?? 100)); setAttack(Math.round(selected.base_offense ?? 100))
-      setDefense(Math.round(selected.base_control ?? 100)); setMagic(Math.round(selected.base_control ?? 100)); setResist(Math.round(selected.base_pp ?? 100))
-    }
+    setHp(Math.round(r?.hp ?? 100))
+    setSpeed(Math.round(r?.speed ?? 100))
+    setAttack(Math.round(r?.attack ?? 100))
+    setDefense(Math.round(r?.defense ?? 100))
+    setMagic(Math.round(r?.magic ?? 100))
+    setResist(Math.round(r?.resist ?? 100))
     const existing = (skills.data || []).map(s => ({ name: s.name || '', description: s.description || '' }))
     setEditSkills(existing.length ? existing : [{ name: '', description: '' }])
     setIsEditing(true)
   }
   const cancelEdit = () => setIsEditing(false)
 
-  // —— 保存：技能带方法降级（PUT→POST→/skills/set）
+  // —— 保存技能（保持不变）
   const saveSkillsWithFallback = async (monsterId: number, skillsBody: SkillDTO[]) => {
     try {
       return await api.put(`/monsters/${monsterId}/skills`, { skills: skillsBody })
@@ -339,30 +238,31 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 保存（基础 + 技能）👉 base_control 四舍五入，避免 422
+  // —— 保存（名称/元素/定位/标签 + 原始六维 + 技能）
   const saveEdit = async () => {
     if (!selected) return
     if (!editName.trim()) { alert('请填写名称'); return }
     setSaving(true)
     try {
-      const base_offense = Math.round(attack)
-      const base_survive = Math.round(hp)
-      const base_control = Math.round((Number(defense) + Number(magic)) / 2) // 关键：取整
-      const base_tempo = Math.round(speed)
-      const base_pp = Math.round(resist)
-
-      const payload = {
+      // 1) 基础信息（不再关心 base_*）
+      await api.put(`/monsters/${selected.id}`, {
         name_final: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        base_offense, base_survive, base_control, base_tempo, base_pp,
+        base_offense: 0, base_survive: 0, base_control: 0, base_tempo: 0, base_pp: 0,
         tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
-      }
-      await api.put(`/monsters/${selected.id}`, payload)
+      })
 
+      // 2) 原始六维
+      await api.put(`/monsters/${selected.id}/raw_stats`, {
+        hp, speed, attack, defense, magic, resist
+      })
+
+      // 3) 技能
       const filtered = editSkills.filter(s => (s.name || '').trim())
       await saveSkillsWithFallback(selected.id, filtered)
 
+      // 刷新
       const fresh = (await api.get(`/monsters/${selected.id}`)).data as Monster
       setSelected(fresh)
       skills.refetch()
@@ -375,53 +275,38 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 主页一键自动匹配（选中优先，否则对当前页可见项）
+  // —— 主页一键自动匹配（后端接口）
   const autoMatchBatch = async () => {
     const items = list.data?.items || []
     if (!items.length) return alert('当前没有可处理的记录')
     const target = selectedIds.size ? items.filter(i => selectedIds.has(i.id)) : items
     if (!target.length) return alert('请勾选一些记录，或直接对当前页可见项执行。')
-    if (!window.confirm(`将对 ${target.length} 条记录执行“自动匹配”：定位、攻/生/控/速/PP、标签。是否继续？`)) return
+    if (!window.confirm(`将对 ${target.length} 条记录执行“自动匹配”（后端推断定位+建议标签并保存）。是否继续？`)) return
 
     setAutoMatching(true)
-    let ok = 0, fail = 0
-    for (const m of target) {
-      try {
-        const fresh = (await api.get(`/monsters/${m.id}`)).data as Monster
-        const sks = (await api.get(`/monsters/${m.id}/skills`)).data as SkillDTO[]
-        const s = extractIntStats(fresh)
-        const base_offense = s.attack
-        const base_survive = s.hp
-        const base_control = Math.round((s.defense + s.magic) / 2) // 取整，避免 422
-        const base_tempo = s.speed
-        const base_pp = s.resist
-        const { role: inferRole, tags: inferTags } = inferRoleAndTags(s, sks)
-
-        await api.put(`/monsters/${m.id}`, {
-          name_final: fresh.name_final,
-          element: fresh.element || null,
-          role: inferRole,
-          base_offense, base_survive, base_control, base_tempo, base_pp,
-          tags: inferTags,
-        })
-        ok++
-      } catch {
-        fail++
+    try {
+      await api.post('/monsters/auto_match', { ids: target.map(x => x.id) })
+      await list.refetch()
+      if (selected) {
+        const fresh = (await api.get(`/monsters/${selected.id}`)).data as Monster
+        setSelected(fresh)
       }
+      alert('自动匹配完成')
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || '自动匹配失败')
+    } finally {
+      setAutoMatching(false)
     }
-    setAutoMatching(false)
-    list.refetch(); stats.refetch()
-    alert(`自动匹配完成：成功 ${ok} 条，失败 ${fail} 条。`)
   }
 
-  // —— 抽屉内一键匹配：把推断结果直接填入当前编辑表单（可再次微调后保存）
-  const fillEditByAutoMatch = () => {
+  // —— 抽屉内“一键匹配（填充）”：拉取后端 derived 建议填入编辑框（不立刻保存）
+  const fillEditByAutoMatch = async () => {
     if (!selected) return
-    const s = extractIntStats(selected)
-    setHp(s.hp); setSpeed(s.speed); setAttack(s.attack); setDefense(s.defense); setMagic(s.magic); setResist(s.resist)
-    const { role: inferRole, tags: inferTags } = inferRoleAndTags(s, skills.data || [])
-    setEditRole(inferRole)
-    setEditTags(inferTags.join(' '))
+    const d = (await api.get(`/monsters/${selected.id}/derived`)).data as {
+      role_suggested?: string, tags?: string[]
+    }
+    if (typeof d?.role_suggested === 'string') setEditRole(d.role_suggested)
+    if (Array.isArray(d?.tags)) setEditTags(d.tags.join(' '))
     if (!isEditing) setIsEditing(true)
   }
 
@@ -496,7 +381,7 @@ export default function MonstersPage() {
         </div>
       )}
 
-      {/* 列表 */}
+      {/* 列表（展示派生五维） */}
       <div className="card">
         <div className="overflow-auto">
           <table className="table">
@@ -537,20 +422,20 @@ export default function MonstersPage() {
                       </button>
                     </td>
                     <td>{m.element}</td>
-                    <td>{m.role}</td>
-                    <td>{m.base_offense}</td>
-                    <td>{m.base_survive}</td>
-                    <td>{m.base_control}</td>
-                    <td>{m.base_tempo}</td>
-                    <td>{m.base_pp}</td>
+                    <td>{m.role || m.derived?.role_suggested || ''}</td>
+                    <td>{m.derived?.offense ?? 0}</td>
+                    <td>{m.derived?.survive ?? 0}</td>
+                    <td>{m.derived?.control ?? 0}</td>
+                    <td>{m.derived?.tempo ?? 0}</td>
+                    <td>{m.derived?.pp ?? 0}</td>
                     <td className="space-x-1">
-                      {m.tags?.map(t => <span key={t} className="badge">{t}</span>)}
+                      {(m.tags || []).map(t => <span key={t} className="badge">{t}</span>)}
                     </td>
                   </tr>
                 ))}
                 {list.data?.items?.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 CSV。</td>
+                    <td colSpan={11} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON/CSV。</td>
                   </tr>
                 )}
               </tbody>
@@ -563,14 +448,18 @@ export default function MonstersPage() {
         </div>
       </div>
 
-      {/* 详情抽屉（内置编辑） */}
+      {/* 详情抽屉：显示原始六维；编辑时可改原始六维 */}
       <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false) }} title={selected?.name_final}>
         {selected && (
           <div className="space-y-5">
             <div className="flex items-center justify-end gap-2">
               {!isEditing ? (
                 <>
-                  <button className="btn" onClick={enterEdit}>编辑</button>
+                  <button className="btn" onClick={async () => {
+                    // 预拉一次 derived，方便用户参考（可选）
+                    try { await api.get(`/monsters/${selected.id}/derived`) } catch {}
+                    enterEdit()
+                  }}>编辑</button>
                   <button className="btn" onClick={() => deleteOne(selected.id)}>删除</button>
                 </>
               ) : (
@@ -585,7 +474,7 @@ export default function MonstersPage() {
             {!isEditing ? (
               <>
                 <div>
-                  <h4 className="font-semibold mb-2">基础种族值（六维）</h4>
+                  <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <div className="p-2 bg-gray-50 rounded">体力：<b>{showStats.hp}</b></div>
                     <div className="p-2 bg-gray-50 rounded">速度：<b>{showStats.speed}</b></div>
@@ -661,7 +550,7 @@ export default function MonstersPage() {
                 </div>
 
                 <div className="card p-3 space-y-3">
-                  <h4 className="font-semibold">基础种族值（六维）</h4>
+                  <h4 className="font-semibold">基础种族值（原始六维，直接保存到后端）</h4>
                   {[
                     ['体力', hp, setHp],
                     ['速度', speed, setSpeed],
