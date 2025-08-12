@@ -1,7 +1,39 @@
+# server/app/schemas.py
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any
 
+# —— Skill —— #
+class SkillIn(BaseModel):
+    name: str = Field(..., description="技能名")
+    description: Optional[str] = Field("", description="技能描述")
+
+class SkillOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = ""
+
+    class Config:
+        from_attributes = True
+
+# —— Monster —— #
 class MonsterIn(BaseModel):
+    name_final: str
+    element: Optional[str] = None
+    role: Optional[str] = None
+
+    # 后端采用五维：攻/生/控/速/PP
+    base_offense: float = 0
+    base_survive: float = 0
+    base_control: float = 0
+    base_tempo: float = 0
+    base_pp: float = 0
+
+    tags: List[str] = []
+    # 新增：可携带多个技能（可空）
+    skills: List[SkillIn] = []
+
+class MonsterOut(BaseModel):
+    id: int
     name_final: str
     element: Optional[str] = None
     role: Optional[str] = None
@@ -11,10 +43,10 @@ class MonsterIn(BaseModel):
     base_tempo: float = 0
     base_pp: float = 0
     tags: List[str] = []
+    explain_json: Dict[str, Any] = {}
 
-class MonsterOut(MonsterIn):
-    id: int
-    explain_json: dict = Field(default_factory=dict)
+    class Config:
+        from_attributes = True
 
 class MonsterList(BaseModel):
     items: List[MonsterOut]

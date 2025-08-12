@@ -6,6 +6,8 @@ from .config import settings
 from .db import Base, engine
 from .middleware import TraceIDMiddleware
 from .routes import skills_admin
+from .routes import utils
+
 # 路由
 from .routes import health, monsters, importing, tags, recalc, tasks, skills
 # roles 可能还没合并就先兜底
@@ -41,6 +43,7 @@ app.include_router(recalc.router)
 app.include_router(tasks.router)
 app.include_router(skills.router)
 app.include_router(skills_admin.router)
+app.include_router(utils.router)
 
 if HAS_ROLES:
     app.include_router(roles.router)

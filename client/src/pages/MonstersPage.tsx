@@ -5,6 +5,7 @@ import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
 import SideDrawer from '../components/SideDrawer'
+import AddMonsterDrawer from '../components/AddMonsterDrawer'
 
 type RoleCount = { name: string, count: number }
 
@@ -24,7 +25,6 @@ const isValidSkillName = (name?: string) => {
   if (!name) return false
   const s = name.trim()
   if (!s) return false
-  // 至少有中文或英文字母，过滤纯数字/连字符
   if (/^[\d\-\—\s]+$/.test(s)) return false
   return /[\u4e00-\u9fffA-Za-z]/.test(s)
 }
@@ -37,6 +37,7 @@ export default function MonstersPage() {
   const [order, setOrder] = useState<'asc'|'desc'>('desc')
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Monster | null>(null)
+  const [openCreate, setOpenCreate] = useState(false)
   const pageSize = 20
 
   const list = useQuery({
@@ -83,36 +84,28 @@ export default function MonstersPage() {
       (selected?.base_pp ?? 0),
   }
 
-  const fallbackSkillNames: string[] = (selected as any)?.explain_json?.skill_names || []
   const userSummary: string | undefined = (selected as any)?.explain_json?.summary
 
   return (
     <div className="container my-6 space-y-4">
-      <div className="card grid grid-cols-1 md:grid-cols-5 gap-3">
-        <input
-          className="input md:col-span-2"
-          placeholder="搜索名称..."
-          value={q}
-          onChange={e => { setQ(e.target.value); setPage(1) }}
-        />
-        <select
-          className="select"
-          value={tag}
-          onChange={e => { setTag(e.target.value); setPage(1) }}
-        >
-          <option value="">全部标签</option>
-          {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
-        </select>
-        <select
-          className="select"
-          value={role}
-          onChange={e => { setRole(e.target.value); setPage(1) }}
-        >
-          <option value="">全部定位</option>
-          {roles.data?.map(r => <option key={r.name} value={r.name}>{r.name}（{r.count}）</option>)}
-        </select>
-        <div className="flex gap-2">
-          <select className="select" value={sort} onChange={e => setSort(e.target.value as any)}>
+      {/* 顶部工具栏：横向 + 自适应换行 */}
+      <div className="card p-3">
+        <div className="flex flex-wrap items-center gap-2 md:gap-3">
+          <input
+            className="input flex-grow min-w-[160px]"
+            placeholder="搜索..."
+            value={q}
+            onChange={e => { setQ(e.target.value); setPage(1) }}
+          />
+          <select className="select w-28" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
+            <option value="">标签</option>
+            {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
+          </select>
+          <select className="select w-28" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
+            <option value="">定位</option>
+            {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
+          </select>
+          <select className="select w-32" value={sort} onChange={e => setSort(e.target.value as any)}>
             <option value="updated_at">更新时间</option>
             <option value="name">名称</option>
             <option value="offense">攻</option>
@@ -121,13 +114,16 @@ export default function MonstersPage() {
             <option value="tempo">速</option>
             <option value="pp">PP</option>
           </select>
-          <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
+          <select className="select w-24" value={order} onChange={e => setOrder(e.target.value as any)}>
             <option value="desc">降序</option>
             <option value="asc">升序</option>
           </select>
+          <button className="btn" onClick={() => list.refetch()}>刷新</button>
+          <button className="btn primary" onClick={() => setOpenCreate(true)}>+ 新增</button>
         </div>
       </div>
 
+      {/* 列表 */}
       <div className="card">
         <div className="overflow-auto">
           <table className="table">
@@ -185,6 +181,7 @@ export default function MonstersPage() {
         </div>
       </div>
 
+      {/* 详情抽屉 */}
       <SideDrawer open={!!selected} onClose={() => setSelected(null)} title={selected?.name_final}>
         {selected && (
           <div className="space-y-5">
@@ -204,7 +201,7 @@ export default function MonstersPage() {
             <div>
               <h4 className="font-semibold mb-2">技能（来自关键技能）</h4>
               {skills.isLoading && <div className="text-sm text-gray-500">加载中...</div>}
-              {!skills.data?.length && !(selected as any)?.explain_json?.skill_names?.length && !skills.isLoading && (
+              {!skills.data?.length && !skills.isLoading && (
                 <div className="text-sm text-gray-500">暂无技能数据</div>
               )}
               <ul className="space-y-2">
@@ -218,18 +215,15 @@ export default function MonstersPage() {
                       )}
                     </li>
                   ))}
-                {!skills.data?.length && (selected as any)?.explain_json?.skill_names?.map((n: string, i: number) => (
-                  <li key={i} className="p-2 bg-gray-50 rounded">
-                    <div className="font-medium">{n}</div>
-                  </li>
-                ))}
               </ul>
             </div>
 
-            {userSummary && (
+            {(selected as any)?.explain_json?.summary && (
               <div>
                 <h4 className="font-semibold mb-2">评价 / 总结（主观）</h4>
-                <div className="p-3 bg-gray-50 rounded text-sm whitespace-pre-wrap">{userSummary}</div>
+                <div className="p-3 bg-gray-50 rounded text-sm whitespace-pre-wrap">
+                  {(selected as any).explain_json.summary}
+                </div>
               </div>
             )}
 
@@ -242,6 +236,12 @@ export default function MonstersPage() {
           </div>
         )}
       </SideDrawer>
+
+      <AddMonsterDrawer
+        open={openCreate}
+        onClose={() => setOpenCreate(false)}
+        onCreated={() => { setOpenCreate(false); list.refetch() }}
+      />
     </div>
   )
 }
