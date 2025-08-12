@@ -1,23 +1,24 @@
-import React, { useMemo, useState } from 'react'
+import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
-import ImportWizard from '../components/ImportWizard'
 
-export default function MonstersPage(){
+export default function MonstersPage() {
   const [q, setQ] = useState('')
   const [tag, setTag] = useState('')
   const [sort, setSort] = useState<'updated_at'|'name'|'offense'|'survive'|'control'|'tempo'|'pp'>('updated_at')
   const [order, setOrder] = useState<'asc'|'desc'>('desc')
   const [page, setPage] = useState(1)
   const pageSize = 20
-  const [openImport, setOpenImport] = useState(false)
 
   const list = useQuery({
     queryKey: ['monsters', { q, tag, sort, order, page, pageSize }],
-    queryFn: async () => (await api.get('/monsters', { params: { q: q || undefined, tag: tag || undefined, sort, order, page, page_size: pageSize } })).data as MonsterListResp
+    queryFn: async () =>
+      (await api.get('/monsters', {
+        params: { q: q || undefined, tag: tag || undefined, sort, order, page, page_size: pageSize }
+      })).data as MonsterListResp
   })
 
   const tags = useQuery({
@@ -28,10 +29,21 @@ export default function MonstersPage(){
   return (
     <div className="container my-6 space-y-4">
       <div className="card grid grid-cols-1 md:grid-cols-4 gap-3">
-        <input className="input md:col-span-2" placeholder="搜索名称..." value={q} onChange={e => { setQ(e.target.value); setPage(1) }} />
-        <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
+        <input
+          className="input md:col-span-2"
+          placeholder="搜索名称..."
+          value={q}
+          onChange={e => { setQ(e.target.value); setPage(1) }}
+        />
+        <select
+          className="select"
+          value={tag}
+          onChange={e => { setTag(e.target.value); setPage(1) }}
+        >
           <option value="">全部标签</option>
-          {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
+          {tags.data?.map(t => (
+            <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>
+          ))}
         </select>
         <div className="flex gap-2">
           <select className="select" value={sort} onChange={e => setSort(e.target.value as any)}>
@@ -81,11 +93,17 @@ export default function MonstersPage(){
                     <td>{m.base_control}</td>
                     <td>{m.base_tempo}</td>
                     <td>{m.base_pp}</td>
-                    <td className="space-x-1">{m.tags?.map(t => <span key={t} className="badge">{t}</span>)}</td>
+                    <td className="space-x-1">
+                      {m.tags?.map(t => <span key={t} className="badge">{t}</span>)}
+                    </td>
                   </tr>
                 ))}
                 {list.data?.items?.length === 0 && (
-                  <tr><td colSpan={10} className="text-center text-gray-500 py-6">没有数据。请尝试清空筛选或点击右上角“导入 CSV”。</td></tr>
+                  <tr>
+                    <td colSpan={10} className="text-center text-gray-500 py-6">
+                      没有数据。请清空筛选或点击右上角“导入 CSV”。
+                    </td>
+                  </tr>
                 )}
               </tbody>
             )}
@@ -96,19 +114,6 @@ export default function MonstersPage(){
           <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
         </div>
       </div>
-
-      {openImport && (
-        <div className="modal">
-          <div className="modal-backdrop" onClick={()=>setOpenImport(false)} />
-          <div className="card w-[920px] max-h-[85vh] overflow-auto">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-xl font-semibold">导入 CSV</h2>
-              <button className="btn" onClick={()=>setOpenImport(false)}>关闭</button>
-            </div>
-            <ImportWizard />
-          </div>
-        </div>
-      )}
     </div>
   )
 }
