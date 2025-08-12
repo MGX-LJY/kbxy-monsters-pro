@@ -1,18 +1,18 @@
 # kbxy-monsters-pro · 前端开发文档（Standalone）
 
-> 目标：提供**前端开发与联调**的一站式说明；覆盖技术栈、目录结构、环境与命令、接口约定、表单与校验、错误边界、导入向导、状态与性能、打包与部署、自测清单。文档针对当前仓库 `client/` 的实现：Vite + React + TypeScript + React Query + React Hook Form + Zod + Tailwind（本地构建）。
+> 一站式说明：技术栈、目录结构、环境、接口约定、导入向导、侧边栏编辑、批量操作、导出/备份恢复、错误边界、性能与自测。文档针对当前实现（Vite + React + TS + React Query + RHF + Zod + Tailwind），并覆盖近期新增改动：**两行工具栏（标签/定位 + 排序/方向）**、**侧边栏就地编辑**、**批量勾选与删除**、**CSV 导出**、**备份/恢复**、**技能多条描述**、**智能识别（技能+六维）入口**等。
 
 ---
 
 ## 1. 技术栈与约束
 
-- **构建**：Vite 5 + TypeScript 5
-- **UI**：原子化样式 Tailwind（本地构建，**禁止使用 CDN 版**）
-- **数据**：Axios + React Query（请求缓存、重试、失效、并发去重）
-- **表单**：React Hook Form（RHF）+ Zod（schema 校验）
-- **状态**：以 React Query 为主，局部 `useState` 为辅；避免全局状态库
-- **接口域名**：默认 `http://localhost:8000`（见 `src/api.ts`）
-- **浏览器支持**：现代浏览器（ES2020）
+- **构建**：Vite 5 + TypeScript 5  
+- **UI**：Tailwind（本地构建，禁止 CDN 版）  
+- **数据**：Axios + React Query（缓存、重试、失效、并发去重）  
+- **表单**：React Hook Form + Zod（schema 校验）  
+- **路由**：`react-router-dom@6`  
+- **接口默认域名**：`http://localhost:8000`（可用 `VITE_API_BASE` 覆盖）  
+- **浏览器**：现代浏览器（ES2020）
 
 ---
 
@@ -27,18 +27,30 @@ client/
   postcss.config.cjs
   tailwind.config.ts
   src/
-    api.ts                 # Axios 实例（baseURL、超时、拦截器）
-    styles.css             # Tailwind 入口 + 基础样式
-    main.tsx               # 应用入口，挂载 QueryClientProvider
-    App.tsx                # 首页列表 + 导入按钮
+    api.ts                      # Axios 实例（baseURL、拦截器、下载辅助）
+    styles.css                  # Tailwind 入口 + 基础样式
+    main.tsx                    # App 入口，QueryClientProvider
+    App.tsx                     # 页面骨架（TopBar + 路由）
+    pages/
+      MonstersPage.tsx          # 首页列表、两行工具栏、侧边栏、批量操作
+      AddMonsterDrawer.tsx      # 新增/编辑抽屉（就地编辑）
+      ImportDialog.tsx          # 导入向导（上传→预览→提交）
     components/
-      ImportDialog.tsx     # 导入向导（上传 -> 预览 -> 提交）
-    types/                 # （建议）放 TS 类型与 OpenAPI 生成文件
-    hooks/                 # （建议）放自定义 hooks（useMonsters 等）
-    pages/                 # （建议）按路由拆分页面
+      TopBar.tsx                # 顶部条：健康状态、导入、GitHub、刷新
+      ToolbarChips.tsx          # 两行工具栏（行1：标签/定位；行2：排序/方向）
+      StatsBar.tsx              # 统计卡片（/stats）
+      BulkActionsBar.tsx        # 勾选计数、批量删除、导出、备份/恢复
+      SideDrawer.tsx            # 右侧抽屉
+      SkillEditor.tsx           # 技能列表编辑（多条 + 描述）
+      Checkbox.tsx              # 行勾选
+      Pagination.tsx            # 分页
+      SkeletonRows.tsx          # 表格骨架
+      ErrorBoundary.tsx         # 错误边界
+      Toast.tsx                 # 轻提示
+      ConfirmDialog.tsx         # 确认弹窗
+    hooks/                      # （可选）自定义 hooks（useMonsters/useStats 等）
+    types/                      # OpenAPI/手写类型
 ```
-
-> 若后续引入路由，推荐 `react-router-dom@6`，但当前示例未使用。
 
 ---
 
@@ -47,212 +59,183 @@ client/
 ```bash
 cd client
 npm i
-npm run dev       # 开发，默认 http://localhost:5173
-npm run build     # 打包产物输出到 dist/
+npm run dev       # http://localhost:5173
+npm run build     # 产物 dist/
 npm run preview   # 预览 dist/
 ```
 
-**常见问题**
-- 白屏：打开浏览器控制台检查网络请求是否跨域失败，或检查是否误用了 tailwind CDN；本项目已配置本地 Tailwind。  
-- CORS：确保后端允许 `http://localhost:5173`（见 `server/app/config.py` 的 `cors_origins`）。
+**可配置 API 地址**
+```bash
+VITE_API_BASE=http://localhost:8000 npm run dev
+```
+`src/api.ts` 会优先读取 `import.meta.env.VITE_API_BASE`。
 
 ---
 
 ## 4. API 访问与类型
 
-### 4.1 Axios 基础实例（`src/api.ts`）
-```ts
-import axios from 'axios'
+### 4.1 Axios 实例（`src/api.ts`）
 
-const api = axios.create({
-  baseURL: 'http://localhost:8000',
-  timeout: 10000,
-})
+- 基础：
+  - `baseURL = VITE_API_BASE || 'http://localhost:8000'`
+  - 超时 10s
+  - 响应拦截器：读取 `x-trace-id`，错误透传
+- 下载辅助：
+  - `api.download(url, params)`：封装 `blob` 下载（CSV/JSON）
 
-// （可选）响应拦截器：读取 x-trace-id，错误透传
-api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    const traceId = err?.response?.headers?.['x-trace-id']
-    if (traceId) console.warn('trace_id:', traceId)
-    return Promise.reject(err)
-  }
-)
+### 4.2 OpenAPI 类型（推荐）
 
-export default api
-```
-
-### 4.2 与后端强类型对齐（推荐）
-- 访问 `http://localhost:8000/openapi.json`，使用 `openapi-typescript` 生成 TS 类型：
 ```bash
 npx openapi-typescript http://localhost:8000/openapi.json -o src/types/api.d.ts
 ```
-- 在代码中引用 `paths["/monsters"]["get"]["responses"]["200"]["content"]["application/json"]` 等类型，避免 `any`。
+
+在页面与组件中引用生成类型，尽量避免 `any`。
 
 ---
 
-## 5. 数据获取与缓存（React Query）
+## 5. 关键接口对齐（与后端）
 
-**模式**
-- 一个 API = 一个 `useQuery` / `useMutation`；
-- `queryKey` 精确描述参数；
-- 列表与详情分离；列表更新后可选择性 `invalidateQueries`。
+- `GET /health`：健康状态（TopBar 显示 “API OK · n”）
+- `GET /monsters`：列表（q/element/role/tag/sort/order/page/page_size）
+- `GET /monsters/{id}`
+- `POST /monsters`、`PUT /monsters/{id}`、`DELETE /monsters/{id}`
+- `GET /monsters/{id}/skills` · `PUT /monsters/{id}/skills`（覆盖技能集合：`[{name, description}]`）
+- `GET /tags?with_counts=true`：标签聚合
+- `GET /roles`：定位聚合
+- `GET /stats`：统计（total / with_skills / tags_total）
+- `GET /export/monsters.csv`：导出（尊重筛选）
+- `GET /backup/export_json`：备份 JSON
+- `POST /backup/restore_json`：恢复 JSON（上送导出的结构即可）
+- `DELETE /monsters/bulk_delete`（或 `POST` 同路径，兼容不支持 DELETE body 的代理）
 
-**示例（列表）**
-```ts
-import { useQuery } from '@tanstack/react-query'
-import api from '@/api'
-
-export function useMonsters(params: { q?: string }) {
-  return useQuery({
-    queryKey: ['monsters', params],
-    queryFn: async () => (await api.get('/monsters', { params })).data,
-    staleTime: 5 * 1000,
-    retry: 2,
-  })
-}
-```
-
-**示例（提交导入）**
-```ts
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-
-export function useCommitImport() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async (file: File) => {
-      const fd = new FormData()
-      fd.append('file', file)
-      return (await api.post('/import/commit', fd, {
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
-      })).data
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['monsters'] }),
-  })
-}
-```
+> 若 `/stats` 或导出/备份 404，请确认后端 `app.include_router(backup.router)` 已挂载。
 
 ---
 
-## 6. 表单与校验（RHF + Zod）
+## 6. 页面与交互
 
-**基本写法**
-```ts
-import { useForm } from 'react-hook-form'
-import { z } from 'zod'
-import { zodResolver } from '@hookform/resolvers/zod'
+### 6.1 两行工具栏（极简中性）
 
-const schema = z.object({
-  name_final: z.string().min(1, '必填'),
-  element: z.string().optional(),
-  base_offense: z.coerce.number().min(0).max(300),
-})
+- **第 1 行**：标签（多选 Chip） · 定位（下拉）  
+- **第 2 行**：排序（select：更新时间/名称/攻/生/控/速/PP） · 方向（升/降）  
+- **搜索**：仍保留输入框，但压缩宽度（不抢占布局），支持 `Enter` 提交与 300ms debounce。
 
-type FormValues = z.infer<typeof schema>
+### 6.2 列表 + 勾选 + 批量操作
 
-// 组件内：
-const { register, handleSubmit, formState: { errors } } = useForm<FormValues>({ resolver: zodResolver(schema) })
-```
+- 行首 `Checkbox` 进入勾选模式；顶部显示 `已选 N 项` + 按钮：
+  - **批量删除**：调用 `/monsters/bulk_delete`（默认 `DELETE`，失败则自动回退 `POST` 同路径）
+  - **导出 CSV**：调用 `/export/monsters.csv`（带当前筛选参数）
+  - **备份 JSON**：调用 `/backup/export_json`
+  - **恢复 JSON**：弹窗选择文件 → `/backup/restore_json`
+- 删除采用确认对话框；成功后 `invalidateQueries(['monsters','stats'])`
 
-**提示**
-- 用 `z.coerce.number()` 处理输入框的字符串转数值；
-- 后端也会再做 Pydantic 校验，形成“前后端双重校验”。
+### 6.3 侧边栏（就地编辑）
 
----
+- 点击“名称”打开 `SideDrawer`
+  - 上部：**智能识别卡片**（若启用）：展示识别出的技能/六维（只显示，不写库）
+  - 大块：**基础种族值（六维）** 独立分栏，显示 `raw_stats`；总和置底
+  - **技能**：多条 + 描述；支持就地编辑、增删行，保存时 `PUT /monsters/{id}/skills`
+  - **标签**：Chip 展示（不编辑）
+  - 顶部操作按钮：编辑（切换到 `AddMonsterDrawer` 或内嵌表单）、删除（单条）
 
-## 7. 错误处理与 UI 三态
+### 6.4 新增/编辑抽屉（`AddMonsterDrawer.tsx`）
 
-**全局 Error Boundary**
-- 顶层放置 `ErrorBoundary`，捕获渲染期异常并展示兜底 UI；
-- 请求期错误通过 React Query 的 `onError` 统一 toast + 诊断面板；
-
-**三态骨架（Loading/Empty/Error）**
-- 列表页与详情页均需实现：
-  - Loading：骨架组件/Skeleton；
-  - Empty：空状态提示与“清空筛选/去导入”行动按钮；
-  - Error：展示 `message` + 可展开 `trace_id`。
-
-**从响应头透传 trace_id**
-- `err.response.headers['x-trace-id']` → 诊断面板可复制；
-- 与后端日志对齐问题定位。
+- 表单字段：
+  - 基础：`name_final`（必填）、`element`、`role`、`tags`
+  - 六维：`hp / speed / attack / defense / magic / resist`（Zod 数值校验）
+  - 技能（可选）：动态列表 `[{name, description}]`
+- 发送：
+  - 新增：`POST /monsters` +（若带技能）再 `PUT /monsters/{id}/skills`
+  - 编辑：`PUT /monsters/{id}` + 选择是否覆盖技能（开关）
+- 保存成功：toast · 关闭抽屉 · 列表与统计失效
 
 ---
 
-## 8. 导入向导（上传 → 预览 → 提交）
+## 7. 导入向导
 
-**交互要点**
-1. 选择文件后先调用 `/import/preview`，展示：列名、总行数、样例 10 行、提示（缺列等）；
-2. 提交调用 `/import/commit`，附带 `Idempotency-Key`，显示插入/更新/跳过/错误列表；
-3. 成功后刷新列表，并保留最后一次导入结果状态；
-4. 支持 `, | ; 空白` 多分隔符的标签拆分提示（与后端一致）。
+- **上传 → 预览 → 提交**
+  - 预览：显示列、总行数、样例 10 行、提示（缺列等）
+  - 提交：带 `Idempotency-Key`（`crypto.randomUUID()`），回显 “插入/更新/跳过/错误”
+  - 成功后刷新列表与统计；保留最近一次结果（快照）
 
-**样式建议**
-- 对于错误行，表格内标红具体列；
-- 大文件上传过程中提供进度与可取消（可后续扩展为分片/断点）。
+**文件要点**（与后端一致）
 
----
-
-## 9. 性能与可访问性
-
-- React Query 合理设置 `staleTime`、`gcTime`，避免列表频繁抖动；
-- 列表使用虚拟滚动（当 > 1000 行再考虑）；
-- 控件加 `aria-*` 属性与 `label`，保证键盘可用；
-- 图片/图标懒加载，保持首屏渲染流畅。
+- UTF-8，分隔符自动识别（`,`/`\t`/`;`/`|`）
+- 标签支持 `| , ; 空白`
+- 技能名称列：`技能|关键技能|skill[1..]`；描述列：`*_desc` 或邻近 3 列中符合描述语义的文本  
+- 主观“评价/总结”列仅展示在侧边栏“评价 / 总结”，**不**当作技能描述
 
 ---
 
-## 10. 构建与部署
+## 8. 表单与校验
+
+- 使用 Zod：
+  - `name_final`: `z.string().min(1)`
+  - 六维：`z.coerce.number().min(0).max(300)`
+  - 技能：`z.array(z.object({ name: z.string().min(1), description: z.string().optional() }))`
+- RHF：
+  - 错误提示与禁用提交
+  - 保存中按钮 loading 态
+  - 取消确认提示（表单脏）
+
+---
+
+## 9. 错误边界与诊断
+
+- **ErrorBoundary**：捕获渲染期异常
+- **请求期**：React Query `onError` → toast，同时在控制台输出 `trace_id`
+- 空/错/加载三态：Skeleton / 空状态（含“清空筛选/去导入”） / 错误卡片（可复制 `trace_id`）
+
+---
+
+## 10. 性能要点
+
+- `staleTime` 合理设置（例如列表 5s），减少抖动
+- 批量操作完成后，精准失效：`['monsters']`、`['stats']`
+- 长列表（>1000）再考虑虚拟滚动
+- 组件拆分与 `React.memo`，避免抽屉更新导致整表重渲
+
+---
+
+## 11. 打包与部署
 
 ```bash
-npm run build    # 产物: client/dist
+npm run build    # 产物 dist/
 ```
 
-**静态托管**
-- Nginx/Caddy/Apache 任一静态服务即可；
-- 若前后端同域，建议：
-  - 前端：`https://example.com/`
-  - 后端：反向代理同域 `/api`（或直接后端改 `root_path`），*或* 在前端把 `baseURL` 指向后端域名；
-
-**环境区分**
-- 建议在构建时注入 `VITE_API_BASE`：
-```bash
-VITE_API_BASE=https://api.example.com npm run build
-```
-- `src/api.ts`：
-```ts
-const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE || 'http://localhost:8000' })
-```
+- 静态托管（Nginx/Caddy 等）
+- 后端可同域挂 `/api`，或前端以 `VITE_API_BASE` 指向后端域名
+- 建议设置缓存策略与 gzip/br
 
 ---
 
-## 11. 代码风格与质量（建议）
+## 12. 自测清单
 
-- **格式化**：Prettier（可加脚本 `npm run fmt`）
-- **Lint**：ESLint（typescript-eslint），规则：no-explicit-any、no-floating-promises 等
-- **提交钩子**：husky + lint-staged（阻断不合规提交）
-- **测试**（可选）：Vitest + @testing-library/react，覆盖 hooks 与组件交互
-
----
-
-## 12. 自测清单（前端）
-
-- [ ] 首页加载：看到 “API OK · …”，无控制台错误；
-- [ ] 搜索：输入关键字能实时过滤；
-- [ ] 导入：能预览→提交，返回 “插入/更新/跳过/错误”；
-- [ ] 错误态：断网或 500 能显示错误卡片，能复制 `trace_id`；
-- [ ] 详情：点击行（若实现）能进入详情；
-- [ ] 打包：`npm run build` 成功，`npm run preview` 可访问。
+- [ ] 顶部状态显示 “API OK · n”，无控制台报错  
+- [ ] 工具栏：标签/定位/排序/方向 能正确筛选  
+- [ ] 搜索：回车触发，带 debounce  
+- [ ] 侧边栏：六维、技能（多条+描述）、评价可见；**就地编辑技能**可保存  
+- [ ] 新增/编辑抽屉：字段校验、保存成功刷新  
+- [ ] 勾选 + 批量删除：确认后删除成功，统计更新  
+- [ ] 导出 CSV：文件内容正确、包含当前筛选  
+- [ ] 备份 JSON/恢复：结构匹配、恢复后数据一致  
+- [ ] 导入向导：预览→提交→回显结果，列表更新  
+- [ ] 错误态：复制 `trace_id` 可用于后端日志定位
 
 ---
 
-## 13. 路线图（可选）
+## 13. 常见问题（FAQ）
 
-- 引入 `react-router-dom`，拆分「列表/详情/导入历史」路由；
-- UI 组件库（shadcn/ui 或 HeadlessUI）与图表（Recharts）；
-- 导入历史页：展示每次 Idempotency-Key 的结果；
-- FTS5 搜索的前端联动（高亮匹配、前缀提示）；
-- i18n（中文/英文）。
+- **/stats 或导出/备份 404？**  
+  后端需 `app.include_router(backup.router)`。已包含则检查路径：导出 CSV 为 **`/export/monsters.csv`**。
+- **批量删除 422？**  
+  前端需 `Content-Type: application/json` 且 body 为 `{"ids":[...]}`。部分代理不支持 DELETE body，可自动退回 `POST /monsters/bulk_delete`。
+- **备份导出 500（SQLAlchemy unique）？**  
+  后端使用 `selectinload`（已修），或在 `joinedload` 时 `.unique().scalars().all()`。
+- **技能描述丢失/错误？**  
+  确认 CSV 使用 `*_desc` 或描述列在技能名右侧 3 列内；主观总结列不会当作技能描述入库。
 
 ---
 
-> 文档版本：2025-08-12 · 适配 `kbxy-monsters-pro` 现有前端实现
+**文档版本**：2025-08-12 · 匹配当前前端实现（两行工具栏 / 侧边栏就地编辑 / 批量操作 / 导出备份）  
+需要我顺手把这份文档落到仓库里并建立侧边目录（`docs/README.md` 索引）吗？
