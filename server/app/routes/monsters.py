@@ -29,7 +29,7 @@ def get_db():
     finally:
         db.close()
 
-# ---------- 新增：请求体模型 ----------
+# ---------- 请求体验证 ----------
 class RawStatsIn(BaseModel):
     hp: float = Field(..., description="体力")
     speed: float = Field(..., description="速度")
@@ -40,6 +40,11 @@ class RawStatsIn(BaseModel):
 
 class AutoMatchIdsIn(BaseModel):
     ids: List[int]
+
+class SkillOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
 
 # ---------- 列表 ----------
 @router.get("/monsters", response_model=MonsterList)
@@ -62,7 +67,7 @@ def list_api(
         sort=sort, order=order, page=page, page_size=page_size
     )
 
-    # 预加载集合关系
+    # 预加载集合，避免 N+1
     ids = [m.id for m in items]
     if ids:
         _ = db.execute(
@@ -79,12 +84,12 @@ def list_api(
     changed = False
 
     for m in items:
-        # 先确保 role / tags
+        # 若缺 role / tags，自动补齐
         if (not m.role) or (not m.tags):
             apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
             changed = True
 
-        # 计算“最新”的派生；若与库里不一致则落库（避免已打标签但 PP 仍为 0）
+        # 保证派生是最新
         fresh = compute_derived_out(m)
         need_update = (
             (not m.derived) or
@@ -138,7 +143,7 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 过期检测
+    # 缺失信息自动补
     if (not m.role) or (not m.tags):
         apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
 
@@ -167,14 +172,29 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         },
     )
 
-# ---------- 新增：保存原始六维（同步列 + raw_stats + 立刻重算派生） ----------
+# ---------- 只读：当前怪物的技能列表（前端抽屉使用） ----------
+@router.get("/monsters/{monster_id}/skills", response_model=List[SkillOut])
+def monster_skills(monster_id: int, db: Session = Depends(get_db)):
+    m = db.execute(
+        select(Monster)
+        .where(Monster.id == monster_id)
+        .options(selectinload(Monster.skills))
+    ).scalar_one_or_none()
+    if not m:
+        raise HTTPException(status_code=404, detail="not found")
+    return [
+        SkillOut(id=s.id, name=s.name, description=s.description or None)
+        for s in (m.skills or [])
+    ]
+
+# ---------- 保存原始六维（列 + explain_json.raw_stats + 立刻重算派生） ----------
 @router.put("/monsters/{monster_id}/raw_stats")
 def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(get_db)):
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 1) 同步到列（便于过滤/排序）
+    # 1) 写列
     m.hp = float(payload.hp)
     m.speed = float(payload.speed)
     m.attack = float(payload.attack)
@@ -182,7 +202,7 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     m.magic = float(payload.magic)
     m.resist = float(payload.resist)
 
-    # 2) 同步 explain_json.raw_stats（保留小数 + sum）
+    # 2) 写 explain_json.raw_stats
     ex = m.explain_json or {}
     ex["raw_stats"] = {
         "hp": float(payload.hp),
@@ -195,13 +215,13 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     }
     m.explain_json = ex
 
-    # 3) 立刻重算派生
+    # 3) 重算派生
     compute_and_persist(db, m)
 
     db.commit()
     return {"ok": True, "monster_id": m.id}
 
-# ---------- 新增：返回派生 + 建议（供前端“填充”） ----------
+# ---------- 派生 + 建议（供前端“填充”） ----------
 @router.get("/monsters/{monster_id}/derived")
 def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(
@@ -223,7 +243,7 @@ def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
         "derived": derived_now,
     }
 
-# ---------- 新增：批量自动匹配（打 role/tags 并重算派生） ----------
+# ---------- 批量自动匹配（打 role/tags 并重算派生；不改技能） ----------
 @router.post("/monsters/auto_match")
 def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
     if not body.ids:
@@ -267,23 +287,30 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
     db.commit(); db.refresh(m)
     return detail(m.id, db)
 
-# ---------- 更新 ----------
+# ---------- 更新（只有显式提供 skills 字段才会改技能；否则不动） ----------
 @router.put("/monsters/{monster_id}", response_model=MonsterOut)
 def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
+    # 写基础字段
     for k in ["name_final", "element", "role", "hp", "speed", "attack", "defense", "magic", "resist"]:
         setattr(m, k, getattr(payload, k))
+
+    # 写标签
     m.tags = upsert_tags(db, payload.tags or [])
 
-    if payload.skills is not None:
+    # —— 关键修复：只有当请求体“显式包含 skills 字段”时才更新技能 —— #
+    skills_field_provided = hasattr(payload, "model_fields_set") and ("skills" in payload.model_fields_set)
+    if skills_field_provided:
+        # 允许传空数组表示“清空技能”；未传视为“保持不变”
         m.skills.clear()
-        skills = upsert_skills(db, [(s.name, s.description or "") for s in payload.skills])
-        m.skills = list(skills)
+        if payload.skills:
+            skills = upsert_skills(db, [(s.name, s.description or "") for s in payload.skills])
+            m.skills = list(skills)
         ex = m.explain_json or {}
-        ex["skill_names"] = [s.name for s in m.skills]
+        ex["skill_names"] = [s.name for s in (m.skills or [])]
         m.explain_json = ex
 
     # 更新后：按最新标签/技能重算派生
