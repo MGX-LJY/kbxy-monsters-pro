@@ -23,13 +23,67 @@ const isMeaningfulDesc = (t?: string) => {
 }
 const isValidSkillName = (name?: string) => !!(name && name.trim() && /[\u4e00-\u9fffA-Za-z]/.test(name))
 
+// —— 新标签体系前端适配：严格只认 buf_* / deb_* / util_* —— //
+type TagBuckets = { buf: string[]; deb: string[]; util: string[] }
+const bucketizeTags = (tags: string[] | undefined): TagBuckets => {
+  const b: TagBuckets = { buf: [], deb: [], util: [] }
+  for (const t of tags || []) {
+    if (t.startsWith('buf_')) b.buf.push(t)
+    else if (t.startsWith('deb_')) b.deb.push(t)
+    else if (t.startsWith('util_')) b.util.push(t)
+    // 其它（老标签/非标准）直接忽略
+  }
+  return b
+}
+
+// —— 统一 code -> 中文（补齐所有后端 code，避免英文直出） —— //
+const TAG_LABELS: Record<string, string> = {
+  // 增强类（buff）
+  'buf_atk_up': '攻↑',
+  'buf_mag_up': '法↑',
+  'buf_spd_up': '速↑',
+  'buf_def_up': '防↑',
+  'buf_res_up': '抗↑',
+  'buf_acc_up': '命中↑',
+  'buf_crit_up': '暴击↑',
+  'buf_heal': '治疗',
+  'buf_shield': '护盾/减伤',
+  'buf_purify': '净化己减益',
+  'buf_immunity': '免疫异常',
+
+  // 削弱类（debuff）
+  'deb_atk_down': '攻↓',
+  'deb_mag_down': '法术↓',
+  'deb_def_down': '防↓',
+  'deb_res_down': '抗↓',
+  'deb_spd_down': '速↓',
+  'deb_acc_down': '命中↓',
+  'deb_stun': '眩晕/昏迷',
+  'deb_bind': '束缚/禁锢',
+  'deb_sleep': '睡眠',
+  'deb_freeze': '冰冻',
+  'deb_confuse_seal': '混乱/封印',
+  'deb_suffocate': '窒息',
+  'deb_dot': '持续伤害',
+  'deb_dispel': '驱散敌增益',
+
+  // 特殊类（utility）
+  'util_first': '先手',
+  'util_multi': '多段',
+  'util_pp_drain': 'PP压制',
+  'util_reflect': '反击/反伤',
+  'util_charge_next': '加倍/下一击强',
+  'util_penetrate': '穿透/破盾',
+}
+const tagLabel = (code: string) => TAG_LABELS[code] || code
+
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
   const [element, setElement] = useState('')           // 元素筛选
-  const [tag, setTag] = useState('')
+  const [tag, setTag] = useState('')                   // 单一 tag 后端筛选（保留）
   const [role, setRole] = useState('')
-  const [sort, setSort] = useState<SortKey>('updated_at')  // 支持派生字段排序
+  const [sort, setSort] = useState<SortKey>('updated_at')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
 
   // 分页
@@ -46,12 +100,15 @@ export default function MonstersPage() {
   const [editElement, setEditElement] = useState('')
   const [editRole, setEditRole] = useState('')
   const [editTags, setEditTags] = useState('')
+
+  // —— 六维：直接读/写数据库列 —— //
   const [hp, setHp] = useState<number>(100)
   const [speed, setSpeed] = useState<number>(100)
   const [attack, setAttack] = useState<number>(100)
   const [defense, setDefense] = useState<number>(100)
   const [magic, setMagic] = useState<number>(100)
   const [resist, setResist] = useState<number>(100)
+
   const [editSkills, setEditSkills] = useState<SkillDTO[]>([{ name: '', description: '' }])
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
@@ -64,7 +121,7 @@ export default function MonstersPage() {
         params: {
           q: q || undefined,
           element: element || undefined,
-          tag: tag || undefined,
+          tag: tag || undefined,         // 后端仍是单一 tag 入参
           role: role || undefined,
           sort,
           order,
@@ -74,13 +131,16 @@ export default function MonstersPage() {
       })).data as MonsterListResp
   })
 
-  // 兼容 /tags 返回结构差异
   const tags = useQuery({
     queryKey: ['tags'],
     queryFn: async () => {
       try {
         const d = (await api.get('/tags', { params: { with_counts: true } })).data
-        return Array.isArray(d) ? d as TagCount[] : (d?.items || []) as TagCount[]
+        const arr: TagCount[] = Array.isArray(d) ? d : (d?.items || [])
+        // 仅保留新前缀标签
+        return (arr || []).filter(t =>
+          t?.name?.startsWith('buf_') || t?.name?.startsWith('deb_') || t?.name?.startsWith('util_')
+        )
       } catch {
         return [] as TagCount[]
       }
@@ -109,33 +169,33 @@ export default function MonstersPage() {
     queryFn: async () => (await api.get(`/monsters/${selected!.id}/skills`)).data as SkillDTO[]
   })
 
-  // 当 /tags 不可用时，用当前页 items 的 tags 做临时计数
+  // 当 /tags 不可用时，用当前页 items 的 tags 做临时计数（同样只保留新前缀）
   const localTagCounts: TagCount[] = useMemo(() => {
     if (tags.data && tags.data.length > 0) return tags.data
     const map = new Map<string, number>()
     for (const m of (list.data?.items || [])) {
-      for (const t of (m.tags || [])) map.set(t, (map.get(t) || 0) + 1)
+      for (const t of (m.tags || [])) {
+        if (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_')) {
+          map.set(t, (map.get(t) || 0) + 1)
+        }
+      }
     }
     return Array.from(map.entries()).map(([name, count]) => ({ name, count }))
   }, [tags.data, list.data])
 
-  // —— 展示用原始六维（直接读数据库字段，不再用 raw_stats 兜底）
+  // —— 展示用六维（直接来自 selected 的列） —— //
   const showStats = selected ? {
-    hp: Math.round(selected.hp || 0),
-    speed: Math.round(selected.speed || 0),
-    attack: Math.round(selected.attack || 0),
-    defense: Math.round(selected.defense || 0),
-    magic: Math.round(selected.magic || 0),
-    resist: Math.round(selected.resist || 0),
-    sum: Math.round((selected.hp || 0) + (selected.speed || 0) + (selected.attack || 0) + (selected.defense || 0) + (selected.magic || 0) + (selected.resist || 0)),
-  } : {
-    hp: 0, speed: 0, attack: 0, defense: 0, magic: 0, resist: 0, sum: 0
-  }
+    hp: selected.hp || 0,
+    speed: selected.speed || 0,
+    attack: selected.attack || 0,
+    defense: selected.defense || 0,
+    magic: selected.magic || 0,
+    resist: selected.resist || 0,
+    sum: (selected.hp||0)+(selected.speed||0)+(selected.attack||0)+(selected.defense||0)+(selected.magic||0)+(selected.resist||0),
+  } : { hp: 0, speed: 0, attack: 0, defense: 0, magic: 0, resist: 0, sum: 0 }
 
-  const sum = useMemo(() =>
-    hp + speed + attack + defense + magic + resist,
-    [hp, speed, attack, defense, magic, resist]
-  )
+  const sum = useMemo(() => hp + speed + attack + defense + magic + resist,
+    [hp, speed, attack, defense, magic, resist])
 
   // —— 批量选择
   const toggleOne = (id: number) => {
@@ -221,13 +281,15 @@ export default function MonstersPage() {
     setIsEditing(false)
   }
 
-  // —— 进入编辑：表单初值直接用数据库字段（不再从 raw_stats 取）
+  // —— 进入编辑：预填“原始六维”（直接从列）
   const enterEdit = () => {
     if (!selected) return
     setEditName(selected.name_final || '')
     setEditElement(selected.element || '')
     setEditRole(selected.role || '')
-    setEditTags((selected.tags || []).join(' '))
+    // 只把新前缀标签写入编辑框
+    const onlyNew = (selected.tags || []).filter(t => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
+    setEditTags(onlyNew.join(' '))
 
     setHp(Math.round(selected.hp ?? 100))
     setSpeed(Math.round(selected.speed ?? 100))
@@ -259,7 +321,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 保存（名称/元素/定位/标签 + 六维 一次性提交；不再调用 /raw_stats）
+  // —— 保存（一次性 PUT /monsters/{id}）
   const saveEdit = async () => {
     if (!selected) return
     if (!editName.trim()) { alert('请填写名称'); return }
@@ -269,10 +331,9 @@ export default function MonstersPage() {
         name_final: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        // 直接保存数据库中的六维
         hp, speed, attack, defense, magic, resist,
-        // 标签
-        tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
+        // 仅保存新前缀标签到 Monster.tags
+        tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(t => t && (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))),
       })
 
       // 技能
@@ -292,7 +353,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 一键自动匹配（优先调用后端批量接口，兜底逐条）
+  // —— 主页一键自动匹配：优先 /monsters/auto_match，失败逐条兜底
   const autoMatchBatch = async () => {
     const items = list.data?.items || []
     if (!items.length) return alert('当前没有可处理的记录')
@@ -311,7 +372,6 @@ export default function MonstersPage() {
           try { await api.get(`/monsters/${id}/derived`) } catch {}
         }
       }
-
       await list.refetch()
       if (selected) {
         const fresh = (await api.get(`/monsters/${selected.id}`)).data as Monster
@@ -325,17 +385,21 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 抽屉内“一键匹配（填充）”
+  // —— 抽屉内“一键匹配（填充）”：拉取建议写入编辑框
   const fillEditByAutoMatch = async () => {
     if (!selected) return
     const d = (await api.get(`/monsters/${selected.id}/derived`)).data as {
       role_suggested?: string, tags?: string[]
     }
     if (typeof d?.role_suggested === 'string') setEditRole(d.role_suggested)
-    if (Array.isArray(d?.tags)) setEditTags(d.tags.join(' '))
+    if (Array.isArray(d?.tags)) {
+      const filtered = d.tags.filter(t => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
+      setEditTags(filtered.join(' '))
+    }
     if (!isEditing) setIsEditing(true)
   }
 
+  // 元素选项
   const elementOptions = ['金','木','水','火','土','风','雷','冰','毒','妖','光','暗','音']
 
   return (
@@ -352,15 +416,17 @@ export default function MonstersPage() {
           />
         </div>
 
-        {/* 第二行：元素下拉；排序支持派生字段 */}
+        {/* 第二行：元素 + 标签(汉化显示) + 定位 + 排序 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
             <option value="">元素</option>
             {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
           <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
-            <option value="">标签</option>
-            {(localTagCounts || []).map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
+            <option value="">标签（全部）</option>
+            {(localTagCounts || []).map(t =>
+              <option key={t.name} value={t.name}>{tagLabel(t.name)}（{t.count}）</option>
+            )}
           </select>
           <select className="select" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
             <option value="">定位</option>
@@ -373,7 +439,7 @@ export default function MonstersPage() {
               <option value="survive">生（派生）</option>
               <option value="control">控（派生）</option>
               <option value="tempo">速（派生）</option>
-              <option value="pp_pressure">PP（派生）</option>
+              <option value="pp_pressure">压（派生）</option>
             </select>
             <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
               <option value="desc">降序</option>
@@ -423,7 +489,7 @@ export default function MonstersPage() {
         </div>
       )}
 
-      {/* 列表（展示派生五维） */}
+      {/* 列表（展示派生五维 + 三列标签） */}
       <div className="card">
         <div className="overflow-auto">
           <table className="table">
@@ -445,41 +511,58 @@ export default function MonstersPage() {
                 <th className="text-center">生</th>
                 <th className="text-center">控</th>
                 <th className="text-center">速</th>
-                <th className="text-center">PP</th>
-                <th className="text-center">标签</th>
+                <th className="text-center">压</th>
+                <th className="text-center">增强</th>
+                <th className="text-center">削弱</th>
+                <th className="text-center">特殊</th>
               </tr>
             </thead>
-            {list.isLoading && <SkeletonRows rows={8} cols={11} />}
+            {list.isLoading && <SkeletonRows rows={8} cols={13} />}
             {!list.isLoading && (
               <tbody>
-                {list.data?.items?.map((m: Monster) => (
-                  <tr key={m.id}>
-                    <td className="text-center">
-                      <input type="checkbox" checked={selectedIds.has(m.id)} onChange={() => toggleOne(m.id)} />
-                    </td>
-                    <td className="text-center">{m.id}</td>
-                    <td className="text-left">
-                      <button className="text-blue-600 hover:underline" onClick={() => openDetail(m)}>
-                        {m.name_final}
-                      </button>
-                    </td>
-                    <td className="text-center">{m.element}</td>
-                    <td className="text-center">{m.role || (m as any).derived?.role_suggested || ''}</td>
-                    <td className="text-center">{m.derived?.offense ?? 0}</td>
-                    <td className="text-center">{m.derived?.survive ?? 0}</td>
-                    <td className="text-center">{m.derived?.control ?? 0}</td>
-                    <td className="text-center">{m.derived?.tempo ?? 0}</td>
-                    <td className="text-center">{(m.derived as any)?.pp_pressure ?? 0}</td>
-                    <td className="text-center">
-                      <div className="inline-flex flex-wrap gap-1 justify-center">
-                        {(m.tags || []).map(t => <span key={t} className="badge">{t}</span>)}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {list.data?.items?.map((m: Monster) => {
+                  const buckets = bucketizeTags(m.tags)
+                  const chips = (arr: string[], prefixEmoji: string) =>
+                    arr.slice(0, 4).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
+                  return (
+                    <tr key={m.id}>
+                      <td className="text-center">
+                        <input type="checkbox" checked={selectedIds.has(m.id)} onChange={() => toggleOne(m.id)} />
+                      </td>
+                      <td className="text-center">{m.id}</td>
+                      <td className="text-left">
+                        <button className="text-blue-600 hover:underline" onClick={() => openDetail(m)}>
+                          {m.name_final}
+                        </button>
+                      </td>
+                      <td className="text-center">{m.element}</td>
+                      <td className="text-center">{m.role || (m as any).derived?.role_suggested || ''}</td>
+                      <td className="text-center">{m.derived?.offense ?? 0}</td>
+                      <td className="text-center">{m.derived?.survive ?? 0}</td>
+                      <td className="text-center">{m.derived?.control ?? 0}</td>
+                      <td className="text-center">{m.derived?.tempo ?? 0}</td>
+                      <td className="text-center">{(m.derived as any)?.pp_pressure ?? 0}</td>
+                      <td className="text-center">
+                        <div className="inline-flex flex-wrap gap-1 justify-center">
+                          {chips(buckets.buf, '🟢')}
+                        </div>
+                      </td>
+                      <td className="text-center">
+                        <div className="inline-flex flex-wrap gap-1 justify-center">
+                          {chips(buckets.deb, '🔴')}
+                        </div>
+                      </td>
+                      <td className="text-center">
+                        <div className="inline-flex flex-wrap gap-1 justify-center">
+                          {chips(buckets.util, '🟣')}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
                 {list.data?.items?.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON/CSV。</td>
+                    <td colSpan={13} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON/CSV。</td>
                   </tr>
                 )}
               </tbody>
@@ -492,7 +575,7 @@ export default function MonstersPage() {
         </div>
       </div>
 
-      {/* 详情抽屉 */}
+      {/* 详情抽屉：六维直接显示列；编辑时直接保存到列 */}
       <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false) }} title={selected?.name_final}>
         {selected && (
           <div className="space-y-5">
@@ -545,20 +628,34 @@ export default function MonstersPage() {
                   </ul>
                 </div>
 
-                {(selected as any)?.explain_json?.summary && (
-                  <div>
-                    <h4 className="font-semibold mb-2">评价 / 总结（主观）</h4>
-                    <div className="p-3 bg-gray-50 rounded text-sm whitespace-pre-wrap">
-                      {(selected as any).explain_json.summary}
-                    </div>
-                  </div>
-                )}
-
+                {/* 标签分三类展示（不再显示“其它”） */}
                 <div>
                   <h4 className="font-semibold mb-2">标签</h4>
-                  <div className="flex flex-wrap gap-1 justify-center">
-                    {selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}
-                  </div>
+                  {(() => {
+                    const b = bucketizeTags(selected.tags)
+                    return (
+                      <div className="space-y-2">
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">增强类</div>
+                          <div className="flex flex-wrap gap-1">
+                            {b.buf.length ? b.buf.map(t => <span key={t} className="badge">🟢{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">削弱类</div>
+                          <div className="flex flex-wrap gap-1">
+                            {b.deb.length ? b.deb.map(t => <span key={t} className="badge">🔴{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">特殊类</div>
+                          <div className="flex flex-wrap gap-1">
+                            {b.util.length ? b.util.map(t => <span key={t} className="badge">🟣{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
                 </div>
               </>
             ) : (
@@ -585,14 +682,17 @@ export default function MonstersPage() {
                       </select>
                     </div>
                     <div className="md:col-span-2">
-                      <label className="label">标签（空格/逗号分隔）</label>
+                      <label className="label">标签（空格/逗号分隔，仅支持 buf_*/deb_*/util_*）</label>
                       <input className="input" value={editTags} onChange={e => setEditTags(e.target.value)} />
+                      <div className="text-xs text-gray-500 mt-1">
+                        将自动忽略旧标签；保存后仅保留新前缀标签。
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 <div className="card p-3 space-y-3">
-                  <h4 className="font-semibold">基础种族值（原始六维，直接保存到后端）</h4>
+                  <h4 className="font-semibold">基础种族值（原始六维，直接保存到列）</h4>
                   {[
                     ['体力', hp, setHp],
                     ['速度', speed, setSpeed],

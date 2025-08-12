@@ -1,4 +1,3 @@
-# server/app/routes/monsters.py
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field

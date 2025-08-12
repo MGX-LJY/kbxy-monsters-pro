@@ -1,54 +1,46 @@
-// client/src/types.ts
-export type Derived = {
-  pp_pressure: number;
+// 基本类型与后端保持一致
+
+export interface Derived {
   offense: number
   survive: number
   control: number
   tempo: number
-  pp: number
-  tags: string[]
-  role_suggested?: string | null
+  pp_pressure: number
 }
 
-export type Monster = {
+export interface Monster {
   id: number
   name_final: string
   element?: string | null
   role?: string | null
 
-  // 旧五维字段（保留，但列表不展示它们）
-  base_offense: number
-  base_survive: number
-  base_control: number
-  base_tempo: number
-  base_pp: number
+  // 原始六维：直接来自数据库列
+  hp: number
+  speed: number
+  attack: number
+  defense: number
+  magic: number
+  resist: number
 
   tags: string[]
-  explain_json: Record<string, any>
-
-  // 新增：后端实时返回的派生五维
-  derived: Derived
+  explain_json?: Record<string, any>
+  derived?: Derived
 }
 
-export type MonsterListResp = {
+export interface MonsterListResp {
   items: Monster[]
   total: number
   has_more: boolean
   etag: string
 }
 
-export type ImportPreviewResp = {
-  columns: string[]
-  total_rows: number
-  sample: Record<string, string>[]
-  hints: string[]
+export interface TagCount {
+  name: string
+  count: number
 }
 
-export type ImportCommitResp = {
-  inserted: number
-  updated: number
-  skipped: number
-  errors: Array<Record<string, any>>
+export interface StatsDTO {
+  total: number
+  with_skills: number
+  tags_total: number
 }
-
-export type TagCount = { name: string, count: number }

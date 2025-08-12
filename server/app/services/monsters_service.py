@@ -1,10 +1,9 @@
-# server/app/services/monsters_service.py
 from typing import List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, asc, desc, outerjoin
 from ..models import Monster, Tag, MonsterDerived
 
-# 排序字段解析：支持派生五维
+# 排序字段解析：支持派生五维（pp / pp_pressure 都支持）
 def _get_sort_target(sort: str):
     s = (sort or "updated_at").lower()
     md = MonsterDerived
@@ -15,7 +14,7 @@ def _get_sort_target(sort: str):
         "control": md.control,
         "tempo": md.tempo,
         "pp_pressure": md.pp_pressure,
-        "pp": md.pp_pressure,
+        "pp": md.pp_pressure,  # 别名
     }
     if s in derived_map:
         return derived_map[s], True
@@ -29,7 +28,10 @@ def list_monsters(
     tag: str | None, sort: str | None, order: str | None,
     page: int, page_size: int
 ) -> Tuple[List[Monster], int]:
-    # 计数子查询，避免笛卡尔积告警
+    """
+    列表：可按标签/元素/定位过滤；按派生五维或更新时间排序。
+    """
+    # 计数子查询（避免笛卡尔计数偏大）
     base_stmt = select(Monster.id)
     if tag:
         base_stmt = base_stmt.join(Monster.tags).where(Tag.name == tag)
@@ -49,7 +51,7 @@ def list_monsters(
     subq = base_stmt.subquery()
     total = db.scalar(select(func.count()).select_from(subq)) or 0
 
-    # 真正取行
+    # 取行
     rows_stmt = select(Monster)
     if tag:
         rows_stmt = rows_stmt.join(Monster.tags).where(Tag.name == tag)
@@ -71,11 +73,15 @@ def list_monsters(
     return rows, int(total)
 
 def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
+    """
+    将一维标签名写入 Tag 表后返回 Tag 实体列表；调用前应保证 names 已经是新三类规范化的名字。
+    """
     result: List[Tag] = []
     uniq, seen = [], set()
     for s in names or []:
         n = (s or "").strip()
-        if not n or n in seen: continue
+        if not n or n in seen:
+            continue
         seen.add(n); uniq.append(n)
     for n in uniq:
         tag = db.execute(select(Tag).where(Tag.name == n)).scalar_one_or_none()
