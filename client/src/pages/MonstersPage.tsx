@@ -28,12 +28,31 @@ export default function MonstersPage() {
     queryFn: async () => (await api.get('/tags', { params: { with_counts: true } })).data as TagCount[]
   })
 
-  // 拉取技能
+  // 侧边栏：技能列表
   const skills = useQuery({
     queryKey: ['skills', selected?.id],
     enabled: !!selected?.id,
     queryFn: async () => (await api.get(`/monsters/${selected!.id}/skills`)).data as {id:number,name:string,description:string}[]
   })
+
+  // 便捷读取 raw_stats（如果没有，则用 base_* 兜底）
+  const raw = (selected as any)?.explain_json?.raw_stats as
+    | { hp:number, speed:number, attack:number, defense:number, magic:number, resist:number, sum:number }
+    | undefined
+
+  const showStats = raw || {
+    hp: selected?.base_survive ?? 0,
+    speed: selected?.base_tempo ?? 0,
+    attack: selected?.base_offense ?? 0,
+    defense: selected?.base_control ?? 0, // 兜底（平均值时仅供参考）
+    magic: selected?.base_control ?? 0,
+    resist: selected?.base_pp ?? 0,
+    sum: (selected?.base_survive ?? 0) + (selected?.base_tempo ?? 0) + (selected?.base_offense ?? 0) +
+         (selected?.base_control ?? 0) + (selected?.base_control ?? 0) + (selected?.base_pp ?? 0),
+  }
+
+  // 技能兜底：接口为空则使用 explain_json.skill_names
+  const fallbackSkillNames: string[] = (selected as any)?.explain_json?.skill_names || []
 
   return (
     <div className="container my-6 space-y-4">
@@ -115,24 +134,33 @@ export default function MonstersPage() {
         {selected && (
           <div className="space-y-4">
             <div>
-              <h4 className="font-semibold mb-2">基础种族值</h4>
+              <h4 className="font-semibold mb-2">基础种族值（六维）</h4>
               <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="p-2 bg-gray-50 rounded">攻：<b>{selected.base_offense}</b></div>
-                <div className="p-2 bg-gray-50 rounded">生：<b>{selected.base_survive}</b></div>
-                <div className="p-2 bg-gray-50 rounded">控：<b>{selected.base_control}</b></div>
-                <div className="p-2 bg-gray-50 rounded">速：<b>{selected.base_tempo}</b></div>
-                <div className="p-2 bg-gray-50 rounded">PP：<b>{selected.base_pp}</b></div>
+                <div className="p-2 bg-gray-50 rounded">体力：<b>{showStats.hp}</b></div>
+                <div className="p-2 bg-gray-50 rounded">速度：<b>{showStats.speed}</b></div>
+                <div className="p-2 bg-gray-50 rounded">攻击：<b>{showStats.attack}</b></div>
+                <div className="p-2 bg-gray-50 rounded">防御：<b>{showStats.defense}</b></div>
+                <div className="p-2 bg-gray-50 rounded">法术：<b>{showStats.magic}</b></div>
+                <div className="p-2 bg-gray-50 rounded">抗性：<b>{showStats.resist}</b></div>
+                <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{showStats.sum}</b></div>
               </div>
             </div>
 
             <div>
               <h4 className="font-semibold mb-2">技能</h4>
-              {!skills.data?.length && <div className="text-sm text-gray-500">暂无技能数据</div>}
+              {!skills.data?.length && !fallbackSkillNames.length && (
+                <div className="text-sm text-gray-500">暂无技能数据</div>
+              )}
               <ul className="space-y-2">
                 {skills.data?.map(s => (
                   <li key={s.id} className="p-2 bg-gray-50 rounded">
                     <div className="font-medium">{s.name}</div>
                     {s.description && <div className="text-sm text-gray-600">{s.description}</div>}
+                  </li>
+                ))}
+                {!skills.data?.length && fallbackSkillNames.map((n, i) => (
+                  <li key={i} className="p-2 bg-gray-50 rounded">
+                    <div className="font-medium">{n}</div>
                   </li>
                 ))}
               </ul>
