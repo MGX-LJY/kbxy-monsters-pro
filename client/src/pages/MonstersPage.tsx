@@ -62,12 +62,14 @@ export default function MonstersPage() {
       })).data as MonsterListResp
   })
 
-  // 兼容 /tags 不一定有
+  // —— 标签统计：固定使用后端聚合的全量统计；失败时才用页面兜底 —— //
   const tags = useQuery({
-    queryKey: ['tags'],
+    queryKey: ['tags', 'with_counts'],
     queryFn: async () => {
       try {
-        return (await api.get('/tags', { params: { with_counts: true } })).data as TagCount[]
+        const res = await api.get('/tags', { params: { with_counts: true } })
+        // 后端返回 { items: [{ name, count }, ...] }
+        return (res.data?.items ?? []) as TagCount[]
       } catch {
         return [] as TagCount[]
       }
@@ -96,7 +98,7 @@ export default function MonstersPage() {
 
   // 当 /tags 不可用时，用当前页 items 的 tags 做临时计数
   const localTagCounts: TagCount[] = useMemo(() => {
-    if (tags.data && tags.data.length > 0) return tags.data
+    if (Array.isArray(tags.data) && tags.data.length > 0) return tags.data
     const map = new Map<string, number>()
     for (const m of (list.data?.items || [])) {
       for (const t of (m.tags || [])) map.set(t, (map.get(t) || 0) + 1)
@@ -244,12 +246,12 @@ export default function MonstersPage() {
     if (!editName.trim()) { alert('请填写名称'); return }
     setSaving(true)
     try {
-      // 1) 基础信息（不再关心 base_*）
+      // 1) 基础信息
       await api.put(`/monsters/${selected.id}`, {
         name_final: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        base_offense: 0, base_survive: 0, base_control: 0, base_tempo: 0, base_pp: 0,
+        // 去掉无效的 base_* 字段，避免迷惑
         tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
       })
 
@@ -427,7 +429,8 @@ export default function MonstersPage() {
                     <td>{m.derived?.survive ?? 0}</td>
                     <td>{m.derived?.control ?? 0}</td>
                     <td>{m.derived?.tempo ?? 0}</td>
-                    <td>{m.derived?.pp ?? 0}</td>
+                    {/* 修复：显示后端字段 pp_pressure */}
+                    <td>{m.derived?.pp_pressure ?? 0}</td>
                     <td className="space-x-1">
                       {(m.tags || []).map(t => <span key={t} className="badge">{t}</span>)}
                     </td>
