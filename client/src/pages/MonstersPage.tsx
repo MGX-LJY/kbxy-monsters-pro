@@ -11,6 +11,8 @@ type RoleCount = { name: string, count: number }
 type SkillDTO = { id?: number; name: string; description?: string }
 type StatsDTO = { total: number; with_skills: number; tags_total: number }
 
+type SortKey = 'updated_at' | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure'
+
 const isMeaningfulDesc = (t?: string) => {
   if (!t) return false
   const s = t.trim()
@@ -24,9 +26,10 @@ const isValidSkillName = (name?: string) => !!(name && name.trim() && /[\u4e00-\
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
+  const [element, setElement] = useState('')           // 新增：元素筛选
   const [tag, setTag] = useState('')
   const [role, setRole] = useState('')
-  const [sort, setSort] = useState<'updated_at'>('updated_at') // 先只保留更新时间排序
+  const [sort, setSort] = useState<SortKey>('updated_at')  // 新增：支持派生字段排序
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
 
   // 分页
@@ -42,7 +45,7 @@ export default function MonstersPage() {
   const [editName, setEditName] = useState('')
   const [editElement, setEditElement] = useState('')
   const [editRole, setEditRole] = useState('')
-  const [editTags, setEditTags] = useState('') // 空格/逗号分隔（保存到已绑定标签）
+  const [editTags, setEditTags] = useState('')
   const [hp, setHp] = useState<number>(100)
   const [speed, setSpeed] = useState<number>(100)
   const [attack, setAttack] = useState<number>(100)
@@ -53,23 +56,32 @@ export default function MonstersPage() {
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
-  // 列表 & 基础数据
+  // 列表 & 基础数据（把 element 传给后端）
   const list = useQuery({
-    queryKey: ['monsters', { q, tag, role, sort, order, page, pageSize }],
+    queryKey: ['monsters', { q, element, tag, role, sort, order, page, pageSize }],
     queryFn: async () =>
       (await api.get('/monsters', {
-        params: { q: q || undefined, tag: tag || undefined, role: role || undefined, sort, order, page, page_size: pageSize }
+        params: {
+          q: q || undefined,
+          element: element || undefined,   // 新增
+          tag: tag || undefined,
+          role: role || undefined,
+          sort,
+          order,
+          page,
+          page_size: pageSize
+        }
       })).data as MonsterListResp
   })
 
-  // —— 标签统计：固定使用后端聚合的全量统计；失败时才用页面兜底 —— //
+  // 兼容 /tags 返回结构差异：尽量托底
   const tags = useQuery({
-    queryKey: ['tags', 'with_counts'],
+    queryKey: ['tags'],
     queryFn: async () => {
       try {
-        const res = await api.get('/tags', { params: { with_counts: true } })
-        // 后端返回 { items: [{ name, count }, ...] }
-        return (res.data?.items ?? []) as TagCount[]
+        const d = (await api.get('/tags', { params: { with_counts: true } })).data
+        // 可能是 { items: [...] } 或 直接数组
+        return Array.isArray(d) ? d as TagCount[] : (d?.items || []) as TagCount[]
       } catch {
         return [] as TagCount[]
       }
@@ -86,10 +98,12 @@ export default function MonstersPage() {
       }
     }
   })
+
   const stats = useQuery({
     queryKey: ['stats'],
     queryFn: async () => (await api.get('/stats')).data as StatsDTO
   })
+
   const skills = useQuery({
     queryKey: ['skills', selected?.id],
     enabled: !!selected?.id,
@@ -98,7 +112,7 @@ export default function MonstersPage() {
 
   // 当 /tags 不可用时，用当前页 items 的 tags 做临时计数
   const localTagCounts: TagCount[] = useMemo(() => {
-    if (Array.isArray(tags.data) && tags.data.length > 0) return tags.data
+    if (tags.data && tags.data.length > 0) return tags.data
     const map = new Map<string, number>()
     for (const m of (list.data?.items || [])) {
       for (const t of (m.tags || [])) map.set(t, (map.get(t) || 0) + 1)
@@ -165,7 +179,7 @@ export default function MonstersPage() {
   const restoreInputRef = useRef<HTMLInputElement>(null)
   const exportCSV = async () => {
     const res = await api.get('/export/monsters.csv', {
-      params: { q: q || undefined, tag: tag || undefined, role: role || undefined, sort, order },
+      params: { q: q || undefined, element: element || undefined, tag: tag || undefined, role: role || undefined, sort, order },
       responseType: 'blob'
     })
     const url = window.URL.createObjectURL(res.data)
@@ -246,21 +260,20 @@ export default function MonstersPage() {
     if (!editName.trim()) { alert('请填写名称'); return }
     setSaving(true)
     try {
-      // 1) 基础信息
       await api.put(`/monsters/${selected.id}`, {
         name_final: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        // 去掉无效的 base_* 字段，避免迷惑
+        // 仅保存标签到 Monster.tags
         tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
       })
 
-      // 2) 原始六维
+      // 原始六维（仍用后端原有接口；如果你用统一 update，这里可以删除）
       await api.put(`/monsters/${selected.id}/raw_stats`, {
         hp, speed, attack, defense, magic, resist
       })
 
-      // 3) 技能
+      // 技能
       const filtered = editSkills.filter(s => (s.name || '').trim())
       await saveSkillsWithFallback(selected.id, filtered)
 
@@ -277,7 +290,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 主页一键自动匹配（后端接口）
+  // —— 主页一键自动匹配（修复 405：逐个 /tags/retag 兜底 + 触发派生更新）
   const autoMatchBatch = async () => {
     const items = list.data?.items || []
     if (!items.length) return alert('当前没有可处理的记录')
@@ -287,7 +300,23 @@ export default function MonstersPage() {
 
     setAutoMatching(true)
     try {
-      await api.post('/monsters/auto_match', { ids: target.map(x => x.id) })
+      // 先尝试批量接口（如果你的服务端实现了）
+      try {
+        await api.post('/monsters/auto_match', { ids: target.map(x => x.id) })
+      } catch (e: any) {
+        // 405/404 兜底：逐个调用 /tags/monsters/{id}/retag，并拉 derived
+        const ids = target.map(x => x.id)
+        for (const id of ids) {
+          try {
+            await api.post(`/tags/monsters/${id}/retag`)
+          } catch {}
+          // 拉一下派生，确保服务端完成写回
+          try {
+            await api.get(`/monsters/${id}/derived`)
+          } catch {}
+        }
+      }
+
       await list.refetch()
       if (selected) {
         const fresh = (await api.get(`/monsters/${selected.id}`)).data as Monster
@@ -312,6 +341,9 @@ export default function MonstersPage() {
     if (!isEditing) setIsEditing(true)
   }
 
+  // 元素选项
+  const elementOptions = ['金','木','水','火','土','风','雷','冰','毒','妖','光','暗','音']
+
   return (
     <div className="container my-6 space-y-4">
       {/* 工具栏 */}
@@ -325,7 +357,13 @@ export default function MonstersPage() {
             aria-label="搜索"
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
+
+        {/* 第二行：新增“元素”下拉；排序支持派生字段 */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
+            <option value="">元素</option>
+            {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
+          </select>
           <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
             <option value="">标签</option>
             {(localTagCounts || []).map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
@@ -334,14 +372,22 @@ export default function MonstersPage() {
             <option value="">定位</option>
             {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
           </select>
-          <select className="select" value={sort} onChange={e => setSort(e.target.value as any)}>
-            <option value="updated_at">更新时间</option>
-          </select>
-          <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
-            <option value="desc">降序</option>
-            <option value="asc">升序</option>
-          </select>
+          <div className="grid grid-cols-2 gap-3">
+            <select className="select" value={sort} onChange={e => setSort(e.target.value as SortKey)}>
+              <option value="updated_at">更新时间</option>
+              <option value="offense">攻（派生）</option>
+              <option value="survive">生（派生）</option>
+              <option value="control">控（派生）</option>
+              <option value="tempo">速（派生）</option>
+              <option value="pp_pressure">PP（派生）</option>
+            </select>
+            <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
+              <option value="desc">降序</option>
+              <option value="asc">升序</option>
+            </select>
+          </div>
         </div>
+
         <div className="mt-3 flex flex-wrap justify-end gap-2">
           <button className="btn" onClick={() => list.refetch()}>刷新</button>
           <button className="btn" onClick={exportCSV}>导出 CSV</button>
@@ -357,15 +403,15 @@ export default function MonstersPage() {
       {/* 统计栏 */}
       <div className="card p-4">
         <div className="grid grid-cols-3 gap-3">
-          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
             <div className="text-xs text-gray-500">总数</div>
             <div className="text-xl font-semibold">{stats.data?.total ?? '—'}</div>
           </div>
-          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
             <div className="text-xs text-gray-500">有技能</div>
             <div className="text-xl font-semibold">{stats.data?.with_skills ?? '—'}</div>
           </div>
-          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+          <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
             <div className="text-xs text-gray-500">标签总数</div>
             <div className="text-xl font-semibold">{stats.data?.tags_total ?? '—'}</div>
           </div>
@@ -389,7 +435,7 @@ export default function MonstersPage() {
           <table className="table">
             <thead>
               <tr>
-                <th className="w-10">
+                <th className="w-8 text-center">
                   <input
                     type="checkbox"
                     aria-label="全选"
@@ -397,16 +443,16 @@ export default function MonstersPage() {
                     onChange={toggleAllVisible}
                   />
                 </th>
-                <th className="w-14">ID</th>
-                <th>名称</th>
-                <th>元素</th>
-                <th>定位</th>
-                <th>攻</th>
-                <th>生</th>
-                <th>控</th>
-                <th>速</th>
-                <th>PP</th>
-                <th>标签</th>
+                <th className="w-14 text-center">ID</th>
+                <th className="text-left">名称</th>
+                <th className="text-center">元素</th>
+                <th className="text-center">定位</th>
+                <th className="text-center">攻</th>
+                <th className="text-center">生</th>
+                <th className="text-center">控</th>
+                <th className="text-center">速</th>
+                <th className="text-center">PP</th>
+                <th className="text-center">标签</th>
               </tr>
             </thead>
             {list.isLoading && <SkeletonRows rows={8} cols={11} />}
@@ -414,25 +460,26 @@ export default function MonstersPage() {
               <tbody>
                 {list.data?.items?.map((m: Monster) => (
                   <tr key={m.id}>
-                    <td>
+                    <td className="text-center">
                       <input type="checkbox" checked={selectedIds.has(m.id)} onChange={() => toggleOne(m.id)} />
                     </td>
-                    <td>{m.id}</td>
-                    <td>
+                    <td className="text-center">{m.id}</td>
+                    <td className="text-left">
                       <button className="text-blue-600 hover:underline" onClick={() => openDetail(m)}>
                         {m.name_final}
                       </button>
                     </td>
-                    <td>{m.element}</td>
-                    <td>{m.role || m.derived?.role_suggested || ''}</td>
-                    <td>{m.derived?.offense ?? 0}</td>
-                    <td>{m.derived?.survive ?? 0}</td>
-                    <td>{m.derived?.control ?? 0}</td>
-                    <td>{m.derived?.tempo ?? 0}</td>
-                    {/* 修复：显示后端字段 pp_pressure */}
-                    <td>{m.derived?.pp_pressure ?? 0}</td>
-                    <td className="space-x-1">
-                      {(m.tags || []).map(t => <span key={t} className="badge">{t}</span>)}
+                    <td className="text-center">{m.element}</td>
+                    <td className="text-center">{m.role || (m as any).derived?.role_suggested || ''}</td>
+                    <td className="text-center">{m.derived?.offense ?? 0}</td>
+                    <td className="text-center">{m.derived?.survive ?? 0}</td>
+                    <td className="text-center">{m.derived?.control ?? 0}</td>
+                    <td className="text-center">{m.derived?.tempo ?? 0}</td>
+                    <td className="text-center">{(m.derived as any)?.pp_pressure ?? 0}</td>
+                    <td className="text-center">
+                      <div className="inline-flex flex-wrap gap-1 justify-center">
+                        {(m.tags || []).map(t => <span key={t} className="badge">{t}</span>)}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -459,7 +506,6 @@ export default function MonstersPage() {
               {!isEditing ? (
                 <>
                   <button className="btn" onClick={async () => {
-                    // 预拉一次 derived，方便用户参考（可选）
                     try { await api.get(`/monsters/${selected.id}/derived`) } catch {}
                     enterEdit()
                   }}>编辑</button>
@@ -479,12 +525,12 @@ export default function MonstersPage() {
                 <div>
                   <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
                   <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div className="p-2 bg-gray-50 rounded">体力：<b>{showStats.hp}</b></div>
-                    <div className="p-2 bg-gray-50 rounded">速度：<b>{showStats.speed}</b></div>
-                    <div className="p-2 bg-gray-50 rounded">攻击：<b>{showStats.attack}</b></div>
-                    <div className="p-2 bg-gray-50 rounded">防御：<b>{showStats.defense}</b></div>
-                    <div className="p-2 bg-gray-50 rounded">法术：<b>{showStats.magic}</b></div>
-                    <div className="p-2 bg-gray-50 rounded">抗性：<b>{showStats.resist}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">体力：<b>{showStats.hp}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">速度：<b>{showStats.speed}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">攻击：<b>{showStats.attack}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">防御：<b>{showStats.defense}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">法术：<b>{showStats.magic}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
                     <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{(showStats as any).sum}</b></div>
                   </div>
                 </div>
@@ -516,7 +562,7 @@ export default function MonstersPage() {
 
                 <div>
                   <h4 className="font-semibold mb-2">标签</h4>
-                  <div className="space-x-1">
+                  <div className="flex flex-wrap gap-1 justify-center">
                     {selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}
                   </div>
                 </div>
@@ -533,8 +579,7 @@ export default function MonstersPage() {
                       <label className="label">元素</label>
                       <select className="select" value={editElement} onChange={e => setEditElement(e.target.value)}>
                         <option value="">未设置</option>
-                        <option value="金">金</option><option value="木">木</option>
-                        <option value="水">水</option><option value="火">火</option><option value="土">土</option>
+                        {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
                       </select>
                     </div>
                     <div>
@@ -563,10 +608,10 @@ export default function MonstersPage() {
                     ['抗性', resist, setResist],
                   ].map(([label, val, setter]: any) => (
                     <div key={label} className="grid grid-cols-6 gap-2 items-center">
-                      <div className="text-sm text-gray-600">{label}</div>
+                      <div className="text-sm text-gray-600 text-center">{label}</div>
                       <input type="range" min={50} max={200} step={1}
                         value={val} onChange={e => (setter as any)(parseInt(e.target.value, 10))} className="col-span-4" />
-                      <input className="input py-1" value={val}
+                      <input className="input py-1 text-center" value={val}
                         onChange={e => (setter as any)(Math.max(0, parseInt(e.target.value || '0', 10)))} />
                     </div>
                   ))}

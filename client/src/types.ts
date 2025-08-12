@@ -1,5 +1,6 @@
 // client/src/types.ts
 export type Derived = {
+  pp_pressure: number;
   offense: number
   survive: number
   control: number
