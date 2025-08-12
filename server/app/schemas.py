@@ -21,15 +21,15 @@ class MonsterIn(BaseModel):
     element: Optional[str] = None
     role: Optional[str] = None
 
-    # 后端采用五维：攻/生/控/速/PP
-    base_offense: float = 0
-    base_survive: float = 0
-    base_control: float = 0
-    base_tempo: float = 0
-    base_pp: float = 0
+    # 原始六维（只传这 6 个）
+    hp: float = 0
+    speed: float = 0
+    attack: float = 0
+    defense: float = 0
+    magic: float = 0
+    resist: float = 0
 
     tags: List[str] = []
-    # 新增：可携带多个技能（可空）
     skills: List[SkillIn] = []
 
 class MonsterOut(BaseModel):
@@ -37,11 +37,23 @@ class MonsterOut(BaseModel):
     name_final: str
     element: Optional[str] = None
     role: Optional[str] = None
-    base_offense: float = 0
-    base_survive: float = 0
-    base_control: float = 0
-    base_tempo: float = 0
-    base_pp: float = 0
+
+    # 原始六维
+    hp: float = 0
+    speed: float = 0
+    attack: float = 0
+    defense: float = 0
+    magic: float = 0
+    resist: float = 0
+
+    # 派生（仅用于展示/排序，不落库）
+    sum: float = 0
+    offense: float = 0     # = attack
+    survive: float = 0     # = hp
+    control: float = 0     # = (defense + magic) / 2
+    tempo: float = 0       # = speed
+    pp: float = 0          # = resist
+
     tags: List[str] = []
     explain_json: Dict[str, Any] = {}
 

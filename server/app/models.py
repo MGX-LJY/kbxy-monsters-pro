@@ -39,14 +39,15 @@ class Monster(Base):
     element: Mapped[str | None] = mapped_column(String(10), index=True, nullable=True)
     role: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
 
-    # 基础种族值（用于计算/排序/筛选）
-    base_offense: Mapped[float] = mapped_column(Float, default=0.0)  # 攻
-    base_survive: Mapped[float] = mapped_column(Float, default=0.0)  # 生/体力
-    base_control: Mapped[float] = mapped_column(Float, default=0.0)  # 控（通常由防御/法术综合）
-    base_tempo: Mapped[float] = mapped_column(Float, default=0.0)    # 速
-    base_pp: Mapped[float] = mapped_column(Float, default=0.0)       # PP/抗性
+    # —— 原始六维（只存原始，不再存“控/攻/生/速/PP”五维）
+    base_hp: Mapped[float] = mapped_column(Float, default=0.0)       # 体力
+    base_speed: Mapped[float] = mapped_column(Float, default=0.0)    # 速度
+    base_attack: Mapped[float] = mapped_column(Float, default=0.0)   # 攻击
+    base_defense: Mapped[float] = mapped_column(Float, default=0.0)  # 防御
+    base_magic: Mapped[float] = mapped_column(Float, default=0.0)    # 法术
+    base_resist: Mapped[float] = mapped_column(Float, default=0.0)   # 抗性
 
-    # 解释信息（规则引擎输出、原始六维、技能名兜底等）
+    # 解释/衍生（例如：raw_stats、skill_names、你后续的倾向分等）
     explain_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -55,8 +56,8 @@ class Monster(Base):
     )
 
     # 关系
-    tags = relationship("Tag", secondary=monster_tag, back_populates="monsters")
-    skills = relationship("Skill", secondary=monster_skill, back_populates="monsters")
+    tags = relationship("Tag", secondary=monster_tag, back_populates="monsters", cascade="all,delete")
+    skills = relationship("Skill", secondary=monster_skill, back_populates="monsters", cascade="all,delete")
 
     def __repr__(self) -> str:
         return f"<Monster id={self.id} name={self.name_final!r} element={self.element!r}>"
