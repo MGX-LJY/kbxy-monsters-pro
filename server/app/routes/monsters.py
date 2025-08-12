@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 from ..db import SessionLocal
-from ..models import Monster, MonsterDerived
+from ..models import Monster
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
-from ..services.derive_service import compute_derived_out, compute_and_persist
+from ..services.derive_service import (
+    compute_derived_out, compute_and_persist, recompute_and_autolabel, apply_role_tags
+)
 
 router = APIRouter()
 
@@ -44,21 +46,34 @@ def list_api(
         _ = db.execute(
             select(Monster)
             .where(Monster.id.in_(ids))
-            .options(selectinload(Monster.skills), selectinload(Monster.tags), selectinload(Monster.derived))
+            .options(
+                selectinload(Monster.skills),
+                selectinload(Monster.tags),
+                selectinload(Monster.derived),
+            )
         ).scalars().all()
 
     result = []
+    changed = False
     for m in items:
-        # 没有派生行就现算并落库一次
+        # 没有派生行 → 现算并落库；若 role 为空也顺带自动打
         if not m.derived:
-            compute_and_persist(db, m)
-        d = {
-            "offense": m.derived.offense if m.derived else compute_derived_out(m)["offense"],
-            "survive": m.derived.survive if m.derived else compute_derived_out(m)["survive"],
-            "control": m.derived.control if m.derived else compute_derived_out(m)["control"],
-            "tempo": m.derived.tempo if m.derived else compute_derived_out(m)["tempo"],
-            "pp_pressure": m.derived.pp_pressure if m.derived else compute_derived_out(m)["pp_pressure"],
-        }
+            recompute_and_autolabel(db, m)
+            changed = True
+        else:
+            # 若派生在，但 role 为空、或 tags 为空 → 只补 role/tags
+            if (not m.role) or (not m.tags):
+                apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
+                changed = True
+
+        d = m.derived and {
+            "offense": m.derived.offense,
+            "survive": m.derived.survive,
+            "control": m.derived.control,
+            "tempo": m.derived.tempo,
+            "pp_pressure": m.derived.pp_pressure,
+        } or compute_derived_out(m)
+
         result.append(MonsterOut(
             id=m.id,
             name_final=m.name_final,
@@ -69,7 +84,10 @@ def list_api(
             explain_json=m.explain_json or {},
             derived=d,
         ))
-    db.commit()  # 可能写入了 derived
+
+    if changed:
+        db.commit()  # 可能写入了 derived/role/tags
+
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
 
@@ -85,8 +103,8 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    if not m.derived:
-        compute_and_persist(db, m)
+    if not m.derived or not m.role or not m.tags:
+        recompute_and_autolabel(db, m)
         db.commit()
 
     return MonsterOut(
@@ -115,16 +133,13 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
 
     if payload.skills:
         skills = upsert_skills(db, [(s.name, s.description or "") for s in payload.skills])
-        existed = {s.id for s in (m.skills or [])}
-        for s in skills:
-            if s.id not in existed:
-                m.skills.append(s); existed.add(s.id)
+        m.skills = list(skills)
         ex = m.explain_json or {}
         ex["skill_names"] = [s.name for s in m.skills]
         m.explain_json = ex
 
-    # 首次计算并落库
-    compute_and_persist(db, m)
+    # 首次计算 + 自动定位/标签
+    recompute_and_autolabel(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
 
@@ -141,22 +156,32 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     if payload.skills is not None:
         m.skills.clear()
         skills = upsert_skills(db, [(s.name, s.description or "") for s in payload.skills])
-        for s in skills:
-            m.skills.append(s)
+        m.skills = list(skills)
         ex = m.explain_json or {}
         ex["skill_names"] = [s.name for s in m.skills]
         m.explain_json = ex
 
-    # 更新后重算派生并落库
-    compute_and_persist(db, m)
+    # 更新后重算派生并自动补 role/tags（若为空）
+    recompute_and_autolabel(db, m)
     db.commit()
     return detail(monster_id, db)
 
 @router.delete("/monsters/{monster_id}")
 def delete(monster_id: int, db: Session = Depends(get_db)):
+    """
+    修复：删除怪物时，清理关联的 skills/tags（联结表），避免“幽灵关系”残留。
+    """
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
-    db.delete(m)
+
+    # 清空多对多关系，确保联结表行被删
+    if m.skills is not None:
+        m.skills.clear()
+    if m.tags is not None:
+        m.tags.clear()
+    db.flush()  # 先把联结表变更落下
+
+    db.delete(m)  # derived 使用 delete-orphan，会随主记录一并删除
     db.commit()
     return {"ok": True}
