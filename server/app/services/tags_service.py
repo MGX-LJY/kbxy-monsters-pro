@@ -58,57 +58,127 @@ SPECIAL_CANON: Dict[str, str] = {
 CODE2CN: Dict[str, str] = {**BUFF_CANON, **DEBUFF_CANON, **SPECIAL_CANON}
 CN2CODE: Dict[str, str] = {v: k for k, v in CODE2CN.items()}
 
+# 统一的正则 flag（忽略大小写；Unicode）
+_RE_FLAGS = re.I | re.U
+
 # ======================
 # 文本正则（code -> patterns）
 # 覆盖“必定暴击”“一或两次”“所受法术伤害减”“下回合命中时必定暴击”等表述
+# 所有属性↑/↓同时支持【属性在前】与【动词在前】两种写法
 # ======================
+
+# 常用动词集合
+UP = r"(提升|提高|上升|增加|加成|增强|强化|提升至|提升到|提高到)"
+DOWN = r"(下降|降低|减少)"
+ONE_OR_TWO = r"(一|1|两|2|一或两|1或2)"
 
 # —— Buff —— #
 BUFF_PATTERNS: Dict[str, List[str]] = {
-    "buf_atk_up":   [r"攻击(提升|提高|上升|增加|加成|增强|提高了?)"],
-    "buf_mag_up":   [r"(法术|魔法)(提升|提高|上升|增加|加成|增强|提高了?)"],
-    "buf_spd_up":   [r"速度(提升|提高|上升|增加|加成|增强)|加速|迅捷"],
-    "buf_def_up":   [r"防御(提升|提高|上升|增加|加成|增强)|护甲|硬化"],
-    "buf_res_up":   [r"抗性(提升|提高|上升|增加|加成|增强)|抗性增强|减易伤"],
-    "buf_acc_up":   [r"命中(率)?(提升|提高|上升|增加|加成|增强)"],
-    "buf_crit_up":  [r"暴击(率|几率|概率)?(提升|提高|上升|增加|加成|增强)|会心|必定暴击"],
-    "buf_heal":     [r"(回复|回复量|治疗|恢复)(自身|自身体力|HP|生命)?", r"给对手造成伤害的\s*1/2\s*回复"],
-    # 护盾/减伤细分将由信号层再细化（护盾 vs 纯减伤）
-    "buf_shield": [
-        r"护盾",
-        r"(所受|受到).*(法术)?伤害.*(减少|降低|减半|减免|降低\d+%|减少\d+%|减)",
-        r"伤害(减少|降低|减半|减免|降低\d+%|减少\d+%)",
-        r"减伤(?!.*敌方)",
-        r"保护|庇护",
+    # 攻击 ↑
+    "buf_atk_up": [
+        rf"攻击{UP}",
+        rf"{UP}.*(自身|自我|自己)?的?攻击",
+        rf"有\d+%?机会{UP}.*攻击",
     ],
+    # 法术 ↑
+    "buf_mag_up": [
+        rf"(法术|魔法){UP}",
+        rf"{UP}.*(自身|自我|自己)?的?(法术|魔法)",
+        rf"有\d+%?机会{UP}.*(法术|魔法)",
+    ],
+    # 速度 ↑
+    "buf_spd_up": [
+        rf"速度{UP}|加速|迅捷|敏捷提升|加快速度",
+        rf"{UP}.*(自身|自我|自己)?的?速度",
+    ],
+    # 防御 ↑
+    "buf_def_up": [
+        rf"(防御|防御力){UP}|护甲|硬化|铁壁",
+        rf"{UP}.*(自身|自我|自己)?的?(防御|防御力)",
+    ],
+    # 抗性 ↑
+    "buf_res_up": [
+        rf"(抗性|抗性值){UP}|抗性增强|减易伤",
+        rf"{UP}.*(自身|自我|自己)?的?(抗性|抗性值)",
+    ],
+    # 命中 ↑
+    "buf_acc_up": [
+        rf"(命中|命中率){UP}",
+        rf"{UP}.*(自身|自我|自己)?的?(命中|命中率)",
+    ],
+    # 暴击 ↑（含“必定暴击/命中时必定暴击”）
+    "buf_crit_up": [
+        rf"(暴击|暴击率|会心){UP}|必定暴击|命中时必定暴击",
+        rf"{UP}.*(自身|自我|自己)?的?(暴击|暴击率|会心)",
+    ],
+    # 治疗/回复（含“伤害的1/2回复”与持续回复）
+    "buf_heal": [
+        r"(回复|治疗|恢复)(自身|自身体力|HP|生命)?",
+        r"给对手造成伤害的\s*1/2\s*回复",
+        r"\d+回合内.*每回合.*(回复|恢复)",
+    ],
+    # 护盾/减伤（含“所受(法术|物理)伤害减(半)”）
+    "buf_shield": [
+        r"护盾|护体|结界",
+        r"(所受|受到).*(法术|物理)?伤害.*(减少|降低|减半|减免|降低\d+%|减少\d+%|减)(?!.*敌方)",
+        r"伤害(减少|降低|减半|减免|降低\d+%|减少\d+%)",
+        r"减伤(?!.*敌方)|庇护|保护",
+    ],
+    # 自净（含“转移负面到对手”）
     "buf_purify": [
         r"净化",
-        r"(清除|消除|解除|去除|移除).*(自身|自我).*(负面|异常|减益|不良|状态)"
+        r"(清除|消除|解除|去除|移除).*(自身|自我).*(负面|异常|减益|不良|状态)",
+        r"(将|把).*(自身|自我|自己的).*(负面|异常|减益).*(转移|移交).*(对方|对手)",
     ],
+    # 免疫异常（X 回合）
     "buf_immunity": [
         r"免疫(异常|控制|不良)状态?",
-        r"(\d+|若干|[一二三四五六七八九十]+)回合.*免疫.*(异常|控制|不良)"
+        r"([一二三四五六七八九十]+|\d+)\s*回合.*免疫.*(异常|控制|不良)",
     ],
 }
 
 # —— Debuff —— #
 DEBUFF_PATTERNS: Dict[str, List[str]] = {
-    "deb_atk_down":   [r"攻击(下降|降低|减少|下?降\s*一级|下?降\s*两级|下降[一二两三四]级)"],
-    "deb_mag_down":   [r"(法术|魔法)(下降|降低|减少|下?降\s*一级|下?降\s*两级|下降[一二两三四]级)"],
-    "deb_def_down":   [r"防御(下降|降低|减少|下?降\s*一级|下?降\s*两级|下降[一二两三四]级)"],
-    "deb_res_down":   [r"抗性(下降|降低|减少|下?降\s*一级|下?降\s*两级|下降[一二两三四]级)"],
-    "deb_spd_down":   [r"速度(下降|降低|减少|下?降\s*一级|下?降\s*两级|下降[一二两三四]级)|减速"],
-    "deb_acc_down":   [r"命中(率)?(下降|降低|减少|下?降\s*一级|下?降\s*两级|下降[一二两三四]级)"],
-    "deb_stun":         [r"眩晕|昏迷"],
-    "deb_bind":         [r"束缚|禁锢"],
-    "deb_sleep":        [r"睡眠"],
-    "deb_freeze":       [r"冰冻"],
-    "deb_confuse_seal": [r"混乱|封印|禁技|无法使用技能"],
-    "deb_suffocate":    [r"窒息"],
-    "deb_dot":          [r"流血|中毒|灼烧|燃烧|腐蚀"],
+    # 属性下降（支持数字/中文数字）
+    "deb_atk_down": [
+        rf"攻击{DOWN}(\s*([一二两三四五六七八九十]+|\d+)\s*级)?",
+        rf"{DOWN}.*(对方|对手)?.*攻击(一级|两级|[一二两三四五六七八九十]+级|\d+级)?",
+    ],
+    "deb_mag_down": [
+        rf"(法术|魔法){DOWN}(\s*([一二两三四五六七八九十]+|\d+)\s*级)?",
+        rf"{DOWN}.*(对方|对手)?.*(法术|魔法)(一级|两级|[一二两三四五六七八九十]+级|\d+级)?",
+    ],
+    "deb_def_down": [
+        rf"(防御|防御力){DOWN}(\s*([一二两三四五六七八九十]+|\d+)\s*级)?",
+        rf"{DOWN}.*(对方|对手)?.*(防御|防御力)(一级|两级|[一二两三四五六七八九十]+级|\d+级)?",
+    ],
+    "deb_res_down": [
+        rf"(抗性|抗性值){DOWN}(\s*([一二两三四五六七八九十]+|\d+)\s*级)?",
+        rf"{DOWN}.*(对方|对手)?.*(抗性|抗性值)(一级|两级|[一二两三四五六七八九十]+级|\d+级)?",
+    ],
+    "deb_spd_down": [
+        rf"(速度){DOWN}(\s*([一二两三四五六七八九十]+|\d+)\s*级)?|减速",
+        rf"{DOWN}.*(对方|对手)?.*速度(一级|两级|[一二两三四五六七八九十]+级|\d+级)?",
+    ],
+    "deb_acc_down": [
+        rf"(命中|命中率){DOWN}(\s*([一二两三四五六七八九十]+|\d+)\s*级)?",
+        rf"{DOWN}.*(对方|对手)?.*(命中|命中率)(一级|两级|[一二两三四五六七八九十]+级|\d+级)?",
+    ],
+    # 控制与异常
+    "deb_stun":           [r"眩晕|昏迷"],
+    "deb_bind":           [r"束缚|禁锢"],
+    "deb_sleep":          [r"睡眠"],
+    "deb_freeze":         [r"冰冻"],
+    # “禁物攻/禁技/无法使用技能”
+    "deb_confuse_seal":   [r"混乱|封印|禁技|无法使用技能|禁止使用技能|不能使用物理攻击|禁用物理攻击"],
+    "deb_suffocate":      [r"窒息"],
+    # DOT：新增“灼伤”
+    "deb_dot":            [r"流血|中毒|灼烧|燃烧|腐蚀|灼伤"],
+    # 敌方增益驱散
     "deb_dispel": [
         r"(消除|驱散|清除).*(对方|对手|敌(人|方)).*(增益|强化|状态)",
-        r"(消除|清除).*(对方|对手).*(加|提升).*(攻|攻击|法术|魔法).*(状态|效果)"
+        r"(消除|清除).*(对方|对手).*(加|提升).*(攻|攻击|法术|魔法|防御|速度).*(状态|效果)",
+        r"消除对方所有增益效果",
     ],
 }
 
@@ -116,15 +186,19 @@ DEBUFF_PATTERNS: Dict[str, List[str]] = {
 SPECIAL_PATTERNS: Dict[str, List[str]] = {
     "util_first":        [r"先手|先制"],
     "util_multi":        [r"多段|连击|(\d+)[-~–](\d+)次|[二两三四五六七八九十]+连"],
+    # PP 压制：随机/所有技能/一次/一或两次/1次等
     "util_pp_drain": [
         r"扣\s*PP",
-        r"(随机)?减少.*(对方|对手).*(所有)?技能.*(使用)?次数(一|1|两|2|一或两|1或2)?次",
+        rf"(随机)?减少.*(对方|对手).*(所有)?技能.*(使用)?次数{ONE_OR_TWO}?次",
         r"(技能|使用)次数.*减少",
         r"使用次数.*减少",
-        r"降(低)?技能次数"
+        r"降(低)?技能次数",
     ],
+    # 反击/反伤/反馈
     "util_reflect":      [r"反击|反伤|反弹|反馈给对手|反射伤害"],
+    # 下一击强化/伤害加倍/蓄力/触发暴击
     "util_charge_next":  [r"伤害加倍|威力加倍|威力倍增|下一回合.*(伤害|威力).*加倍|下回合.*必定暴击|命中时必定暴击|蓄力.*(强力|加倍|倍增)"],
+    # 穿透/无视防御
     "util_penetrate":    [r"无视防御|破防|穿透(护盾|防御)"],
 }
 
@@ -139,7 +213,8 @@ def _text_of_skills(monster: Monster) -> str:
             parts.append(str(s.name))
         if s.description:
             parts.append(str(s.description))
-    return " ".join(parts)
+    # 简单归一：去掉多余空白
+    return " ".join(" ".join(parts).split())
 
 def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float]:
     hp      = float(monster.hp or 0)
@@ -151,10 +226,10 @@ def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float
     return hp, speed, attack, defense, magic, resist
 
 def _hit_any(patterns: List[str], text: str) -> bool:
-    return any(re.search(p, text) for p in patterns)
+    return any(re.search(p, text, _RE_FLAGS) for p in patterns)
 
 def _hit(p: str, text: str) -> bool:
-    return re.search(p, text) is not None
+    return re.search(p, text, _RE_FLAGS) is not None
 
 def _detect(pattern_map: Dict[str, List[str]], text: str) -> List[str]:
     out: List[str] = []
@@ -253,8 +328,8 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     v1 兼容信号 + v2 细粒度信号（新增键不会影响旧用法）：
       - ctrl_count, slow_or_accuracy, has_multi_hit, has_crit_ignore, has_survive_buff, first_strike, speed_up, pp_hits
       - crit_up, ignore_def, armor_break, def_down, res_down, mark
-      - heal, shield, dmg_reduce, cleanse_self, immunity, life_steal, def_up, res_up
-      - hard_cc, soft_cc, extra_turn, action_bar, dispel_enemy, skill_seal, buff_steal
+      - heal, shield, dmg_reduce, cleanse_self, immunity, life_steal, def_up_sig, res_up_sig
+      - hard_cc, soft_cc, extra_turn, action_bar, dispel_enemy, skill_seal, buff_steal, mark_expose
     """
     text = _text_of_skills(monster)
     g = suggest_tags_grouped(monster)
@@ -274,9 +349,10 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     first_strike = ("util_first" in util)
     speed_up = ("buf_spd_up" in buf)
 
+    # PP 次数：有 code 至少按 1 计
     pp_hits = 0
     for p in SPECIAL_PATTERNS["util_pp_drain"]:
-        pp_hits += len(re.findall(p, text))
+        pp_hits += len(re.findall(p, text, _RE_FLAGS))
     if pp_hits == 0 and ("util_pp_drain" in flat_codes):
         pp_hits = 1
 
@@ -284,29 +360,28 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     # 进攻类
     crit_up = ("buf_crit_up" in buf) or _hit_any([r"必定暴击", r"命中时必定暴击"], text)
     ignore_def = ("util_penetrate" in util) or _hit_any([r"无视防御", r"穿透(护盾|防御)"], text)
-    armor_break = _hit(r"破防", text)  # 与 ignore_def 区分：破防 = 破甲效果
+    armor_break = _hit(r"破防", text)  # 破甲
     def_down = ("deb_def_down" in deb)
     res_down = ("deb_res_down" in deb)
     mark = _hit_any([r"标记", r"易伤", r"暴露|曝露", r"破绽"], text)
 
-    # 生存类
+    # 生存类（护盾 vs 纯减伤分开记）
     heal = ("buf_heal" in buf) or _hit(r"(回复|治疗|恢复)", text)
-    # 护盾 vs 纯减伤：二者都算，但分开记分
-    shield = _hit(r"护盾|庇护|保护", text)
+    shield = _hit(r"护盾|庇护|保护|结界", text)
     dmg_reduce = _hit_any([
-        r"(所受|受到).*(法术)?伤害.*(减少|降低|减半|减免|降低\d+%|减少\d+%|减(?!益))",
+        r"(所受|受到).*(法术|物理)?伤害.*(减少|降低|减半|减免|降低\d+%|减少\d+%|减(?!益))",
         r"伤害(减少|降低|减半|减免|降低\d+%|减少\d+%)",
         r"减伤(?!.*敌方)"
     ], text)
     cleanse_self = ("buf_purify" in buf)
     immunity = ("buf_immunity" in buf) or _hit(r"免疫(异常|控制|不良)", text)
     life_steal = _hit_any([r"吸血", r"造成伤害.*(回复|恢复).*(自身|自我|HP)"], text)
-    def_up = ("buf_def_up" in buf)
-    res_up = ("buf_res_up" in buf)
+    def_up_sig = ("buf_def_up" in buf)
+    res_up_sig = ("buf_res_up" in buf)
 
     # 控制细分
     hard_cc_set = {"deb_stun","deb_sleep","deb_freeze","deb_bind"}
-    soft_cc_set = {"deb_confuse_seal","deb_suffocate"}  # 按你的口径：混乱/封印/窒息偏软控
+    soft_cc_set = {"deb_confuse_seal","deb_suffocate"}  # 混乱/封印/窒息 => 软控
     hard_cc = sum(1 for c in hard_cc_set if c in deb)
     soft_cc = sum(1 for c in soft_cc_set if c in deb)
 
@@ -314,11 +389,11 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     extra_turn = _hit_any([
         r"(追加|额外|再度|再动|再次|连续).*(行动|回合)",
         r"(立即|立刻|马上).*(再次)?行动",
-        r"再行动|再行动一次|额外回合"
+        r"再行动(一次)?|额外回合"
     ], text)
     action_bar = _hit_any([
         r"行动条|行动值|先手值",
-        r"(推进|提升|增加|降低|减少).*行动(条|值)",
+        r"(推进|提升|增加|降低|减少).*(行动(条|值))",
         r"(推条|拉条)"
     ], text)
 
@@ -326,7 +401,7 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     dispel_enemy = ("deb_dispel" in deb)
     skill_seal = _hit_any([r"封印", r"禁技", r"无法使用技能", r"禁止使用技能"], text)
     buff_steal = _hit_any([r"(偷取|窃取|夺取).*(增益|强化|护盾)"], text)
-    mark_expose = mark  # 统一用上面的 mark
+    mark_expose = mark
 
     return {
         # v1 兼容
@@ -351,8 +426,8 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
         "cleanse_self": bool(cleanse_self),
         "immunity": bool(immunity),
         "life_steal": bool(life_steal),
-        "def_up_sig": bool(def_up),
-        "res_up_sig": bool(res_up),
+        "def_up_sig": bool(def_up_sig),
+        "res_up_sig": bool(res_up_sig),
         "hard_cc": int(hard_cc),
         "soft_cc": int(soft_cc),
         "extra_turn": bool(extra_turn),
@@ -371,7 +446,7 @@ def derive(monster: Monster) -> Dict[str, int]:
     """
     五维（offense/survive/control/tempo/pp_pressure）
     - 全部：基础线性组合 + 信号加分
-    - offense: 原始先封顶 130，再展示 clip 到 0–120；其他直接 clip 到 0–120
+    - offense: 原始先封顶 130（用于相对排序），展示 clip 到 0–120；其他直接 clip 到 0–120
     """
     hp, spd, atk, dfe, mag, res = _raw_six(monster)
     s = extract_signals(monster)
@@ -388,8 +463,8 @@ def derive(monster: Monster) -> Dict[str, int]:
          3 * int(s.get("mark", False))
     )
     off_raw = base_off + add_off
-    off_sort = min(130.0, off_raw)
-    offense = _clip(off_sort, 0, 120)
+    off_sort = min(130.0, off_raw)  # 排序封顶
+    offense = _clip(off_sort, 0, 120)  # 展示 clip
 
     # 2) 生 survive
     base_sur = 0.45 * hp + 0.30 * dfe + 0.25 * res
@@ -406,23 +481,8 @@ def derive(monster: Monster) -> Dict[str, int]:
     survive = _clip(base_sur + add_sur, 0, 120)
 
     # 3) 控 control
-    add_ctrl = (
-        14 * int(s.get("hard_cc", 0)) +
-         8 * int(s.get("soft_cc", 0)) +
-         6 * int(s.get("slow_or_accuracy", False) and "deb_acc_down") +  # 兼容旧字段，单独加 acc_down
-         6 * int(s.get("slow_or_accuracy", False) and "deb_acc_down" in [])  # 占位无效，下面单独读取
-    )
-    # 重新精确按键加分
-    add_ctrl = (
-        14 * int(s.get("hard_cc", 0)) +
-         8 * int(s.get("soft_cc", 0)) +
-         6 * int(s.get("slow_or_accuracy", False) and True) * 0  # 清零，占位
-    )
-    # 直接读取具体键
-    acc_down_bonus = 6 * int(s.get("slow_or_accuracy", False) and s.get("ctrl_count", 0) >= 0)  # 保底构造
-    # 单独明示：
-    acc_down_bonus = 6 * int(bool(re.search(r"命中", _text_of_skills(monster))) and "deb_acc_down")  # 仅防误差（不计入）
-    # 用专门键
+    # 说明：命中/速度下降视为“环境控制”，比硬控分略低
+    # 软硬控已在 extract_signals 拆分
     acc_down_bonus = 6 * int("deb_acc_down" in suggest_tags_grouped(monster)["debuff"])
     spd_down_bonus = 4 * int("deb_spd_down" in suggest_tags_grouped(monster)["debuff"])
     atk_down_bonus = 3 * int("deb_atk_down" in suggest_tags_grouped(monster)["debuff"])
@@ -436,7 +496,7 @@ def derive(monster: Monster) -> Dict[str, int]:
         0, 120
     )
 
-    # 4) 速 tempo
+    # 4) 速 tempo（先手与回合节奏）
     tempo = _clip(
         1.0 * spd +
         15 * int(s.get("first_strike", False)) +
@@ -446,7 +506,7 @@ def derive(monster: Monster) -> Dict[str, int]:
         0, 120
     )
 
-    # 5) 压 pp_pressure
+    # 5) 压 pp_pressure（资源剥夺 / 体系破坏）
     pp_pressure = _clip(
         18 * int(s.get("pp_hits", 0) > 0) +
          5 * int(s.get("pp_hits", 0)) +
