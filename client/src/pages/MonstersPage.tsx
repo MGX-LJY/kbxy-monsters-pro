@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import api from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
@@ -7,8 +7,8 @@ import Pagination from '../components/Pagination'
 import SideDrawer from '../components/SideDrawer'
 
 type RoleCount = { name: string, count: number }
-type SkillDTO = { id?:number, name:string, description?:string }
-type StatsDTO = { total:number, with_skills:number, tags_total:number }
+type SkillDTO = { id?: number; name: string; description?: string }
+type StatsDTO = { total: number; with_skills: number; tags_total: number }
 
 const isMeaningfulDesc = (t?: string) => {
   if (!t) return false
@@ -25,8 +25,8 @@ export default function MonstersPage() {
   const [q, setQ] = useState('')
   const [tag, setTag] = useState('')
   const [role, setRole] = useState('')
-  const [sort, setSort] = useState<'updated_at'|'name'|'offense'|'survive'|'control'|'tempo'|'pp'>('updated_at')
-  const [order, setOrder] = useState<'asc'|'desc'>('desc')
+  const [sort, setSort] = useState<'updated_at' | 'name' | 'offense' | 'survive' | 'control' | 'tempo' | 'pp'>('updated_at')
+  const [order, setOrder] = useState<'asc' | 'desc'>('desc')
 
   // 分页
   const [page, setPage] = useState(1)
@@ -48,7 +48,7 @@ export default function MonstersPage() {
   const [defense, setDefense] = useState(100)
   const [magic, setMagic] = useState(100)
   const [resist, setResist] = useState(100)
-  const [editSkills, setEditSkills] = useState<SkillDTO[]>([])
+  const [editSkills, setEditSkills] = useState<SkillDTO[]>([{ name: '', description: '' }])
   const [saving, setSaving] = useState(false)
 
   // 列表 & 基础数据
@@ -79,7 +79,7 @@ export default function MonstersPage() {
 
   // 详情的展示用六维
   const raw = (selected as any)?.explain_json?.raw_stats as
-    | { hp:number, speed:number, attack:number, defense:number, magic:number, resist:number, sum:number }
+    | { hp: number, speed: number, attack: number, defense: number, magic: number, resist: number, sum: number }
     | undefined
   const showStats = raw || {
     hp: selected?.base_survive ?? 0,
@@ -130,7 +130,7 @@ export default function MonstersPage() {
         data: { ids },
         headers: { 'Content-Type': 'application/json' }
       })
-    } catch (e:any) {
+    } catch {
       await api.post('/monsters/bulk_delete', { ids })
     }
     clearSelection()
@@ -180,11 +180,13 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 抽屉：进入编辑模式并填充
+  // —— 打开详情
   const openDetail = (m: Monster) => {
     setSelected(m)
     setIsEditing(false)
   }
+
+  // —— 进入编辑：预填原值（修复：之前没预填）
   const enterEdit = () => {
     if (!selected) return
     setEditName(selected.name_final || '')
@@ -199,10 +201,29 @@ export default function MonstersPage() {
       setHp(selected.base_survive ?? 100); setSpeed(selected.base_tempo ?? 100); setAttack(selected.base_offense ?? 100)
       setDefense(selected.base_control ?? 100); setMagic(selected.base_control ?? 100); setResist(selected.base_pp ?? 100)
     }
-    setEditSkills((skills.data || []).map(s => ({ name: s.name || '', description: s.description || '' })))
+    const existing = (skills.data || []).map(s => ({ name: s.name || '', description: s.description || '' }))
+    setEditSkills(existing.length ? existing : [{ name: '', description: '' }])
     setIsEditing(true)
   }
   const cancelEdit = () => setIsEditing(false)
+
+  // —— 保存：技能带方法降级（PUT→POST→/skills/set）
+  const saveSkillsWithFallback = async (monsterId: number, skillsBody: SkillDTO[]) => {
+    try {
+      return await api.put(`/monsters/${monsterId}/skills`, { skills: skillsBody })
+    } catch (e: any) {
+      const st = e?.response?.status
+      if (st === 405 || st === 404) {
+        try {
+          return await api.post(`/monsters/${monsterId}/skills`, { skills: skillsBody })
+        } catch {
+          // 最后一层兜底（如果你有 /skills/set）
+          return await api.post(`/skills/set`, { monster_id: monsterId, skills: skillsBody })
+        }
+      }
+      throw e
+    }
+  }
 
   // —— 保存（基础 + 技能）
   const saveEdit = async () => {
@@ -227,9 +248,9 @@ export default function MonstersPage() {
       }
       await api.put(`/monsters/${selected.id}`, payload)
 
-      // 2) 更新技能（在侧边栏内编辑）
+      // 2) 更新技能（带兜底）
       const filtered = editSkills.filter(s => (s.name || '').trim())
-      await api.put(`/monsters/${selected.id}/skills`, { skills: filtered })
+      await saveSkillsWithFallback(selected.id, filtered)
 
       // 刷新
       const fresh = (await api.get(`/monsters/${selected.id}`)).data as Monster
@@ -237,7 +258,7 @@ export default function MonstersPage() {
       skills.refetch()
       list.refetch()
       setIsEditing(false)
-    } catch (e:any) {
+    } catch (e: any) {
       alert(e?.response?.data?.detail || '保存失败')
     } finally {
       setSaving(false)
@@ -278,7 +299,7 @@ export default function MonstersPage() {
           <button className="btn" onClick={() => list.refetch()}>刷新</button>
           <button className="btn" onClick={exportCSV}>导出 CSV</button>
           <button className="btn" onClick={exportBackup}>备份 JSON</button>
-          <button className="btn" onClick={() => (document.getElementById('restoreInput') as HTMLInputElement)?.click()}>恢复 JSON</button>
+          <button className="btn" onClick={openRestore}>恢复 JSON</button>
           <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
         </div>
       </div>
@@ -386,7 +407,7 @@ export default function MonstersPage() {
             <div className="flex items-center justify-end gap-2">
               {!isEditing ? (
                 <>
-                  <button className="btn" onClick={() => setIsEditing(true)}>编辑</button>
+                  <button className="btn" onClick={enterEdit}>编辑</button>
                   <button className="btn" onClick={() => deleteOne(selected.id)}>删除</button>
                 </>
               ) : (
@@ -488,9 +509,9 @@ export default function MonstersPage() {
                     <div key={label} className="grid grid-cols-6 gap-2 items-center">
                       <div className="text-sm text-gray-600">{label}</div>
                       <input type="range" min={50} max={200} step={1}
-                        value={val} onChange={e => (setter as any)(parseInt(e.target.value,10))} className="col-span-4"/>
+                        value={val} onChange={e => (setter as any)(parseInt(e.target.value, 10))} className="col-span-4" />
                       <input className="input py-1" value={val}
-                        onChange={e => (setter as any)(parseInt(e.target.value || '0', 10))}/>
+                        onChange={e => (setter as any)(parseInt(e.target.value || '0', 10))} />
                     </div>
                   ))}
                   <div className="p-2 bg-gray-50 rounded text-sm text-center">六维总和：<b>{sum}</b></div>
@@ -508,12 +529,12 @@ export default function MonstersPage() {
                       <div key={idx} className="card p-3 space-y-2">
                         <div className="flex items-center gap-2">
                           <input className="input flex-1" value={s.name}
-                                 placeholder={`技能 ${idx+1} 名称`}
-                                 onChange={e => setEditSkills(prev => prev.map((x,i)=> i===idx? {...x, name:e.target.value}:x))}/>
-                          <button className="btn" onClick={() => setEditSkills(prev => prev.filter((_,i)=>i!==idx))} disabled={editSkills.length===1}>删除</button>
+                            placeholder={`技能 ${idx + 1} 名称`}
+                            onChange={e => setEditSkills(prev => prev.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} />
+                          <button className="btn" onClick={() => setEditSkills(prev => prev.filter((_, i) => i !== idx))} disabled={editSkills.length === 1}>删除</button>
                         </div>
                         <textarea className="input h-24" value={s.description || ''} placeholder="技能描述"
-                                  onChange={e => setEditSkills(prev => prev.map((x,i)=> i===idx? {...x, description:e.target.value}:x))}/>
+                          onChange={e => setEditSkills(prev => prev.map((x, i) => i === idx ? { ...x, description: e.target.value } : x))} />
                       </div>
                     ))}
                   </div>
