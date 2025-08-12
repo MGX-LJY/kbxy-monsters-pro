@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import SideDrawer from './SideDrawer'
 import api from '../api'
 
@@ -6,13 +6,16 @@ type SkillRow = { name: string; description: string }
 
 type Props = {
   open: boolean
+  editId?: number
   onClose: () => void
   onCreated?: (monsterId: number) => void
+  onUpdated?: (monsterId: number) => void
 }
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v))
 
-export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
+export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onUpdated }: Props) {
+  const isEdit = !!editId
   const [nameFinal, setNameFinal] = useState('')
   const [element, setElement] = useState('')
   const [role, setRole] = useState('')
@@ -51,6 +54,39 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
     setTagsInput(''); setSkills([{ name: '', description: '' }]); setErr(null); setExtractRaw('')
   }
 
+  // 编辑模式：加载详情 + 技能
+  useEffect(() => {
+    const load = async () => {
+      if (!open || !isEdit || !editId) return
+      try {
+        const [detail, sk] = await Promise.all([
+          api.get(`/monsters/${editId}`),
+          api.get(`/monsters/${editId}/skills`)
+        ])
+        const d = detail.data
+        setNameFinal(d.name_final || '')
+        setElement(d.element || '')
+        setRole(d.role || '')
+        // 原始六维如有则用原始，否则用折算
+        const raw = d.explain_json?.raw_stats
+        if (raw) {
+          setHp(raw.hp ?? 100); setSpeed(raw.speed ?? 100); setAttack(raw.attack ?? 100)
+          setDefense(raw.defense ?? 100); setMagic(raw.magic ?? 100); setResist(raw.resist ?? 100)
+        } else {
+          setHp(d.base_survive ?? 100); setSpeed(d.base_tempo ?? 100); setAttack(d.base_offense ?? 100)
+          // 没有单独防御/法术，只能从 control 反推，这里保持为 (control, control)
+          setDefense(d.base_control ?? 100); setMagic(d.base_control ?? 100); setResist(d.base_pp ?? 100)
+        }
+        setTagsInput((d.tags || []).join(' '))
+        const arr = (sk.data || []).map((s: any) => ({ name: s.name || '', description: s.description || '' }))
+        setSkills(arr.length ? arr : [{ name: '', description: '' }])
+      } catch (e) {
+        // ignore
+      }
+    }
+    load()
+  }, [open, isEdit, editId])
+
   const onSubmit = async () => {
     if (!nameFinal.trim()) { setErr('请填写名称'); return }
     setSubmitting(true); setErr(null)
@@ -65,9 +101,13 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
           .filter(s => s.name.trim())
           .map(s => ({ name: s.name.trim(), description: s.description?.trim() || '' })),
       }
-      const res = await api.post('/monsters', payload)
-      const id = res.data?.id
-      if (onCreated && id) onCreated(id)
+      if (isEdit && editId) {
+        const res = await api.put(`/monsters/${editId}`, payload)
+        onUpdated?.(res.data?.id)
+      } else {
+        const res = await api.post('/monsters', payload)
+        onCreated?.(res.data?.id)
+      }
       resetAll()
       onClose()
     } catch (e: any) {
@@ -81,7 +121,6 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
     if (!extractRaw.trim()) return
     setExtracting(true)
     try {
-      // 升级后的“智能识别”接口：同时返回 name + 六维 + 技能
       const { data } = await api.post('/utils/extract', { text: extractRaw })
       if (data?.name && !nameFinal) setNameFinal(data.name)
       if (data?.stats) {
@@ -117,9 +156,9 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
   }
 
   return (
-    <SideDrawer open={open} onClose={onClose} title="新增宠物">
+    <SideDrawer open={open} onClose={onClose} title={isEdit ? '编辑宠物' : '新增宠物'}>
       <div className="space-y-5">
-        {/* 智能识别：最上方 */}
+        {/* 智能识别 */}
         <div className="card p-3 space-y-2">
           <label className="label">智能识别（粘贴原文，自动提取六维 + 技能）</label>
           <textarea
@@ -171,7 +210,7 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
           </div>
         </div>
 
-        {/* 种族值（六维） */}
+        {/* 六维 */}
         <div className="card p-3 space-y-3">
           <h4 className="font-semibold">基础种族值（六维）</h4>
           <div className="space-y-3">
@@ -229,9 +268,9 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
         {err && <div className="text-red-600 text-sm">{err}</div>}
 
         <div className="flex justify-end gap-2">
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={() => { resetAll(); onClose() }}>取消</button>
           <button className="btn primary" onClick={onSubmit} disabled={submitting}>
-            {submitting ? '提交中...' : '保存'}
+            {submitting ? '提交中...' : (isEdit ? '保存修改' : '保存')}
           </button>
         </div>
       </div>
