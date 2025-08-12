@@ -26,10 +26,10 @@ const isValidSkillName = (name?: string) => !!(name && name.trim() && /[\u4e00-\
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
-  const [element, setElement] = useState('')           // 新增：元素筛选
+  const [element, setElement] = useState('')           // 元素筛选
   const [tag, setTag] = useState('')
   const [role, setRole] = useState('')
-  const [sort, setSort] = useState<SortKey>('updated_at')  // 新增：支持派生字段排序
+  const [sort, setSort] = useState<SortKey>('updated_at')  // 支持派生字段排序
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
 
   // 分页
@@ -56,14 +56,14 @@ export default function MonstersPage() {
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
-  // 列表 & 基础数据（把 element 传给后端）
+  // 列表 & 基础数据
   const list = useQuery({
     queryKey: ['monsters', { q, element, tag, role, sort, order, page, pageSize }],
     queryFn: async () =>
       (await api.get('/monsters', {
         params: {
           q: q || undefined,
-          element: element || undefined,   // 新增
+          element: element || undefined,
           tag: tag || undefined,
           role: role || undefined,
           sort,
@@ -74,13 +74,12 @@ export default function MonstersPage() {
       })).data as MonsterListResp
   })
 
-  // 兼容 /tags 返回结构差异：尽量托底
+  // 兼容 /tags 返回结构差异
   const tags = useQuery({
     queryKey: ['tags'],
     queryFn: async () => {
       try {
         const d = (await api.get('/tags', { params: { with_counts: true } })).data
-        // 可能是 { items: [...] } 或 直接数组
         return Array.isArray(d) ? d as TagCount[] : (d?.items || []) as TagCount[]
       } catch {
         return [] as TagCount[]
@@ -120,18 +119,23 @@ export default function MonstersPage() {
     return Array.from(map.entries()).map(([name, count]) => ({ name, count }))
   }, [tags.data, list.data])
 
-  // —— 展示用原始六维（只在详情展示）
-  const raw = (selected as any)?.explain_json?.raw_stats as
-    | { hp: number, speed: number, attack: number, defense: number, magic: number, resist: number }
-    | undefined
-  const showStats = raw ? {
-    hp: raw.hp, speed: raw.speed, attack: raw.attack,
-    defense: raw.defense, magic: raw.magic, resist: raw.resist,
-    sum: (raw.hp||0)+(raw.speed||0)+(raw.attack||0)+(raw.defense||0)+(raw.magic||0)+(raw.resist||0),
+  // —— 展示用原始六维（直接读数据库字段，不再用 raw_stats 兜底）
+  const showStats = selected ? {
+    hp: Math.round(selected.hp || 0),
+    speed: Math.round(selected.speed || 0),
+    attack: Math.round(selected.attack || 0),
+    defense: Math.round(selected.defense || 0),
+    magic: Math.round(selected.magic || 0),
+    resist: Math.round(selected.resist || 0),
+    sum: Math.round((selected.hp || 0) + (selected.speed || 0) + (selected.attack || 0) + (selected.defense || 0) + (selected.magic || 0) + (selected.resist || 0)),
   } : {
     hp: 0, speed: 0, attack: 0, defense: 0, magic: 0, resist: 0, sum: 0
   }
-  const sum = useMemo(() => hp + speed + attack + defense + magic + resist, [hp, speed, attack, defense, magic, resist])
+
+  const sum = useMemo(() =>
+    hp + speed + attack + defense + magic + resist,
+    [hp, speed, attack, defense, magic, resist]
+  )
 
   // —— 批量选择
   const toggleOne = (id: number) => {
@@ -217,20 +221,21 @@ export default function MonstersPage() {
     setIsEditing(false)
   }
 
-  // —— 进入编辑：预填“原始六维”（从 raw_stats）
+  // —— 进入编辑：表单初值直接用数据库字段（不再从 raw_stats 取）
   const enterEdit = () => {
     if (!selected) return
     setEditName(selected.name_final || '')
     setEditElement(selected.element || '')
     setEditRole(selected.role || '')
     setEditTags((selected.tags || []).join(' '))
-    const r = (selected as any)?.explain_json?.raw_stats
-    setHp(Math.round(r?.hp ?? 100))
-    setSpeed(Math.round(r?.speed ?? 100))
-    setAttack(Math.round(r?.attack ?? 100))
-    setDefense(Math.round(r?.defense ?? 100))
-    setMagic(Math.round(r?.magic ?? 100))
-    setResist(Math.round(r?.resist ?? 100))
+
+    setHp(Math.round(selected.hp ?? 100))
+    setSpeed(Math.round(selected.speed ?? 100))
+    setAttack(Math.round(selected.attack ?? 100))
+    setDefense(Math.round(selected.defense ?? 100))
+    setMagic(Math.round(selected.magic ?? 100))
+    setResist(Math.round(selected.resist ?? 100))
+
     const existing = (skills.data || []).map(s => ({ name: s.name || '', description: s.description || '' }))
     setEditSkills(existing.length ? existing : [{ name: '', description: '' }])
     setIsEditing(true)
@@ -254,7 +259,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 保存（名称/元素/定位/标签 + 原始六维 + 技能）
+  // —— 保存（名称/元素/定位/标签 + 六维 一次性提交；不再调用 /raw_stats）
   const saveEdit = async () => {
     if (!selected) return
     if (!editName.trim()) { alert('请填写名称'); return }
@@ -264,13 +269,10 @@ export default function MonstersPage() {
         name_final: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        // 仅保存标签到 Monster.tags
+        // 直接保存数据库中的六维
+        hp, speed, attack, defense, magic, resist,
+        // 标签
         tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
-      })
-
-      // 原始六维（仍用后端原有接口；如果你用统一 update，这里可以删除）
-      await api.put(`/monsters/${selected.id}/raw_stats`, {
-        hp, speed, attack, defense, magic, resist
       })
 
       // 技能
@@ -290,7 +292,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 主页一键自动匹配（修复 405：逐个 /tags/retag 兜底 + 触发派生更新）
+  // —— 一键自动匹配（优先调用后端批量接口，兜底逐条）
   const autoMatchBatch = async () => {
     const items = list.data?.items || []
     if (!items.length) return alert('当前没有可处理的记录')
@@ -300,20 +302,13 @@ export default function MonstersPage() {
 
     setAutoMatching(true)
     try {
-      // 先尝试批量接口（如果你的服务端实现了）
       try {
         await api.post('/monsters/auto_match', { ids: target.map(x => x.id) })
       } catch (e: any) {
-        // 405/404 兜底：逐个调用 /tags/monsters/{id}/retag，并拉 derived
         const ids = target.map(x => x.id)
         for (const id of ids) {
-          try {
-            await api.post(`/tags/monsters/${id}/retag`)
-          } catch {}
-          // 拉一下派生，确保服务端完成写回
-          try {
-            await api.get(`/monsters/${id}/derived`)
-          } catch {}
+          try { await api.post(`/tags/monsters/${id}/retag`) } catch {}
+          try { await api.get(`/monsters/${id}/derived`) } catch {}
         }
       }
 
@@ -330,7 +325,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 抽屉内“一键匹配（填充）”：拉取后端 derived 建议填入编辑框（不立刻保存）
+  // —— 抽屉内“一键匹配（填充）”
   const fillEditByAutoMatch = async () => {
     if (!selected) return
     const d = (await api.get(`/monsters/${selected.id}/derived`)).data as {
@@ -341,7 +336,6 @@ export default function MonstersPage() {
     if (!isEditing) setIsEditing(true)
   }
 
-  // 元素选项
   const elementOptions = ['金','木','水','火','土','风','雷','冰','毒','妖','光','暗','音']
 
   return (
@@ -358,7 +352,7 @@ export default function MonstersPage() {
           />
         </div>
 
-        {/* 第二行：新增“元素”下拉；排序支持派生字段 */}
+        {/* 第二行：元素下拉；排序支持派生字段 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
             <option value="">元素</option>
@@ -498,7 +492,7 @@ export default function MonstersPage() {
         </div>
       </div>
 
-      {/* 详情抽屉：显示原始六维；编辑时可改原始六维 */}
+      {/* 详情抽屉 */}
       <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false) }} title={selected?.name_final}>
         {selected && (
           <div className="space-y-5">

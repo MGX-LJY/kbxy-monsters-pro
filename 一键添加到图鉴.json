@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         kbxy 图鉴一键导入（六维+关键技能选择+匹配推荐）
 // @namespace    https://kbxy.local
-// @version      0.4.1
-// @description  在 4399 官方图鉴页识别六维 + 技能表，可匹配“推荐配招”，选择关键技能后一键导入到本地图鉴（FastAPI）；同时写入原版六维到 explain_json.raw_stats 以保证显示不失真
+// @version      0.5.0
+// @description  识别 4399 图鉴六维与技能，选择关键技能后一键导入到本地图鉴服务（自动打标签与重算派生）；支持手动选择元素；兼容后端版本差异（422 自动降级）
 // @author       you
 // @match        *://news.4399.com/kabuxiyou/*
 // @match        *://m.news.4399.com/kabuxiyou/*
@@ -23,7 +23,7 @@
     .kbxy-fab{position:fixed;right:18px;bottom:18px;z-index:99999;background:#2563eb;color:#fff;border-radius:999px;padding:10px 14px;box-shadow:0 6px 18px rgba(0,0,0,.15);font:600 13px/1.1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial}
     .kbxy-fab:hover{background:#1e4fd1}
     .kbxy-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99998}
-    .kbxy-panel{position:fixed;right:24px;bottom:24px;width:860px;max-height:80vh;overflow:auto;background:#fff;border-radius:16px;box-shadow:0 16px 40px rgba(0,0,0,.25);z-index:99999;padding:16px}
+    .kbxy-panel{position:fixed;right:24px;bottom:24px;width:880px;max-height:80vh;overflow:auto;background:#fff;border-radius:16px;box-shadow:0 16px 40px rgba(0,0,0,.25);z-index:99999;padding:16px}
     .kbxy-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     .kbxy-title{font-weight:700;margin:6px 0 10px 0}
     .kbxy-card{border:1px solid #eee;border-radius:12px;padding:10px}
@@ -31,6 +31,7 @@
     .kbxy-badges{display:flex;flex-wrap:wrap;gap:6px}
     .kbxy-chip{font-size:12px;border:1px solid #e5e7eb;border-radius:999px;padding:4px 8px;background:#f9fafb}
     .kbxy-input{width:100%;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px}
+    .kbxy-select{border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px}
     .kbxy-btn{display:inline-flex;align-items:center;gap:6px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;padding:8px 12px;font-weight:600;cursor:pointer}
     .kbxy-btn.primary{background:#2563eb;border-color:#2563eb;color:#fff}
     .kbxy-btn.primary:hover{background:#1e4fd1}
@@ -71,7 +72,7 @@
       .filter(Boolean);
   }
 
-  // 关键修复：按“最后 6 个单元格”取六维，能保留小数
+  // 解析六维（取每行最后6个单元格）
   function parseStatsTable() {
     const tables = $$('table');
     for (const t of tables) {
@@ -144,7 +145,7 @@
     });
   }
 
-  // 尝试携带 explain_json；若 422 再去掉重试
+  // 422 兼容降级：去掉 explain_json 再试
   async function safePut(url, body) {
     try {
       return await apiRequest('PUT', url, body);
@@ -168,34 +169,29 @@
     }
   }
 
+  // 新的 upsert：严格按 MonsterIn 结构传参
   async function upsertMonster(base, payload) {
     const q = encodeURIComponent(payload.name_final);
     const list = await apiRequest('GET', `${base}/monsters?q=${q}`);
-    const hit = (list?.items || []).find(x => x.name_final === payload.name_final && (!payload.element || x.element === payload.element));
+    const hit = (list?.items || []).find(x => x.name_final === payload.name_final);
+    const body = {
+      name_final: payload.name_final,
+      element: payload.element || null,
+      role: payload.role || null,
+      hp: Math.round(payload.hp),
+      speed: Math.round(payload.speed),
+      attack: Math.round(payload.attack),
+      defense: Math.round(payload.defense),
+      magic: Math.round(payload.magic),
+      resist: Math.round(payload.resist),
+      tags: payload.tags || [],
+      explain_json: payload.explain_json || undefined, // 若 422 会被 safe* 切掉
+    };
     if (hit) {
-      await safePut(`${base}/monsters/${hit.id}`, {
-        element: payload.element || null,
-        role: payload.role || null,
-        base_offense: payload.base_offense,
-        base_survive: payload.base_survive,
-        base_control: payload.base_control,
-        base_tempo: payload.base_tempo,
-        base_pp: payload.base_pp,
-        explain_json: payload.explain_json || undefined,
-      });
+      await safePut(`${base}/monsters/${hit.id}`, body);
       return hit.id;
     } else {
-      const created = await safePost(`${base}/monsters`, {
-        name_final: payload.name_final,
-        element: payload.element || null,
-        role: payload.role || null,
-        base_offense: payload.base_offense,
-        base_survive: payload.base_survive,
-        base_control: payload.base_control,
-        base_tempo: payload.base_tempo,
-        base_pp: payload.base_pp,
-        explain_json: payload.explain_json || undefined,
-      });
+      const created = await safePost(`${base}/monsters`, body);
       return created.id;
     }
   }
@@ -216,6 +212,21 @@
     }
   }
 
+  // 自动匹配：优先批量接口 /monsters/auto_match，失败则降级为逐个 /tags/monsters/{id}/retag
+  async function autoMatchIds(base, ids) {
+    try {
+      await apiRequest('POST', `${base}/monsters/auto_match`, { ids });
+    } catch (e) {
+      if (/HTTP 405|HTTP 404/.test(String(e?.message || ''))) {
+        for (const id of ids) {
+          await apiRequest('POST', `${base}/tags/monsters/${id}/retag`, {});
+        }
+      } else {
+        throw e;
+      }
+    }
+  }
+
   function init() {
     if (!document.body) return;
     const fab = document.createElement('button');
@@ -227,9 +238,9 @@
 
   function openPanel() {
     try {
-      const el = detectElement();
+      const detectedElement = detectElement(); // 可能为空
       const statsRows = parseStatsTable();
-      const skills = parseSkillTable();
+      const skillRows = parseSkillTable();
       const recCombos = parseRecommendedCombos();
 
       if (!statsRows.length) {
@@ -238,7 +249,7 @@
       }
 
       const mask = document.createElement('div'); mask.className = 'kbxy-mask';
-      const panel = document.createElement('div'); panel.className = 'kbxy-panel';
+      const panel = document.createElement('div'); panel.className = 'kbxy-panel'; panel.id = 'kbxy-panel';
       const closeBtn = document.createElement('button');
       closeBtn.className = 'kbxy-close'; closeBtn.textContent = '×';
       closeBtn.onclick = () => { document.body.removeChild(mask); document.body.removeChild(panel); };
@@ -247,6 +258,8 @@
       let apiBase = API_BASE;
       let filterText = '';
       let onlyLikelyCore = false;
+      let selectedElement = detectedElement || ''; // ← 用户可手动改
+
       const likelyCore = (s) => /(提高|降低|免疫|回复|暴击|速度|抗性|防御|命中|昏迷|窒息|先手)/.test((s.name + ' ' + (s.description || '')).toLowerCase());
 
       function render() {
@@ -260,11 +273,19 @@
         const row1 = document.createElement('div'); row1.className = 'kbxy-row';
         const left = document.createElement('div'); left.className = 'kbxy-card';
         left.innerHTML = `
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
             <select class="kbxy-input" id="kbxy-monster-row">
               ${statsRows.map((r, i)=>`<option value="${i}" ${i===currentIdx?'selected':''}>选择行：${r.name}（sum=${r.sum}）</option>`).join('')}
             </select>
-            <span class="kbxy-chip">元素：${el || '未知'}</span>
+            <label style="display:flex;align-items:center;gap:6px">
+              <span class="kbxy-chip">元素</span>
+              <select id="kbxy-element" class="kbxy-select">
+                <option value="">未设置</option>
+                ${['金','木','水','火','土','风','雷','冰','毒','妖','光','暗','音'].map(v =>
+                  `<option value="${v}" ${selectedElement===v?'selected':''}>${v}</option>`
+                ).join('')}
+              </select>
+            </label>
           </div>
           <div class="kbxy-stat">
             <div class="kbxy-chip">体力：${statsRows[currentIdx]?.hp ?? '-'}</div>
@@ -286,7 +307,8 @@
           </label>
           <div class="kbxy-badges">
             <span class="kbxy-chip">POST /monsters（upsert）</span>
-            <span class="kbxy-chip">PUT/POST /monsters/{id}/skills（覆盖技能）</span>
+            <span class="kbxy-chip">PUT/POST /monsters/{id}/skills</span>
+            <span class="kbxy-chip">POST /monsters/auto_match（或逐个 /tags/monsters/{id}/retag）</span>
           </div>
         `;
         row1.appendChild(right);
@@ -315,7 +337,7 @@
         if (!window.__kbxy_checked) window.__kbxy_checked = {};
         const checked = window.__kbxy_checked;
 
-        const visibleSkills = skills.filter(s => {
+        const visibleSkills = skillRows.filter(s => {
           const hit = (s.name + ' ' + (s.description || '')).toLowerCase().includes((filterText || '').toLowerCase());
           const coreOK = !onlyLikelyCore || likelyCore(s);
           return hit && coreOK;
@@ -341,10 +363,10 @@
         panel.appendChild(row2);
 
         const footer = document.createElement('div'); footer.className = 'kbxy-footer';
-        const chosen = skills.filter(s => checked[`kbxy-s-${s.name}`]);
+        const chosen = skillRows.filter(s => checked[`kbxy-s-${s.name}`]);
         const overlap = recCombos.length ? chosen.filter(s => recCombos.includes(s.name)).length : 0;
         const note = document.createElement('div'); note.className = 'kbxy-note';
-        note.textContent = `六维行：${statsRows.length}；技能共 ${skills.length}，当前显示 ${visibleSkills.length}；已选 ${chosen.length}${recCombos.length?`；与“推荐配招”重合 ${overlap}/${recCombos.length}`:''}。`;
+        note.textContent = `六维行：${statsRows.length}；技能共 ${skillRows.length}，当前显示 ${visibleSkills.length}；已选 ${chosen.length}${recCombos.length?`；与“推荐配招”重合 ${overlap}/${recCombos.length}`:''}。`;
 
         const actions = document.createElement('div'); actions.style = 'display:flex;gap:8px';
         const btnCancel = document.createElement('button'); btnCancel.className = 'kbxy-btn'; btnCancel.textContent = '取消';
@@ -353,32 +375,25 @@
         btnImport.onclick = async () => {
           try {
             const row = statsRows[currentIdx];
-            const element = el;
             const name_final = row?.name || document.title.replace(/卡布西游|技能表.*/g,'').trim() || '未知';
-
-            // —— 原版六维写入 explain_json.raw_stats（保留小数）
-            const rawStats = {
-              hp: row.hp, speed: row.speed, attack: row.attack,
-              defense: row.defense, magic: row.magic, resist: row.resist,
-              sum: row.sum
-            };
-
-            // —— 兼容后端整型：base_* 取整；base_control = (防御+法术)/2 四舍五入
-            const base_offense = Math.round(row.attack);
-            const base_survive = Math.round(row.hp);
-            const base_control = Math.round((Number(row.defense) + Number(row.magic)) / 2);
-            const base_tempo = Math.round(row.speed);
-            const base_pp = Math.round(row.resist);
-
-            const selectedSkills = skills.filter(s => !!checked[`kbxy-s-${s.name}`]);
+            const selectedSkills = skillRows.filter(s => !!window.__kbxy_checked[`kbxy-s-${s.name}`]);
 
             localStorage.setItem('kbxy_api_base', apiBase);
 
+            // 严格 MonsterIn
             const monsterId = await upsertMonster(apiBase, {
-              name_final, element, role: null,
-              base_offense, base_survive, base_control, base_tempo, base_pp,
+              name_final,
+              element: selectedElement || null,
+              role: null,
+              hp: row.hp, speed: row.speed, attack: row.attack,
+              defense: row.defense, magic: row.magic, resist: row.resist,
+              tags: [],
               explain_json: {
-                raw_stats: rawStats,
+                raw_stats: {
+                  hp: row.hp, speed: row.speed, attack: row.attack,
+                  defense: row.defense, magic: row.magic, resist: row.resist,
+                  sum: row.sum
+                },
                 source: {
                   site: '4399',
                   url: location.href,
@@ -388,7 +403,17 @@
               }
             });
 
+            // 保存技能
             await saveSkills(apiBase, monsterId, selectedSkills);
+
+            // 自动匹配（批量接口优先）
+            await autoMatchIds(apiBase, [monsterId]);
+
+            // 校验一下
+            try {
+              const detail = await apiRequest('GET', `${apiBase}/monsters/${monsterId}`);
+              console.log('[kbxy] imported:', detail);
+            } catch {}
 
             alert(`导入成功：${name_final}（ID=${monsterId}），关键技能 ${selectedSkills.length} 个。`);
           } catch (e) {
@@ -399,19 +424,22 @@
         footer.appendChild(note); footer.appendChild(actions);
         panel.appendChild(footer);
 
+        // 事件绑定
         panel.querySelector('#kbxy-monster-row')?.addEventListener('change', (e) => { currentIdx = Number(e.target.value); render(); });
+        panel.querySelector('#kbxy-element')?.addEventListener('change', (e) => { selectedElement = e.target.value; });
         panel.querySelector('#kbxy-api')?.addEventListener('input', (e) => { apiBase = e.target.value; });
         panel.querySelector('#kbxy-search')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { filterText = e.target.value; render(); } });
         panel.querySelector('#kbxy-core-only')?.addEventListener('change', (e) => { onlyLikelyCore = e.target.checked; render(); });
-        panel.querySelector('#kbxy-select-all')?.addEventListener('click', () => { for (const s of skills) window.__kbxy_checked[`kbxy-s-${s.name}`] = true; render(); });
+        panel.querySelector('#kbxy-select-all')?.addEventListener('click', () => { for (const s of skillRows) window.__kbxy_checked[`kbxy-s-${s.name}`] = true; render(); });
         panel.querySelector('#kbxy-clear')?.addEventListener('click', () => { window.__kbxy_checked = {}; render(); });
         panel.querySelector('#kbxy-match-rec')?.addEventListener('click', () => {
           if (!recCombos.length) { alert('未识别到“推荐配招”'); return; }
-          for (const s of skills) if (recCombos.includes(s.name)) window.__kbxy_checked[`kbxy-s-${s.name}`] = true;
+          for (const s of skillRows) if (recCombos.includes(s.name)) window.__kbxy_checked[`kbxy-s-${s.name}`] = true;
           render();
         });
 
-        $$('#kbxy-panel input[type=checkbox], input[type=checkbox]', listWrap).forEach(cb => {
+        // 列表里的勾选
+        $$('#kbxy-panel input[type=checkbox]').forEach(cb => {
           cb.addEventListener('change', (e) => { window.__kbxy_checked[e.target.id] = e.target.checked; });
         });
       }

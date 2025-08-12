@@ -23,9 +23,9 @@ class DerivedOut(BaseModel):
     tempo: int = 0
     pp_pressure: int = 0
 
-# —— AutoMatch —— #
+# —— AutoMatch（保留，当前未直接使用） —— #
 class AutoMatchIn(BaseModel):
-    commit: bool = False  # True=写库（role/tags + derived），False=只返回建议
+    commit: bool = False  # True=写库，False=只返回建议（现由 /monsters/auto_match 接管）
 
 class AutoMatchOut(BaseModel):
     monster_id: int

@@ -1,7 +1,7 @@
 # server/app/routes/monsters.py
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 
@@ -16,9 +16,12 @@ from ..services.derive_service import (
     recompute_and_autolabel,
     apply_role_tags,
 )
+from ..services.tags_service import (
+    suggest_tags_for_monster,
+    infer_role_for_monster,
+)
 
 router = APIRouter()
-
 
 def get_db():
     db = SessionLocal()
@@ -27,7 +30,19 @@ def get_db():
     finally:
         db.close()
 
+# ---------- 新增：请求体模型 ----------
+class RawStatsIn(BaseModel):
+    hp: float = Field(..., description="体力")
+    speed: float = Field(..., description="速度")
+    attack: float = Field(..., description="攻击")
+    defense: float = Field(..., description="防御")
+    magic: float = Field(..., description="法术")
+    resist: float = Field(..., description="抗性")
 
+class AutoMatchIdsIn(BaseModel):
+    ids: List[int]
+
+# ---------- 列表 ----------
 @router.get("/monsters", response_model=MonsterList)
 def list_api(
     q: Optional[str] = None,
@@ -65,12 +80,12 @@ def list_api(
     changed = False
 
     for m in items:
-        # 1) 先确保 role / tags
+        # 先确保 role / tags
         if (not m.role) or (not m.tags):
             apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
             changed = True
 
-        # 2) 计算“最新”的派生；如果和库里不一致则更新（解决：已打标签但 pp 仍为 0）
+        # 计算“最新”的派生；若与库里不一致则落库（避免已打标签但 PP 仍为 0）
         fresh = compute_derived_out(m)
         need_update = (
             (not m.derived) or
@@ -106,12 +121,12 @@ def list_api(
         )
 
     if changed:
-        db.commit()  # 可能写入了 derived / role / tags
+        db.commit()
 
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
 
-
+# ---------- 详情 ----------
 @router.get("/monsters/{monster_id}", response_model=MonsterOut)
 def detail(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(
@@ -124,7 +139,7 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 同样做一次“过期检测”
+    # 过期检测
     if (not m.role) or (not m.tags):
         apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
 
@@ -153,7 +168,84 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         },
     )
 
+# ---------- 新增：保存原始六维（同步列 + raw_stats + 立刻重算派生） ----------
+@router.put("/monsters/{monster_id}/raw_stats")
+def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(get_db)):
+    m = db.get(Monster, monster_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="not found")
 
+    # 1) 同步到列（便于过滤/排序）
+    m.hp = float(payload.hp)
+    m.speed = float(payload.speed)
+    m.attack = float(payload.attack)
+    m.defense = float(payload.defense)
+    m.magic = float(payload.magic)
+    m.resist = float(payload.resist)
+
+    # 2) 同步 explain_json.raw_stats（保留小数 + sum）
+    ex = m.explain_json or {}
+    ex["raw_stats"] = {
+        "hp": float(payload.hp),
+        "speed": float(payload.speed),
+        "attack": float(payload.attack),
+        "defense": float(payload.defense),
+        "magic": float(payload.magic),
+        "resist": float(payload.resist),
+        "sum": float(payload.hp + payload.speed + payload.attack + payload.defense + payload.magic + payload.resist),
+    }
+    m.explain_json = ex
+
+    # 3) 立刻重算派生
+    compute_and_persist(db, m)
+
+    db.commit()
+    return {"ok": True, "monster_id": m.id}
+
+# ---------- 新增：返回派生 + 建议（供前端“填充”） ----------
+@router.get("/monsters/{monster_id}/derived")
+def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
+    m = db.execute(
+        select(Monster)
+        .where(Monster.id == monster_id)
+        .options(selectinload(Monster.skills), selectinload(Monster.tags), selectinload(Monster.derived))
+    ).scalar_one_or_none()
+    if not m:
+        raise HTTPException(status_code=404, detail="not found")
+
+    role_suggested = infer_role_for_monster(m)
+    tags_suggested = suggest_tags_for_monster(m)
+    derived_now = compute_derived_out(m)
+
+    return {
+        "monster_id": m.id,
+        "role_suggested": role_suggested,
+        "tags": tags_suggested,
+        "derived": derived_now,
+    }
+
+# ---------- 新增：批量自动匹配（打 role/tags 并重算派生） ----------
+@router.post("/monsters/auto_match")
+def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
+    if not body.ids:
+        return {"ok": True, "processed": 0}
+
+    mons = db.execute(
+        select(Monster)
+        .where(Monster.id.in_(body.ids))
+        .options(selectinload(Monster.skills), selectinload(Monster.tags), selectinload(Monster.derived))
+    ).scalars().all()
+
+    n = 0
+    for m in mons:
+        apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
+        compute_and_persist(db, m)
+        n += 1
+
+    db.commit()
+    return {"ok": True, "processed": n}
+
+# ---------- 创建 ----------
 @router.post("/monsters", response_model=MonsterOut)
 def create(payload: MonsterIn, db: Session = Depends(get_db)):
     m = Monster(
@@ -176,7 +268,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
     db.commit(); db.refresh(m)
     return detail(m.id, db)
 
-
+# ---------- 更新 ----------
 @router.put("/monsters/{monster_id}", response_model=MonsterOut)
 def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     m = db.get(Monster, monster_id)
@@ -200,7 +292,7 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     db.commit()
     return detail(monster_id, db)
 
-
+# ---------- 删除 ----------
 @router.delete("/monsters/{monster_id}")
 def delete(monster_id: int, db: Session = Depends(get_db)):
     """
@@ -219,37 +311,3 @@ def delete(monster_id: int, db: Session = Depends(get_db)):
     db.delete(m)  # MonsterDerived 走 delete-orphan 一并删
     db.commit()
     return {"ok": True}
-
-
-# -------- 新增：批量自动匹配（覆盖定位与标签，并重算派生） --------
-
-class AutoMatchIn(BaseModel):
-    ids: Optional[List[int]] = None
-
-
-@router.post("/monsters/auto_match")
-def auto_match(payload: AutoMatchIn, db: Session = Depends(get_db)):
-    """
-    批量“自动匹配”（重算 role/tags，并重算派生五维）。
-    - 若传入 ids，仅处理这些；否则不做任何事（也可改为全量处理，看需要）
-    - 行为与 /tags/monsters/{id}/retag 一致：覆盖 role，覆盖 tags（不合并）
-    """
-    ids = (payload.ids or [])
-    if not ids:
-        return {"ok": True, "updated": 0}
-
-    mons: List[Monster] = db.execute(
-        select(Monster)
-        .where(Monster.id.in_(ids))
-        .options(selectinload(Monster.skills), selectinload(Monster.tags))
-    ).scalars().all()
-
-    updated = 0
-    for m in mons:
-        # 覆盖定位与标签，然后重算派生
-        apply_role_tags(db, m, override_role_if_blank=False, merge_tags=False)
-        compute_and_persist(db, m)
-        updated += 1
-
-    db.commit()
-    return {"ok": True, "updated": updated}
