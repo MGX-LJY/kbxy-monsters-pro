@@ -30,21 +30,31 @@ const isValidSkillName = (name?: string) => {
 }
 
 export default function MonstersPage() {
+  // 新增：搜索关键词
   const [q, setQ] = useState('')
+
+  // 两行两列：上=标签/定位；下=更新时间/降序
   const [tag, setTag] = useState('')
   const [role, setRole] = useState('')
   const [sort, setSort] = useState<'updated_at'|'name'|'offense'|'survive'|'control'|'tempo'|'pp'>('updated_at')
   const [order, setOrder] = useState<'asc'|'desc'>('desc')
+
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<Monster | null>(null)
   const [openCreate, setOpenCreate] = useState(false)
   const pageSize = 20
 
   const list = useQuery({
+    // 重新带上 q
     queryKey: ['monsters', { q, tag, role, sort, order, page, pageSize }],
     queryFn: async () =>
       (await api.get('/monsters', {
-        params: { q: q || undefined, tag: tag || undefined, role: role || undefined, sort, order, page, page_size: pageSize }
+        params: {
+          q: q || undefined,
+          tag: tag || undefined,
+          role: role || undefined,
+          sort, order, page, page_size: pageSize
+        }
       })).data as MonsterListResp
   })
 
@@ -88,38 +98,68 @@ export default function MonstersPage() {
 
   return (
     <div className="container my-6 space-y-4">
-      {/* 顶部工具栏：横向 + 自适应换行 */}
-      <div className="card p-3">
-        <div className="flex flex-wrap items-center gap-2 md:gap-3">
+      {/* 工具栏卡片：顶部一行全宽搜索 + 下方两行两列筛选 */}
+      <div className="card p-4">
+        {/* 搜索（全宽，恢复搜索功能） */}
+        <div className="mb-3">
           <input
-            className="input flex-grow min-w-[160px]"
-            placeholder="搜索..."
+            className="input"
+            placeholder="搜索名称 / 技能关键词…"
             value={q}
             onChange={e => { setQ(e.target.value); setPage(1) }}
+            aria-label="搜索"
           />
-          <select className="select w-28" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
+        </div>
+
+        {/* 两行两列：上=标签/定位；下=更新时间/降序 */}
+        <div className="grid grid-cols-2 gap-3">
+          <select
+            className="select"
+            value={tag}
+            onChange={e => { setTag(e.target.value); setPage(1) }}
+            aria-label="标签"
+          >
             <option value="">标签</option>
             {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
           </select>
-          <select className="select w-28" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
+
+          <select
+            className="select"
+            value={role}
+            onChange={e => { setRole(e.target.value); setPage(1) }}
+            aria-label="定位"
+          >
             <option value="">定位</option>
-            {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
+            {roles.data?.map(r => (
+              <option key={r.name} value={r.name}>
+                {r.count ? `${r.name}（${r.count}）` : r.name}
+              </option>
+            ))}
           </select>
-          <select className="select w-32" value={sort} onChange={e => setSort(e.target.value as any)}>
+
+          <select
+            className="select"
+            value={sort}
+            onChange={e => setSort(e.target.value as any)}
+            aria-label="排序字段"
+          >
             <option value="updated_at">更新时间</option>
-            <option value="name">名称</option>
-            <option value="offense">攻</option>
-            <option value="survive">生</option>
-            <option value="control">控</option>
-            <option value="tempo">速</option>
-            <option value="pp">PP</option>
           </select>
-          <select className="select w-24" value={order} onChange={e => setOrder(e.target.value as any)}>
+
+          <select
+            className="select"
+            value={order}
+            onChange={e => setOrder(e.target.value as any)}
+            aria-label="升降序"
+          >
             <option value="desc">降序</option>
             <option value="asc">升序</option>
           </select>
-          <button className="btn" onClick={() => list.refetch()}>刷新</button>
-          <button className="btn primary" onClick={() => setOpenCreate(true)}>+ 新增</button>
+        </div>
+
+        <div className="mt-3 flex justify-end gap-2">
+          <button className="btn ghost" onClick={() => list.refetch()} aria-label="刷新">刷新</button>
+          <button className="btn primary" onClick={() => setOpenCreate(true)} aria-label="新增">+ 新增</button>
         </div>
       </div>
 

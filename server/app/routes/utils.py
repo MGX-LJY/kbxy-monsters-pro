@@ -1,82 +1,93 @@
-# server/app/routes/utils.py
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import re
+from typing import List, Optional
 
 router = APIRouter()
 
+# ====== I/O 模型 ======
 class ExtractReq(BaseModel):
-    text: str
+  text: str
 
-class ExtractRespSkill(BaseModel):
-    name: str
-    description: str
+class ExtractSkill(BaseModel):
+  name: str
+  description: str = ""
+
+class ExtractStats(BaseModel):
+  hp: Optional[int] = None
+  speed: Optional[int] = None
+  attack: Optional[int] = None
+  defense: Optional[int] = None
+  magic: Optional[int] = None
+  resist: Optional[int] = None
 
 class ExtractResp(BaseModel):
-    skills: list[ExtractRespSkill]
+  name: Optional[str] = None
+  stats: ExtractStats
+  skills: List[ExtractSkill]
 
+# ====== 工具方法 ======
 def _meaningful_desc(s: str) -> bool:
-    t = (s or "").strip()
-    if not t or t.lower() in {"0","1","-","—","无","暂无","null","none","n/a","N/A"}:
-        return False
-    return (len(t) >= 6 or
-            re.search(r"[，。；、,.]", t) or
-            re.search(r"(提高|降低|回复|免疫|伤害|回合|命中|几率|状态|先手|消除|减少|增加|额外|倍)", t))
+  t = (s or "").strip()
+  if not t or t.lower() in {"0","1","-","—","无","暂无","null","none","n/a","N/A"}:
+    return False
+  return (len(t) >= 6 or
+          re.search(r"[，。；、,.]", t) or
+          re.search(r"(提高|降低|回复|免疫|伤害|回合|命中|几率|状态|先手|消除|减少|增加|额外|倍)", t))
 
-@router.post("/utils/extract_skills", response_model=ExtractResp)
-def extract_skills(payload: ExtractReq):
-    """
-    适配示例：
-    岚羽箭雕 115 113 120 107 96 94  疾袭贯羽 72 风 物理 165 5 无视对手防御提升的效果，若本次攻击造成的伤害小于300，则令对方速度下降两级
-    结果：name=疾袭贯羽, description=无视对手防御提升的效果...
-    """
-    text = (payload.text or "").strip()
-    if not text:
-        raise HTTPException(status_code=400, detail="empty text")
+def _strip_prefix_noise(s: str) -> str:
+  # 去掉技能名后的常见噪音（元素/类型/威力/PP/冷却/数字等）
+  for _ in range(6):
+    s = re.sub(r"""
+        ^\s*(?:\d+|
+               [风火水木金土冰雷毒岩光暗普]|
+               物理|法术|特殊|状态|类型|
+               威力|PP|耗能|冷却|cd|CD|命中率?)[:：]?\s*
+    """, "", s, flags=re.X)
+  return s.strip()
 
-    # 1) 找出前 6 个数字（六维），并定位到其后
-    nums = list(re.finditer(r"\d+", text))
-    pos = 0
-    if len(nums) >= 6:
-        pos = nums[5].end()  # 第6个数字结束的位置
+# ====== 主入口：智能识别（六维 + 技能 + 可选名称） ======
+@router.post("/utils/extract", response_model=ExtractResp)
+def extract(payload: ExtractReq):
+  text = (payload.text or "").strip()
+  if not text:
+    raise HTTPException(status_code=400, detail="empty text")
 
-    tail = text[pos:].strip() or text  # 没找到也用全文兜底
+  # 1) 抓六维：第一组连续 6 个数字
+  nums = list(re.finditer(r"\d+", text))
+  stats = ExtractStats()
+  six = None
+  for i in range(len(nums) - 5):
+    grp = nums[i:i+6]
+    vals = [int(n.group()) for n in grp]
+    if all(30 <= v <= 300 for v in vals):  # 宽松范围
+      six = (grp, vals)
+      break
 
-    # 2) 找技能名（第一个长度≥2的中文词）
-    m_name = re.search(r"[\u4e00-\u9fff]{2,20}", tail)
-    if not m_name:
-        # 兜底：在全文里找
-        m_name = re.search(r"[\u4e00-\u9fff]{2,20}", text)
-    if not m_name:
-        return {"skills": []}
+  name = None
+  tail_after_stats = text
+  if six:
+    grp, vals = six
+    stats.hp, stats.speed, stats.attack, stats.defense, stats.magic, stats.resist = vals
+    tail_after_stats = text[grp[-1].end():].strip()
+    # 六维前尝试找名字（第一个 2~12 汉字）
+    head = text[:grp[0].start()]
+    m_name = re.search(r"[\u4e00-\u9fff]{2,12}", head)
+    if m_name:
+      name = m_name.group(0)
 
-    name = m_name.group(0)
-    after = tail[m_name.end():]
-
-    # 3) 去掉常见前缀垃圾（元素/类型/威力/PP/冷却/数字等）
-    junk_prefix = r"""
-        ^\s*
-        (?:
-            \d+|
-            [风火水木金土冰雷毒岩光暗普]|        # 元素/属性简写
-            (?:物理|法术|特殊|状态|类型)|          # 类型词
-            (?:威力|PP|耗能|冷却|cd|CD|命中率?)   # 常见字段
-        )
-        [:：]?
-        \s*
-    """
-    # 多剥几次
-    for _ in range(6):
-        after = re.sub(junk_prefix, "", after, flags=re.X)
-
-    desc = after.strip()
+  # 2) 抓技能：优先在六维之后
+  search_base = tail_after_stats or text
+  m_skill_name = re.search(r"[\u4e00-\u9fff]{2,20}", search_base)
+  skills: List[ExtractSkill] = []
+  if m_skill_name:
+    sk_name = m_skill_name.group(0)
+    desc = _strip_prefix_noise(search_base[m_skill_name.end():])
     if not _meaningful_desc(desc):
-        # 兜底：从原文里找第一个像描述的句子
-        m_desc = re.search(r"(无视|若|当|命中|使|令|提高|降低|回复|免疫|伤害|回合|几率|状态).{4,}", text)
-        if m_desc:
-            desc = m_desc.group(0).strip()
+      # 兜底：全文找一段像描述的句子
+      m_desc = re.search(r"(无视|若|当|命中|使|令|提高|降低|回复|免疫|伤害|回合|几率|状态).{4,}", text)
+      if m_desc:
+        desc = m_desc.group(0).strip()
+    skills.append(ExtractSkill(name=sk_name, description=desc if _meaningful_desc(desc) else ""))
 
-    if not _meaningful_desc(desc):
-        return {"skills": [{"name": name, "description": ""}]}
-
-    return {"skills": [{"name": name, "description": desc}]}
+  return ExtractResp(name=name, stats=stats, skills=skills)

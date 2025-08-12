@@ -81,7 +81,18 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
     if (!extractRaw.trim()) return
     setExtracting(true)
     try {
-      const { data } = await api.post('/utils/extract_skills', { text: extractRaw })
+      // 升级后的“智能识别”接口：同时返回 name + 六维 + 技能
+      const { data } = await api.post('/utils/extract', { text: extractRaw })
+      if (data?.name && !nameFinal) setNameFinal(data.name)
+      if (data?.stats) {
+        const s = data.stats
+        if (typeof s.hp === 'number') setHp(s.hp)
+        if (typeof s.speed === 'number') setSpeed(s.speed)
+        if (typeof s.attack === 'number') setAttack(s.attack)
+        if (typeof s.defense === 'number') setDefense(s.defense)
+        if (typeof s.magic === 'number') setMagic(s.magic)
+        if (typeof s.resist === 'number') setResist(s.resist)
+      }
       const arr: SkillRow[] = (data?.skills || []).filter((s:any)=>s?.name)
       if (arr.length) {
         setSkills(prev => {
@@ -96,8 +107,8 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
           })
           return merged
         })
-        setExtractRaw('')
       }
+      setExtractRaw('')
     } catch (e:any) {
       setErr(e?.response?.data?.detail || '识别失败')
     } finally {
@@ -108,9 +119,9 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
   return (
     <SideDrawer open={open} onClose={onClose} title="新增宠物">
       <div className="space-y-5">
-        {/* 智能识别：放在最上方 */}
+        {/* 智能识别：最上方 */}
         <div className="card p-3 space-y-2">
-          <label className="label">智能识别（粘贴原文，仅提取技能名 + 描述）</label>
+          <label className="label">智能识别（粘贴原文，自动提取六维 + 技能）</label>
           <textarea
             className="input h-24"
             placeholder="例：岚羽箭雕 115 113 120 107 96 94  疾袭贯羽 72 风 物理 165 5 无视对手防御提升的效果..."
@@ -119,12 +130,12 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
           />
           <div className="flex justify-end">
             <button className="btn" onClick={extractFromText} disabled={extracting}>
-              {extracting ? '识别中...' : '识别并加入技能'}
+              {extracting ? '识别中...' : '识别并填入'}
             </button>
           </div>
         </div>
 
-        {/* 基本信息：单块区域（不与种族值并列） */}
+        {/* 基本信息 */}
         <div className="card p-3 space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="md:col-span-2">
@@ -160,7 +171,7 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
           </div>
         </div>
 
-        {/* 种族值：单独一列（独立整块） */}
+        {/* 种族值（六维） */}
         <div className="card p-3 space-y-3">
           <h4 className="font-semibold">基础种族值（六维）</h4>
           <div className="space-y-3">
@@ -196,7 +207,7 @@ export default function AddMonsterDrawer({ open, onClose, onCreated }: Props) {
           </div>
         </div>
 
-        {/* 技能：两列卡片 */}
+        {/* 技能 */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <h4 className="font-semibold">技能（可添加多个）</h4>
