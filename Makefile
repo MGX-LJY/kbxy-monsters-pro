@@ -7,7 +7,11 @@ install:
 	cd client && npm i
 
 server:
-	uvicorn server.app.main:app --reload --port 8000
+	uvicorn server.app.main:app --reload --port 8000 \
+	  --reload-dir server --reload-dir rules \
+	  --reload-exclude '.venv/*' \
+	  --reload-exclude '*/site-packages/*' \
+	  --reload-exclude '**/__pycache__/*'
 
 client:
 	cd client && npm run dev
