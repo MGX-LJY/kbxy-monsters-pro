@@ -4,6 +4,7 @@ import api from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
+import SideDrawer from '../components/SideDrawer'
 
 export default function MonstersPage() {
   const [q, setQ] = useState('')
@@ -11,6 +12,7 @@ export default function MonstersPage() {
   const [sort, setSort] = useState<'updated_at'|'name'|'offense'|'survive'|'control'|'tempo'|'pp'>('updated_at')
   const [order, setOrder] = useState<'asc'|'desc'>('desc')
   const [page, setPage] = useState(1)
+  const [selected, setSelected] = useState<Monster | null>(null)
   const pageSize = 20
 
   const list = useQuery({
@@ -85,7 +87,11 @@ export default function MonstersPage() {
                 {list.data?.items?.map((m: Monster) => (
                   <tr key={m.id}>
                     <td>{m.id}</td>
-                    <td className="font-medium">{m.name_final}</td>
+                    <td>
+                      <button className="text-blue-600 hover:underline" onClick={() => setSelected(m)}>
+                        {m.name_final}
+                      </button>
+                    </td>
                     <td>{m.element}</td>
                     <td>{m.role}</td>
                     <td>{m.base_offense}</td>
@@ -114,6 +120,38 @@ export default function MonstersPage() {
           <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
         </div>
       </div>
+
+      {/* 右侧抽屉：基础值 + 技能占位 + 标签 */}
+      <SideDrawer open={!!selected} onClose={() => setSelected(null)} title={selected?.name_final}>
+        {selected && (
+          <div className="space-y-4">
+            <div>
+              <h4 className="font-semibold mb-2">基础种族值</h4>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="p-2 bg-gray-50 rounded">攻：<b>{selected.base_offense}</b></div>
+                <div className="p-2 bg-gray-50 rounded">生：<b>{selected.base_survive}</b></div>
+                <div className="p-2 bg-gray-50 rounded">控：<b>{selected.base_control}</b></div>
+                <div className="p-2 bg-gray-50 rounded">速：<b>{selected.base_tempo}</b></div>
+                <div className="p-2 bg-gray-50 rounded">PP：<b>{selected.base_pp}</b></div>
+              </div>
+            </div>
+
+            <div>
+              <h4 className="font-semibold mb-2">技能</h4>
+              <div className="text-sm text-gray-500">
+                暂无技能数据（后端未提供技能表）。若有技能 CSV，可扩展 <code>skills</code> 表与关联接口。
+              </div>
+            </div>
+
+            <div>
+              <h4 className="font-semibold mb-2">标签</h4>
+              <div className="space-x-1">
+                {selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}
+              </div>
+            </div>
+          </div>
+        )}
+      </SideDrawer>
     </div>
   )
 }
