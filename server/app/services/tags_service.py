@@ -1,8 +1,7 @@
-# server/app/services/tags_service.py
 from __future__ import annotations
 
 import re
-from typing import List, Set, Dict, Tuple, Optional
+from typing import List, Set, Dict, Tuple
 
 from ..models import Monster
 
@@ -14,7 +13,16 @@ CRIT_OR_IGNORE = [r"暴击", r"必中", r"无视防御", r"破防"]
 SURVIVE_BUFF = [r"回复", r"治疗", r"减伤", r"免疫", r"护盾"]
 FIRST_STRIKE = [r"先手", r"先制"]
 SPEED_UP = [r"加速", r"提速", r"速度提升"]
-PP_PRESSURE = [r"能量消除", r"扣PP", r"减少技能次数", r"降技能次数"]
+
+# 重要：去掉“能量消除”，只保留能明确表达“降低对手技能次数 / 扣PP”的词
+PP_PRESSURE = [
+    r"扣PP",
+    r"减少.*技能.*次数",
+    r"技能.*次数.*减少",
+    r"减少.*使用次数",
+    r"使用次数.*减少",
+    r"降技能次数",
+]
 
 # 一些常用标签名（与前端展示一致）
 TAG_FAST = "高速"
@@ -132,12 +140,9 @@ def infer_role_for_monster(monster: Monster) -> str:
 
 def extract_signals(monster: Monster) -> Dict[str, object]:
     """
-    为派生五维准备的一份“信号”：
-    - ctrl_count: 控制关键词命中数
-    - slow_or_accuracy: 是否含降速/降命中
-    - has_multi_hit / has_crit_ignore / has_survive_buff / first_strike / speed_up
-    - pp_hits: PP 相关关键词出现次数（若已有 'PP压制' 标签，至少记为 1）
-    既看技能文本，也看已有标签（若已打上标签，则视为存在该信号）。
+    为派生五维准备的一份“信号”，结合技能文本 + 已有标签：
+    - ctrl_count / slow_or_accuracy / has_multi_hit / has_crit_ignore / has_survive_buff / first_strike / speed_up
+    - pp_hits：PP相关关键词出现次数；若已有 'PP压制' 标签，至少按 1 计
     """
     text = _text_of_skills(monster)
     tag_names = {t.name for t in (monster.tags or []) if getattr(t, "name", None)}
@@ -145,16 +150,16 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     ctrl_count = _count_any(CTRL_PATTERNS, text)
     slow_or_accuracy = _has_any(SLOW_OR_ACCURACY_DOWN, text)
 
-    has_multi_hit = _has_any(MULTI_HIT, text) or (TAG_MULTI in tag_names)
-    has_crit_ignore = _has_any(CRIT_OR_IGNORE, text) or (TAG_OFFENSE in tag_names)
-    has_survive_buff = _has_any(SURVIVE_BUFF, text) or (TAG_SUPPORT in tag_names)
-    first_strike = _has_any(FIRST_STRIKE, text) or (TAG_FIRST in tag_names)
-    speed_up = _has_any(SPEED_UP, text) or (TAG_FAST in tag_names)
+    has_multi_hit = _has_any(MULTI_HIT, text) or ("多段" in tag_names)
+    has_crit_ignore = _has_any(CRIT_OR_IGNORE, text) or ("强攻" in tag_names)
+    has_survive_buff = _has_any(SURVIVE_BUFF, text) or ("回复/增防" in tag_names)
+    first_strike = _has_any(FIRST_STRIKE, text) or ("先手" in tag_names)
+    speed_up = _has_any(SPEED_UP, text) or ("高速" in tag_names)
 
     pp_hits = 0
     for p in PP_PRESSURE:
         pp_hits += len(re.findall(p, text))
-    if (pp_hits == 0) and (TAG_PP in tag_names):
+    if (pp_hits == 0) and ("PP压制" in tag_names):
         pp_hits = 1  # 有“PP压制”标签时，至少按一次记分
 
     return {

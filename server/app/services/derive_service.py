@@ -37,7 +37,7 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
     """
     使用 tags_service 抽取的“信号”来计算派生五维（float 版本）。
     """
-    hp, speed, attack, defense, magic, resist = _raw_six(monster)
+    hp, speed, attack, defense, _magic, resist = _raw_six(monster)
     sig = extract_signals(monster)
 
     offense = (

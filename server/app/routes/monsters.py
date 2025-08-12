@@ -1,4 +1,3 @@
-# server/app/routes/monsters.py
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
@@ -11,6 +10,7 @@ from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
 from ..services.derive_service import (
     compute_derived_out,
+    compute_and_persist,
     recompute_and_autolabel,
     apply_role_tags,
 )
@@ -61,27 +61,32 @@ def list_api(
     changed = False
 
     for m in items:
-        # 没有派生行 → 现算并自动打 role/tags
-        if not m.derived:
-            recompute_and_autolabel(db, m)
+        # 1) 先确保 role / tags
+        if (not m.role) or (not m.tags):
+            apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
             changed = True
-        else:
-            # 派生已在，但 role 或 tags 缺失 → 只补 role/tags
-            if (not m.role) or (not m.tags):
-                apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
-                changed = True
 
-        d = (
-            {
-                "offense": m.derived.offense,
-                "survive": m.derived.survive,
-                "control": m.derived.control,
-                "tempo": m.derived.tempo,
-                "pp_pressure": m.derived.pp_pressure,
-            }
-            if m.derived
-            else compute_derived_out(m)
+        # 2) 计算“最新”的派生；如果和库里不一致则更新（解决：已打标签但 pp 仍为 0）
+        fresh = compute_derived_out(m)
+        need_update = (
+            (not m.derived) or
+            m.derived.offense != fresh["offense"] or
+            m.derived.survive != fresh["survive"] or
+            m.derived.control != fresh["control"] or
+            m.derived.tempo != fresh["tempo"] or
+            m.derived.pp_pressure != fresh["pp_pressure"]
         )
+        if need_update:
+            compute_and_persist(db, m)
+            changed = True
+
+        d = fresh if need_update else {
+            "offense": m.derived.offense,
+            "survive": m.derived.survive,
+            "control": m.derived.control,
+            "tempo": m.derived.tempo,
+            "pp_pressure": m.derived.pp_pressure,
+        }
 
         result.append(
             MonsterOut(
@@ -114,8 +119,19 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    if not m.derived or not m.role or not m.tags:
-        recompute_and_autolabel(db, m)
+    # 同样做一次“过期检测”
+    if (not m.role) or (not m.tags):
+        apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
+
+    fresh = compute_derived_out(m)
+    if (not m.derived) or (
+        m.derived.offense != fresh["offense"] or
+        m.derived.survive != fresh["survive"] or
+        m.derived.control != fresh["control"] or
+        m.derived.tempo != fresh["tempo"] or
+        m.derived.pp_pressure != fresh["pp_pressure"]
+    ):
+        compute_and_persist(db, m)
         db.commit()
 
     return MonsterOut(
@@ -149,7 +165,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [s.name for s in m.skills]
         m.explain_json = ex
 
-    # 首次计算 + 自动定位/标签
+    # 初次：打标签+定位，并计算派生
     recompute_and_autolabel(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
@@ -172,7 +188,7 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [s.name for s in m.skills]
         m.explain_json = ex
 
-    # 更新后重算派生并自动补 role/tags（若为空）
+    # 更新后：按最新标签/技能重算派生
     recompute_and_autolabel(db, m)
     db.commit()
     return detail(monster_id, db)

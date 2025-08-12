@@ -1,4 +1,3 @@
-# server/app/routes/tags.py
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
