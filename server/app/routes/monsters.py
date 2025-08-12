@@ -3,13 +3,16 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
+
 from ..db import SessionLocal
 from ..models import Monster
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
 from ..services.derive_service import (
-    compute_derived_out, compute_and_persist, recompute_and_autolabel, apply_role_tags
+    compute_derived_out,
+    recompute_and_autolabel,
+    apply_role_tags,
 )
 
 router = APIRouter()
@@ -31,10 +34,11 @@ def list_api(
     order: Optional[str] = "desc",
     page: int = 1,
     page_size: int = 20,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
+
     items, total = list_monsters(
         db, q=q, element=element, role=role, tag=tag,
         sort=sort, order=order, page=page, page_size=page_size
@@ -55,38 +59,45 @@ def list_api(
 
     result = []
     changed = False
+
     for m in items:
-        # 没有派生行 → 现算并落库；若 role 为空也顺带自动打
+        # 没有派生行 → 现算并自动打 role/tags
         if not m.derived:
             recompute_and_autolabel(db, m)
             changed = True
         else:
-            # 若派生在，但 role 为空、或 tags 为空 → 只补 role/tags
+            # 派生已在，但 role 或 tags 缺失 → 只补 role/tags
             if (not m.role) or (not m.tags):
                 apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
                 changed = True
 
-        d = m.derived and {
-            "offense": m.derived.offense,
-            "survive": m.derived.survive,
-            "control": m.derived.control,
-            "tempo": m.derived.tempo,
-            "pp_pressure": m.derived.pp_pressure,
-        } or compute_derived_out(m)
+        d = (
+            {
+                "offense": m.derived.offense,
+                "survive": m.derived.survive,
+                "control": m.derived.control,
+                "tempo": m.derived.tempo,
+                "pp_pressure": m.derived.pp_pressure,
+            }
+            if m.derived
+            else compute_derived_out(m)
+        )
 
-        result.append(MonsterOut(
-            id=m.id,
-            name_final=m.name_final,
-            element=m.element,
-            role=m.role,
-            hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
-            tags=[t.name for t in (m.tags or [])],
-            explain_json=m.explain_json or {},
-            derived=d,
-        ))
+        result.append(
+            MonsterOut(
+                id=m.id,
+                name_final=m.name_final,
+                element=m.element,
+                role=m.role,
+                hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
+                tags=[t.name for t in (m.tags or [])],
+                explain_json=m.explain_json or {},
+                derived=d,
+            )
+        )
 
     if changed:
-        db.commit()  # 可能写入了 derived/role/tags
+        db.commit()  # 可能写入了 derived / role / tags
 
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
@@ -118,7 +129,7 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
             "control": m.derived.control,
             "tempo": m.derived.tempo,
             "pp_pressure": m.derived.pp_pressure,
-        }
+        },
     )
 
 @router.post("/monsters", response_model=MonsterOut)
@@ -149,7 +160,7 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    for k in ["name_final","element","role","hp","speed","attack","defense","magic","resist"]:
+    for k in ["name_final", "element", "role", "hp", "speed", "attack", "defense", "magic", "resist"]:
         setattr(m, k, getattr(payload, k))
     m.tags = upsert_tags(db, payload.tags or [])
 
@@ -169,19 +180,18 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
 @router.delete("/monsters/{monster_id}")
 def delete(monster_id: int, db: Session = Depends(get_db)):
     """
-    修复：删除怪物时，清理关联的 skills/tags（联结表），避免“幽灵关系”残留。
+    删除怪物时，清理关联的 skills/tags（联结表），避免残留。
     """
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 清空多对多关系，确保联结表行被删
     if m.skills is not None:
         m.skills.clear()
     if m.tags is not None:
         m.tags.clear()
-    db.flush()  # 先把联结表变更落下
+    db.flush()
 
-    db.delete(m)  # derived 使用 delete-orphan，会随主记录一并删除
+    db.delete(m)  # MonsterDerived 走 delete-orphan 一并删
     db.commit()
     return {"ok": True}
