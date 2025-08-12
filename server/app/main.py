@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from .config import settings
 from .db import Base, engine
-from .routes import health, monsters, importing, tags, recalc, tasks
+from .routes import health, monsters, importing, tags, recalc, tasks, skills  # ← skills
 from .middleware import TraceIDMiddleware
 
 app = FastAPI(title=settings.app_name)
@@ -26,6 +26,7 @@ app.include_router(importing.router)
 app.include_router(tags.router)
 app.include_router(recalc.router)
 app.include_router(tasks.router)
+app.include_router(skills.router)
 
 def _problem(status: int, code: str, title: str, detail: str, trace_id: str):
     return JSONResponse(

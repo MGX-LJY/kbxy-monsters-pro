@@ -6,6 +6,7 @@ from ..db import SessionLocal
 from ..models import Task, Monster
 from ..services.rules_engine import calc_scores
 from ..services.monsters_service import upsert_tags
+from ..services.skills_service import derive_tags_from_texts
 
 router = APIRouter()
 
@@ -36,29 +37,23 @@ def _run_recalc(task_id: str, weights: Optional[Dict[str, float]]):
                 "base_pp": m.base_pp
             }, weights)
             m.explain_json = r.explain
-            # 合并计算标签
-            existing = [t.name for t in m.tags]
-            merged = sorted(set(existing) | set(r.tags))
+
+            # 合并技能标签
+            numeric = set(r.tags)
+            skill_texts = [s.name for s in (m.skills or [])] + [s.description for s in (m.skills or [])]
+            skill_tags = derive_tags_from_texts(skill_texts)
+            existing = {t.name for t in (m.tags or [])}
+            merged = sorted(existing | numeric | skill_tags)
             m.tags = upsert_tags(db, merged)
 
             done += 1
             if done % 50 == 0:
-                t = db.get(Task, task_id)
-                t.progress = done
-                t.total = total
-                db.commit()
-        # final commit
-        t = db.get(Task, task_id)
-        t.progress = done
-        t.total = total
-        t.status = "done"
-        db.commit()
+                t = db.get(Task, task_id); t.progress = done; t.total = total; db.commit()
+        t = db.get(Task, task_id); t.progress = done; t.total = total; t.status = "done"; db.commit()
     except Exception as e:
         t = db.get(Task, task_id)
         if t:
-            t.status = "failed"
-            t.result_json = {"error": str(e)}
-            db.commit()
+            t.status = "failed"; t.result_json = {"error": str(e)}; db.commit()
     finally:
         db.close()
 
@@ -66,8 +61,7 @@ def _run_recalc(task_id: str, weights: Optional[Dict[str, float]]):
 def start_recalc(weights: Optional[Dict[str, float]] = None, db: Session = Depends(get_db)):
     task_id = str(uuid.uuid4())
     t = Task(id=task_id, type="recalc", status="pending", progress=0, total=0, result_json={})
-    db.add(t)
-    db.commit()
+    db.add(t); db.commit()
     threading.Thread(target=_run_recalc, args=(task_id, weights), daemon=True).start()
     return {"task_id": task_id, "status": "pending"}
 

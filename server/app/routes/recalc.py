@@ -6,6 +6,7 @@ from ..db import SessionLocal
 from ..models import Monster
 from ..services.rules_engine import calc_scores
 from ..services.monsters_service import upsert_tags
+from ..services.skills_service import derive_tags_from_texts
 
 router = APIRouter()
 
@@ -20,7 +21,7 @@ class RecalcIn(BaseModel):
     ids: Optional[List[int]] = None
     weights: Optional[Dict[str, float]] = None
     persist: bool = False
-    update_tags: bool = True  # 新增：是否更新标签（计算标签并合并）
+    update_tags: bool = True
 
 @router.post("/recalc")
 def recalc(payload: RecalcIn, db: Session = Depends(get_db)):
@@ -42,11 +43,13 @@ def recalc(payload: RecalcIn, db: Session = Depends(get_db)):
         if payload.persist:
             m.explain_json = r.explain
             if payload.update_tags:
-                existing = [t.name for t in m.tags]
-                merged = sorted(set(existing) | set(r.tags))
+                numeric = set(r.tags)
+                skill_texts = [s.name for s in (m.skills or [])] + [s.description for s in (m.skills or [])]
+                skill_tags = derive_tags_from_texts(skill_texts)
+                existing = {t.name for t in (m.tags or [])}
+                merged = sorted(existing | numeric | skill_tags)
                 m.tags = upsert_tags(db, merged)
-            db.add(m)
-            affected += 1
+            db.add(m); affected += 1
 
         result.append({"id": mid, "tags": r.tags, "explain": r.explain})
 

@@ -28,24 +28,20 @@ export default function MonstersPage() {
     queryFn: async () => (await api.get('/tags', { params: { with_counts: true } })).data as TagCount[]
   })
 
+  // 拉取技能
+  const skills = useQuery({
+    queryKey: ['skills', selected?.id],
+    enabled: !!selected?.id,
+    queryFn: async () => (await api.get(`/monsters/${selected!.id}/skills`)).data as {id:number,name:string,description:string}[]
+  })
+
   return (
     <div className="container my-6 space-y-4">
       <div className="card grid grid-cols-1 md:grid-cols-4 gap-3">
-        <input
-          className="input md:col-span-2"
-          placeholder="搜索名称..."
-          value={q}
-          onChange={e => { setQ(e.target.value); setPage(1) }}
-        />
-        <select
-          className="select"
-          value={tag}
-          onChange={e => { setTag(e.target.value); setPage(1) }}
-        >
+        <input className="input md:col-span-2" placeholder="搜索名称..." value={q} onChange={e => { setQ(e.target.value); setPage(1) }} />
+        <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
           <option value="">全部标签</option>
-          {tags.data?.map(t => (
-            <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>
-          ))}
+          {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
         </select>
         <div className="flex gap-2">
           <select className="select" value={sort} onChange={e => setSort(e.target.value as any)}>
@@ -99,17 +95,11 @@ export default function MonstersPage() {
                     <td>{m.base_control}</td>
                     <td>{m.base_tempo}</td>
                     <td>{m.base_pp}</td>
-                    <td className="space-x-1">
-                      {m.tags?.map(t => <span key={t} className="badge">{t}</span>)}
-                    </td>
+                    <td className="space-x-1">{m.tags?.map(t => <span key={t} className="badge">{t}</span>)}</td>
                   </tr>
                 ))}
                 {list.data?.items?.length === 0 && (
-                  <tr>
-                    <td colSpan={10} className="text-center text-gray-500 py-6">
-                      没有数据。请清空筛选或点击右上角“导入 CSV”。
-                    </td>
-                  </tr>
+                  <tr><td colSpan={10} className="text-center text-gray-500 py-6">没有数据。请清空筛选或使用右上角“导入 CSV”。</td></tr>
                 )}
               </tbody>
             )}
@@ -121,7 +111,6 @@ export default function MonstersPage() {
         </div>
       </div>
 
-      {/* 右侧抽屉：基础值 + 技能占位 + 标签 */}
       <SideDrawer open={!!selected} onClose={() => setSelected(null)} title={selected?.name_final}>
         {selected && (
           <div className="space-y-4">
@@ -138,9 +127,15 @@ export default function MonstersPage() {
 
             <div>
               <h4 className="font-semibold mb-2">技能</h4>
-              <div className="text-sm text-gray-500">
-                暂无技能数据（后端未提供技能表）。若有技能 CSV，可扩展 <code>skills</code> 表与关联接口。
-              </div>
+              {!skills.data?.length && <div className="text-sm text-gray-500">暂无技能数据</div>}
+              <ul className="space-y-2">
+                {skills.data?.map(s => (
+                  <li key={s.id} className="p-2 bg-gray-50 rounded">
+                    <div className="font-medium">{s.name}</div>
+                    {s.description && <div className="text-sm text-gray-600">{s.description}</div>}
+                  </li>
+                ))}
+              </ul>
             </div>
 
             <div>

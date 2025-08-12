@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, Table, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, Table, ForeignKey, JSON, Text
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from .db import Base
 
@@ -8,6 +8,14 @@ monster_tag = Table(
     Base.metadata,
     Column("monster_id", ForeignKey("monsters.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+)
+
+# 新增：技能关联表
+monster_skill = Table(
+    "monster_skill",
+    Base.metadata,
+    Column("monster_id", ForeignKey("monsters.id", ondelete="CASCADE"), primary_key=True),
+    Column("skill_id", ForeignKey("skills.id", ondelete="CASCADE"), primary_key=True),
 )
 
 class Monster(Base):
@@ -24,13 +32,23 @@ class Monster(Base):
     explain_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
     tags = relationship("Tag", secondary=monster_tag, back_populates="monsters")
+    skills = relationship("Skill", secondary=monster_skill, back_populates="monsters")
 
 class Tag(Base):
     __tablename__ = "tags"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
     monsters = relationship("Monster", secondary=monster_tag, back_populates="tags")
+
+# 新增：技能表
+class Skill(Base):
+    __tablename__ = "skills"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    monsters = relationship("Monster", secondary=monster_skill, back_populates="skills")
 
 class ImportJob(Base):
     __tablename__ = "import_jobs"
