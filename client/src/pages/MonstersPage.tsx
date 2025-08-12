@@ -6,9 +6,12 @@ import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
 import SideDrawer from '../components/SideDrawer'
 
+type RoleCount = { name: string, count: number }
+
 export default function MonstersPage() {
   const [q, setQ] = useState('')
   const [tag, setTag] = useState('')
+  const [role, setRole] = useState('')
   const [sort, setSort] = useState<'updated_at'|'name'|'offense'|'survive'|'control'|'tempo'|'pp'>('updated_at')
   const [order, setOrder] = useState<'asc'|'desc'>('desc')
   const [page, setPage] = useState(1)
@@ -16,10 +19,10 @@ export default function MonstersPage() {
   const pageSize = 20
 
   const list = useQuery({
-    queryKey: ['monsters', { q, tag, sort, order, page, pageSize }],
+    queryKey: ['monsters', { q, tag, role, sort, order, page, pageSize }],
     queryFn: async () =>
       (await api.get('/monsters', {
-        params: { q: q || undefined, tag: tag || undefined, sort, order, page, page_size: pageSize }
+        params: { q: q || undefined, tag: tag || undefined, role: role || undefined, sort, order, page, page_size: pageSize }
       })).data as MonsterListResp
   })
 
@@ -28,14 +31,17 @@ export default function MonstersPage() {
     queryFn: async () => (await api.get('/tags', { params: { with_counts: true } })).data as TagCount[]
   })
 
-  // 侧边栏：技能列表
+  const roles = useQuery({
+    queryKey: ['roles'],
+    queryFn: async () => (await api.get('/roles')).data as RoleCount[]
+  })
+
   const skills = useQuery({
     queryKey: ['skills', selected?.id],
     enabled: !!selected?.id,
     queryFn: async () => (await api.get(`/monsters/${selected!.id}/skills`)).data as {id:number,name:string,description:string}[]
   })
 
-  // 便捷读取 raw_stats（如果没有，则用 base_* 兜底）
   const raw = (selected as any)?.explain_json?.raw_stats as
     | { hp:number, speed:number, attack:number, defense:number, magic:number, resist:number, sum:number }
     | undefined
@@ -44,23 +50,26 @@ export default function MonstersPage() {
     hp: selected?.base_survive ?? 0,
     speed: selected?.base_tempo ?? 0,
     attack: selected?.base_offense ?? 0,
-    defense: selected?.base_control ?? 0, // 兜底（平均值时仅供参考）
+    defense: selected?.base_control ?? 0,
     magic: selected?.base_control ?? 0,
     resist: selected?.base_pp ?? 0,
     sum: (selected?.base_survive ?? 0) + (selected?.base_tempo ?? 0) + (selected?.base_offense ?? 0) +
          (selected?.base_control ?? 0) + (selected?.base_control ?? 0) + (selected?.base_pp ?? 0),
   }
 
-  // 技能兜底：接口为空则使用 explain_json.skill_names
   const fallbackSkillNames: string[] = (selected as any)?.explain_json?.skill_names || []
 
   return (
     <div className="container my-6 space-y-4">
-      <div className="card grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div className="card grid grid-cols-1 md:grid-cols-5 gap-3">
         <input className="input md:col-span-2" placeholder="搜索名称..." value={q} onChange={e => { setQ(e.target.value); setPage(1) }} />
         <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
           <option value="">全部标签</option>
           {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
+        </select>
+        <select className="select" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
+          <option value="">全部定位</option>
+          {roles.data?.map(r => <option key={r.name} value={r.name}>{r.name}（{r.count}）</option>)}
         </select>
         <div className="flex gap-2">
           <select className="select" value={sort} onChange={e => setSort(e.target.value as any)}>
@@ -102,11 +111,7 @@ export default function MonstersPage() {
                 {list.data?.items?.map((m: Monster) => (
                   <tr key={m.id}>
                     <td>{m.id}</td>
-                    <td>
-                      <button className="text-blue-600 hover:underline" onClick={() => setSelected(m)}>
-                        {m.name_final}
-                      </button>
-                    </td>
+                    <td><button className="text-blue-600 hover:underline" onClick={() => setSelected(m)}>{m.name_final}</button></td>
                     <td>{m.element}</td>
                     <td>{m.role}</td>
                     <td>{m.base_offense}</td>
@@ -118,7 +123,7 @@ export default function MonstersPage() {
                   </tr>
                 ))}
                 {list.data?.items?.length === 0 && (
-                  <tr><td colSpan={10} className="text-center text-gray-500 py-6">没有数据。请清空筛选或使用右上角“导入 CSV”。</td></tr>
+                  <tr><td colSpan={10} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 CSV。</td></tr>
                 )}
               </tbody>
             )}
@@ -148,7 +153,7 @@ export default function MonstersPage() {
 
             <div>
               <h4 className="font-semibold mb-2">技能</h4>
-              {!skills.data?.length && !fallbackSkillNames.length && (
+              {!skills.data?.length && !(selected as any)?.explain_json?.skill_names?.length && (
                 <div className="text-sm text-gray-500">暂无技能数据</div>
               )}
               <ul className="space-y-2">
@@ -158,7 +163,7 @@ export default function MonstersPage() {
                     {s.description && <div className="text-sm text-gray-600">{s.description}</div>}
                   </li>
                 ))}
-                {!skills.data?.length && fallbackSkillNames.map((n, i) => (
+                {!skills.data?.length && (selected as any)?.explain_json?.skill_names?.map((n: string, i: number) => (
                   <li key={i} className="p-2 bg-gray-50 rounded">
                     <div className="font-medium">{n}</div>
                   </li>
@@ -168,9 +173,7 @@ export default function MonstersPage() {
 
             <div>
               <h4 className="font-semibold mb-2">标签</h4>
-              <div className="space-x-1">
-                {selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}
-              </div>
+              <div className="space-x-1">{selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}</div>
             </div>
           </div>
         )}

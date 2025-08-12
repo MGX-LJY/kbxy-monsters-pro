@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..models import Skill
 
-# 关键词 -> 标签（可继续扩充）
+# 关键词 -> 标签（你之前的规则保留，可继续扩展）
 KEYWORD_TAGS: list[tuple[str, str]] = [
     (r"先手", "先手"),
     (r"消除.*(增益|加成)", "驱散"),
@@ -50,7 +50,8 @@ def upsert_skills(db: Session, items: List[Tuple[str, str]]):
             db.add(skill)
             db.flush()
         else:
-            if (desc or "") and not skill.description:
-                skill.description = desc or ""
+            # 若有更完整描述则更新（不被空串覆盖）
+            if desc and (not skill.description or len(desc) > len(skill.description)):
+                skill.description = desc
         result.append(skill)
     return result
