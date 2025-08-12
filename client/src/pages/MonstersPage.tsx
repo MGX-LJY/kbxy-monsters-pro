@@ -8,6 +8,27 @@ import SideDrawer from '../components/SideDrawer'
 
 type RoleCount = { name: string, count: number }
 
+const isMeaningfulDesc = (t?: string) => {
+  if (!t) return false
+  const s = t.trim()
+  const trivial = new Set(['', '0', '1', '-', '—', '无', '暂无', 'null', 'none', 'N/A', 'n/a'])
+  if (trivial.has(s) || trivial.has(s.toLowerCase())) return false
+  return (
+    s.length >= 6 ||
+    /[，。；、,.]/.test(s) ||
+    /(提高|降低|回复|免疫|伤害|回合|命中|几率|状态|先手|消除|减少|增加|额外|倍)/.test(s)
+  )
+}
+
+const isValidSkillName = (name?: string) => {
+  if (!name) return false
+  const s = name.trim()
+  if (!s) return false
+  // 至少有中文或英文字母，过滤纯数字/连字符
+  if (/^[\d\-\—\s]+$/.test(s)) return false
+  return /[\u4e00-\u9fffA-Za-z]/.test(s)
+}
+
 export default function MonstersPage() {
   const [q, setQ] = useState('')
   const [tag, setTag] = useState('')
@@ -53,21 +74,40 @@ export default function MonstersPage() {
     defense: selected?.base_control ?? 0,
     magic: selected?.base_control ?? 0,
     resist: selected?.base_pp ?? 0,
-    sum: (selected?.base_survive ?? 0) + (selected?.base_tempo ?? 0) + (selected?.base_offense ?? 0) +
-         (selected?.base_control ?? 0) + (selected?.base_control ?? 0) + (selected?.base_pp ?? 0),
+    sum:
+      (selected?.base_survive ?? 0) +
+      (selected?.base_tempo ?? 0) +
+      (selected?.base_offense ?? 0) +
+      (selected?.base_control ?? 0) +
+      (selected?.base_control ?? 0) +
+      (selected?.base_pp ?? 0),
   }
 
   const fallbackSkillNames: string[] = (selected as any)?.explain_json?.skill_names || []
+  const userSummary: string | undefined = (selected as any)?.explain_json?.summary
 
   return (
     <div className="container my-6 space-y-4">
       <div className="card grid grid-cols-1 md:grid-cols-5 gap-3">
-        <input className="input md:col-span-2" placeholder="搜索名称..." value={q} onChange={e => { setQ(e.target.value); setPage(1) }} />
-        <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
+        <input
+          className="input md:col-span-2"
+          placeholder="搜索名称..."
+          value={q}
+          onChange={e => { setQ(e.target.value); setPage(1) }}
+        />
+        <select
+          className="select"
+          value={tag}
+          onChange={e => { setTag(e.target.value); setPage(1) }}
+        >
           <option value="">全部标签</option>
           {tags.data?.map(t => <option key={t.name} value={t.name}>{t.name}（{t.count}）</option>)}
         </select>
-        <select className="select" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
+        <select
+          className="select"
+          value={role}
+          onChange={e => { setRole(e.target.value); setPage(1) }}
+        >
           <option value="">全部定位</option>
           {roles.data?.map(r => <option key={r.name} value={r.name}>{r.name}（{r.count}）</option>)}
         </select>
@@ -111,7 +151,11 @@ export default function MonstersPage() {
                 {list.data?.items?.map((m: Monster) => (
                   <tr key={m.id}>
                     <td>{m.id}</td>
-                    <td><button className="text-blue-600 hover:underline" onClick={() => setSelected(m)}>{m.name_final}</button></td>
+                    <td>
+                      <button className="text-blue-600 hover:underline" onClick={() => setSelected(m)}>
+                        {m.name_final}
+                      </button>
+                    </td>
                     <td>{m.element}</td>
                     <td>{m.role}</td>
                     <td>{m.base_offense}</td>
@@ -119,11 +163,17 @@ export default function MonstersPage() {
                     <td>{m.base_control}</td>
                     <td>{m.base_tempo}</td>
                     <td>{m.base_pp}</td>
-                    <td className="space-x-1">{m.tags?.map(t => <span key={t} className="badge">{t}</span>)}</td>
+                    <td className="space-x-1">
+                      {m.tags?.map(t => <span key={t} className="badge">{t}</span>)}
+                    </td>
                   </tr>
                 ))}
                 {list.data?.items?.length === 0 && (
-                  <tr><td colSpan={10} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 CSV。</td></tr>
+                  <tr>
+                    <td colSpan={10} className="text-center text-gray-500 py-6">
+                      没有数据。请调整筛选或导入 CSV。
+                    </td>
+                  </tr>
                 )}
               </tbody>
             )}
@@ -137,7 +187,7 @@ export default function MonstersPage() {
 
       <SideDrawer open={!!selected} onClose={() => setSelected(null)} title={selected?.name_final}>
         {selected && (
-          <div className="space-y-4">
+          <div className="space-y-5">
             <div>
               <h4 className="font-semibold mb-2">基础种族值（六维）</h4>
               <div className="grid grid-cols-2 gap-2 text-sm">
@@ -152,17 +202,22 @@ export default function MonstersPage() {
             </div>
 
             <div>
-              <h4 className="font-semibold mb-2">技能</h4>
-              {!skills.data?.length && !(selected as any)?.explain_json?.skill_names?.length && (
+              <h4 className="font-semibold mb-2">技能（来自关键技能）</h4>
+              {skills.isLoading && <div className="text-sm text-gray-500">加载中...</div>}
+              {!skills.data?.length && !(selected as any)?.explain_json?.skill_names?.length && !skills.isLoading && (
                 <div className="text-sm text-gray-500">暂无技能数据</div>
               )}
               <ul className="space-y-2">
-                {skills.data?.map(s => (
-                  <li key={s.id} className="p-2 bg-gray-50 rounded">
-                    <div className="font-medium">{s.name}</div>
-                    {s.description && <div className="text-sm text-gray-600">{s.description}</div>}
-                  </li>
-                ))}
+                {skills.data
+                  ?.filter(s => isValidSkillName(s.name))
+                  .map(s => (
+                    <li key={s.id} className="p-2 bg-gray-50 rounded">
+                      <div className="font-medium">{s.name}</div>
+                      {isMeaningfulDesc(s.description) && (
+                        <div className="text-sm text-gray-600 whitespace-pre-wrap">{s.description}</div>
+                      )}
+                    </li>
+                  ))}
                 {!skills.data?.length && (selected as any)?.explain_json?.skill_names?.map((n: string, i: number) => (
                   <li key={i} className="p-2 bg-gray-50 rounded">
                     <div className="font-medium">{n}</div>
@@ -171,9 +226,18 @@ export default function MonstersPage() {
               </ul>
             </div>
 
+            {userSummary && (
+              <div>
+                <h4 className="font-semibold mb-2">评价 / 总结（主观）</h4>
+                <div className="p-3 bg-gray-50 rounded text-sm whitespace-pre-wrap">{userSummary}</div>
+              </div>
+            )}
+
             <div>
               <h4 className="font-semibold mb-2">标签</h4>
-              <div className="space-x-1">{selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}</div>
+              <div className="space-x-1">
+                {selected.tags?.map(t => <span key={t} className="badge">{t}</span>)}
+              </div>
             </div>
           </div>
         )}

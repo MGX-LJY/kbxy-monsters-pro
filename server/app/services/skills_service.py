@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..models import Skill
 
-# 关键词 -> 标签（你之前的规则保留，可继续扩展）
+# 关键词 -> 标签（可继续扩充）
 KEYWORD_TAGS: list[tuple[str, str]] = [
     (r"先手", "先手"),
     (r"消除.*(增益|加成)", "驱散"),
@@ -29,8 +29,32 @@ KEYWORD_TAGS: list[tuple[str, str]] = [
     (r"暴击", "暴击"),
 ]
 
+TRIVIAL_DESCS = {"", "0", "1", "-", "—", "无", "暂无", "null", "none", "N/A", "n/a"}
+
+def _clean(s: str | None) -> str:
+    return (s or "").strip()
+
+def _is_meaningful_desc(s: str) -> bool:
+    s = _clean(s)
+    if s.lower() in TRIVIAL_DESCS:
+        return False
+    return (
+        len(s) >= 6
+        or re.search(r"[，。；、,.]", s)
+        or re.search(r"(提高|降低|回复|免疫|伤害|回合|命中|几率|状态|先手|消除|减少|增加|额外|倍)", s)
+    )
+
+def _is_valid_skill_name(name: str) -> bool:
+    """至少包含一个中文或英文字母；排除纯数字/连字符等（如 '1', '-', '—'）"""
+    s = _clean(name)
+    if not s:
+        return False
+    if re.fullmatch(r"[\d\-\—\s]+", s):
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", s))
+
 def derive_tags_from_texts(texts: Iterable[str]) -> Set[str]:
-    merged = "；".join([t for t in texts if t])
+    merged = "；".join([_clean(t) for t in texts if _clean(t)])
     tags: set[str] = set()
     for pat, tag in KEYWORD_TAGS:
         if re.search(pat, merged):
@@ -38,20 +62,27 @@ def derive_tags_from_texts(texts: Iterable[str]) -> Set[str]:
     return tags
 
 def upsert_skills(db: Session, items: List[Tuple[str, str]]):
-    """items: [(skill_name, description)]"""
+    """
+    items: [(skill_name, description)]
+    - 无效技能名（纯数字/符号）会被丢弃（修复 '1' 混入）
+    - 只有当新描述更“像描述”或更长，才覆盖旧描述
+    """
     result: list[Skill] = []
     for name, desc in items:
-        name = (name or "").strip()
-        if not name:
+        name = _clean(name)
+        desc = _clean(desc)
+        if not _is_valid_skill_name(name):
             continue
+
         skill = db.execute(select(Skill).where(Skill.name == name)).scalar_one_or_none()
         if not skill:
-            skill = Skill(name=name, description=desc or "")
+            skill = Skill(name=name, description=desc if _is_meaningful_desc(desc) else "")
             db.add(skill)
             db.flush()
         else:
-            # 若有更完整描述则更新（不被空串覆盖）
-            if desc and (not skill.description or len(desc) > len(skill.description)):
-                skill.description = desc
+            if _is_meaningful_desc(desc):
+                old = _clean(skill.description)
+                if (not _is_meaningful_desc(old)) or (len(desc) > len(old)):
+                    skill.description = desc
         result.append(skill)
     return result
