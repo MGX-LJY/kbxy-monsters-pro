@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         kbxy 图鉴一键导入（六维+关键技能选择）
+// @name         kbxy 图鉴一键导入（六维+关键技能选择+匹配推荐）
 // @namespace    https://kbxy.local
-// @version      0.3.0
-// @description  在 4399 官方图鉴页识别六维 + 技能表，先选择关键技能，再一键导入到本地图鉴（FastAPI）
+// @version      0.4.0
+// @description  在 4399 官方图鉴页识别六维 + 技能表，可匹配“推荐配招”，选择关键技能后一键导入到本地图鉴（FastAPI）
 // @author       you
 // @match        *://news.4399.com/kabuxiyou/*
 // @match        *://m.news.4399.com/kabuxiyou/*
@@ -11,6 +11,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
 // @connect      127.0.0.1
+// @run-at       document-idle
 // ==/UserScript==
 
 (function () {
@@ -30,7 +31,7 @@
     .kbxy-badges{display:flex;flex-wrap:wrap;gap:6px}
     .kbxy-chip{font-size:12px;border:1px solid #e5e7eb;border-radius:999px;padding:4px 8px;background:#f9fafb}
     .kbxy-input{width:100%;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px}
-    .kbxy-btn{display:inline-flex;align-items:center;gap:6px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;padding:8px 12px;font-weight:600}
+    .kbxy-btn{display:inline-flex;align-items:center;gap:6px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;padding:8px 12px;font-weight:600;cursor:pointer}
     .kbxy-btn.primary{background:#2563eb;border-color:#2563eb;color:#fff}
     .kbxy-btn.primary:hover{background:#1e4fd1}
     .kbxy-list{display:grid;grid-template-columns:1fr;gap:8px;max-height:46vh;overflow:auto}
@@ -44,9 +45,9 @@
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $all(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
   function txt(node) { return (node?.textContent || '').replace(/\s+/g, ' ').trim(); }
-  function toNum(s){ const n = Number((s||'').toString().replace(/[^\d.-]/g,'')); return isFinite(n)?n:0; }
+  function toNum(s){ const n = Number((s||'').toString().replace(/[^\d.-]/g,'')); return Number.isFinite(n)?n:0; }
 
-  // 解析面包屑 -> 元素系别（如：风系）
+  // 解析元素系别（风/火/水/金/木/土/冰/雷/毒/妖/光/暗/音）
   function detectElement() {
     const nav = $('.dq') || $('.topbg_3 .nav_l');
     const a = nav ? $all('a', nav).find(a => /风系|火系|水系|金系|木系|土系|冰系|雷系|毒系|妖系|光系|暗系|音系/.test(txt(a))) : null;
@@ -54,39 +55,55 @@
     return m ? m[1] : '';
   }
 
+  // “推荐配招”解析 -> 返回技能名数组
+  function parseRecommendedCombos() {
+    const cell = $all('td').find(td => /推荐配招/.test(txt(td)));
+    if (!cell) return [];
+    const row = cell.parentElement;
+    const tds = $all('td', row);
+    let content = '';
+    for (let i = 1; i < tds.length; i++) content += ' ' + txt(tds[i]);
+    return content
+      .replace(/推荐配招|：|:|（.*?）/g, '')
+      .split(/[+＋、,，\s]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+
   // 找到“种族值”表：表头包含“妖怪名/体力/速度/攻击/防御/法术/抗性”
   function parseStatsTable() {
     const tables = $all('table');
     for (const t of tables) {
-      const headText = txt(t);
-      if (/妖怪名/.test(headText) && /体力/.test(headText) && /速度/.test(headText) && /攻击/.test(headText) && /防御/.test(headText) && /法术/.test(headText) && /抗性/.test(headText)) {
-        // 取正文行
-        const rows = $all('tr', t).slice(2); // 跳过标题行和表头行
-        const result = [];
-        for (const tr of rows) {
-          const tds = $all('td', tr);
-          if (tds.length < 3) continue;
-          const name = txt(tds[0]).replace(/[:：]/g,'');
-          if (!name) continue;
-          const data = {
-            name,
-            hp: toNum(txt(tds[2])),
-            speed: toNum(txt(tds[3])),
-            attack: toNum(txt(tds[4])),
-            defense: toNum(txt(tds[5])),
-            magic: toNum(txt(tds[6])),
-            resist: toNum(txt(tds[7])),
-          };
-          const sum = data.hp+data.speed+data.attack+data.defense+data.magic+data.resist;
-          result.push({ ...data, sum });
-        }
-        if (result.length) return result;
+      const whole = txt(t);
+      if (!(/妖怪名/.test(whole) && /体力/.test(whole) && /速度/.test(whole) && /攻击/.test(whole) && /防御/.test(whole) && /法术/.test(whole) && /抗性/.test(whole))) {
+        continue;
+      }
+      const trs = $all('tr', t);
+      // 找到表头行索引
+      const headIdx = trs.findIndex(tr => /妖怪名/.test(txt(tr)) && /体力/.test(txt(tr)));
+      const rows = trs.slice(headIdx + 1);
+      const result = [];
+      for (const tr of rows) {
+        const tds = $all('td', tr);
+        if (tds.length < 7) continue; // 数据行一般 >= 7 (名字 + 6 数值)
+        // 名称取第一格（可能 colspan=2，不影响）
+        const name = txt(tds[0]).replace(/[:：]/g, '');
+        if (!name || /表中数值为首发设定值/.test(name)) continue;
+        // 关键：按“最后 6 个单元格”映射到六维，避免 name 的 colspan 干扰
+        const nums = tds.slice(-6).map(td => toNum(txt(td)));
+        const [hp, speed, attack, defense, magic, resist] = nums;
+        const sum = hp + speed + attack + defense + magic + resist;
+        result.push({ name, hp, speed, attack, defense, magic, resist, sum });
+      }
+      if (result.length) {
+        // console.debug('kbxy stats parsed:', result);
+        return result;
       }
     }
     return [];
   }
 
-  // 找到“技能表”：表头包含“技能名称/等级/技能属性/类型/威力/PP/技能描述”
+  // 找到“技能表”
   function parseSkillTable() {
     const tables = $all('table');
     let skillRows = [];
@@ -94,30 +111,34 @@
       const headText = txt(t);
       if (/技能名称/.test(headText) && /技能描述/.test(headText)) {
         const trs = $all('tr', t);
-        // 找到表头行索引
         const headIdx = trs.findIndex(tr => /技能名称/.test(txt(tr)));
         if (headIdx === -1) continue;
-        for (let i=headIdx+1; i<trs.length; i++){
+        for (let i = headIdx + 1; i < trs.length; i++) {
           const tr = trs[i];
           const tds = $all('td', tr);
           if (tds.length < 2) continue;
           const first = txt(tds[0]);
-          const desc = txt(tds[tds.length-1]);
+          const desc = txt(tds[tds.length - 1]);
           if (!first || /表中数值/.test(desc)) continue;
-          // 忽略“无”行
+          if (/^无$/.test(first)) continue;
           skillRows.push({
             name: first,
-            description: /无$/.test(desc) ? '' : desc
+            description: /^无$/.test(desc) ? '' : desc
           });
         }
       }
     }
     // 去重
-    const seen = new Set(); skillRows = skillRows.filter(s => { if(seen.has(s.name)) return false; seen.add(s.name); return true; });
+    const seen = new Set();
+    skillRows = skillRows.filter(s => {
+      if (seen.has(s.name)) return false;
+      seen.add(s.name);
+      return true;
+    });
     return skillRows;
   }
 
-  // API 帮助
+  // API
   function apiRequest(method, url, json) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
@@ -129,16 +150,15 @@
           if (res.status >= 200 && res.status < 300) {
             try { resolve(JSON.parse(res.responseText)); } catch { resolve(res.responseText); }
           } else {
-            reject(new Error(`HTTP ${res.status}: ${res.responseText}`));
+            reject(new Error(`HTTP ${res.status}: ${res.responseText || ''}`));
           }
         },
         onerror: (e) => reject(e)
-      })
-    })
+      });
+    });
   }
 
   async function upsertMonster(base, payload) {
-    // 先查是否存在（按名称模糊 + 精确匹配）
     const q = encodeURIComponent(payload.name_final);
     const list = await apiRequest('GET', `${base}/monsters?q=${q}`);
     const hit = (list?.items || []).find(x => x.name_final === payload.name_final && (!payload.element || x.element === payload.element));
@@ -169,213 +189,248 @@
   }
 
   async function saveSkills(base, monsterId, skills) {
-    await apiRequest('PUT', `${base}/monsters/${monsterId}/skills`, {
-      skills: (skills || []).map(s => ({ name: s.name, description: s.description || '' }))
-    });
+    try {
+      await apiRequest('PUT', `${base}/monsters/${monsterId}/skills`, {
+        skills: (skills || []).map(s => ({ name: s.name, description: s.description || '' }))
+      });
+    } catch (e) {
+      // 405 降级 POST
+      if (String(e?.message || '').includes('HTTP 405')) {
+        await apiRequest('POST', `${base}/monsters/${monsterId}/skills`, {
+          skills: (skills || []).map(s => ({ name: s.name, description: s.description || '' }))
+        });
+      } else {
+        throw e;
+      }
+    }
   }
 
-  // UI：悬浮按钮
-  const fab = document.createElement('button');
-  fab.className = 'kbxy-fab';
-  fab.textContent = '导入到图鉴';
-  fab.addEventListener('click', openPanel);
-  document.body.appendChild(fab);
+  // 初始化 UI 悬浮按钮
+  function init() {
+    if (!document.body) return;
+    const fab = document.createElement('button');
+    fab.className = 'kbxy-fab';
+    fab.textContent = '导入到图鉴';
+    fab.addEventListener('click', openPanel);
+    document.body.appendChild(fab);
+  }
 
   function openPanel() {
-    const el = detectElement();
-    const statsRows = parseStatsTable();
-    const skills = parseSkillTable();
+    try {
+      const el = detectElement();
+      const statsRows = parseStatsTable();
+      const skills = parseSkillTable();
+      const recCombos = parseRecommendedCombos();
 
-    const mask = document.createElement('div');
-    mask.className = 'kbxy-mask';
-    const panel = document.createElement('div');
-    panel.className = 'kbxy-panel';
-
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'kbxy-close';
-    closeBtn.textContent = '×';
-    closeBtn.onclick = () => { document.body.removeChild(mask); document.body.removeChild(panel); };
-
-    // 默认选择最后一行（通常是进化后）
-    let currentIdx = Math.max(0, statsRows.length - 1);
-    let apiBase = API_BASE;
-    let filterText = '';
-    let onlyLikelyCore = false;
-    const likelyCore = (s) => /(提高|降低|免疫|回复|暴击|速度|抗性|防御|命中|昏迷|窒息|先手)/.test(s.name + ' ' + (s.description||''));
-
-    function render() {
-      panel.innerHTML = '';
-      panel.appendChild(closeBtn);
-
-      const title = document.createElement('div');
-      title.className = 'kbxy-title';
-      title.textContent = '一键导入到自制图鉴（选择关键技能）';
-      panel.appendChild(title);
-
-      // 基本信息
-      const row1 = document.createElement('div'); row1.className = 'kbxy-row';
-      // 左：六维/选择行
-      const left = document.createElement('div'); left.className = 'kbxy-card';
-      left.innerHTML = `
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-          <select class="kbxy-input" id="kbxy-monster-row">
-            ${statsRows.map((r, i)=>`<option value="${i}" ${i===currentIdx?'selected':''}>选择行：${r.name}（sum=${r.sum}）</option>`).join('')}
-          </select>
-          <span class="kbxy-chip">元素：${el || '未知'}</span>
-        </div>
-        <div class="kbxy-stat">
-          <div class="kbxy-chip">体力：${statsRows[currentIdx]?.hp ?? '-'}</div>
-          <div class="kbxy-chip">速度：${statsRows[currentIdx]?.speed ?? '-'}</div>
-          <div class="kbxy-chip">攻击：${statsRows[currentIdx]?.attack ?? '-'}</div>
-          <div class="kbxy-chip">防御：${statsRows[currentIdx]?.defense ?? '-'}</div>
-          <div class="kbxy-chip">法术：${statsRows[currentIdx]?.magic ?? '-'}</div>
-          <div class="kbxy-chip">抗性：${statsRows[currentIdx]?.resist ?? '-'}</div>
-        </div>
-      `;
-      row1.appendChild(left);
-
-      // 右：API 配置
-      const right = document.createElement('div'); right.className = 'kbxy-card';
-      right.innerHTML = `
-        <div class="kbxy-title">导入配置</div>
-        <label style="display:block;margin-bottom:6px">
-          <div class="kbxy-note" style="margin-bottom:4px">后端 API Base</div>
-          <input id="kbxy-api" class="kbxy-input" value="${apiBase}">
-        </label>
-        <div class="kbxy-badges">
-          <span class="kbxy-chip">POST /monsters（upsert）</span>
-          <span class="kbxy-chip">PUT /monsters/{id}/skills（覆盖关键技能）</span>
-        </div>
-      `;
-      row1.appendChild(right);
-      panel.appendChild(row1);
-
-      // 技能面板
-      const row2 = document.createElement('div'); row2.className = 'kbxy-card';
-      const header = document.createElement('div'); header.style = 'display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px';
-      header.innerHTML = `
-        <div style="display:flex;gap:8px;align-items:center">
-          <input id="kbxy-search" class="kbxy-input" placeholder="搜索技能名称/描述…（回车）" style="width:260px">
-          <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:#4b5563">
-            <input id="kbxy-core-only" type="checkbox" ${onlyLikelyCore?'checked':''} />
-            仅显示“可能是关键”的技能
-          </label>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button id="kbxy-select-all" class="kbxy-btn">全选</button>
-          <button id="kbxy-clear" class="kbxy-btn">清空</button>
-        </div>
-      `;
-      row2.appendChild(header);
-
-      const listWrap = document.createElement('div'); listWrap.className = 'kbxy-list';
-      // 状态缓存：勾选
-      if (!window.__kbxy_checked) window.__kbxy_checked = {};
-      const checked = window.__kbxy_checked;
-
-      const visibleSkills = skills.filter(s => {
-        const hit = (s.name + ' ' + (s.description||'')).toLowerCase().includes((filterText||'').toLowerCase());
-        const coreOK = !onlyLikelyCore || likelyCore(s);
-        return hit && coreOK;
-      });
-
-      for (const s of visibleSkills) {
-        const id = `kbxy-s-${s.name}`;
-        const card = document.createElement('div');
-        card.className = 'kbxy-skill';
-        card.innerHTML = `
-          <label style="display:flex;gap:10px;align-items:flex-start">
-            <input type="checkbox" id="${id}" ${checked[id]?'checked':''} />
-            <div style="flex:1">
-              <h5>${s.name}</h5>
-              ${s.description ? `<div class="kbxy-note" style="white-space:pre-wrap">${s.description}</div>` : `<div class="kbxy-note">（无描述）</div>`}
-              ${likelyCore(s) ? `<div class="kbxy-chip" style="margin-top:6px;background:#eef2ff;border-color:#e0e7ff;color:#4338ca">可能为关键</div>`:''}
-            </div>
-          </label>
-        `;
-        listWrap.appendChild(card);
+      if (!statsRows.length) {
+        alert('未识别到“种族值”表，请滚动页面到含有“卡布西游…种族值”的表格再试。');
+        return;
       }
-      row2.appendChild(listWrap);
-      panel.appendChild(row2);
 
-      // Footer
-      const footer = document.createElement('div'); footer.className = 'kbxy-footer';
-      const note = document.createElement('div'); note.className = 'kbxy-note';
-      note.textContent = `已解析：${statsRows.length} 行六维，技能 ${skills.length} 项；当前展示 ${visibleSkills.length} 项。`;
-      const actions = document.createElement('div'); actions.style = 'display:flex;gap:8px';
-      const btnCancel = document.createElement('button'); btnCancel.className = 'kbxy-btn'; btnCancel.textContent = '取消';
-      btnCancel.onclick = () => { document.body.removeChild(mask); document.body.removeChild(panel); };
-      const btnImport = document.createElement('button'); btnImport.className = 'kbxy-btn primary'; btnImport.textContent = '导入到图鉴';
-      btnImport.onclick = async () => {
-        try {
-          const row = statsRows[currentIdx];
-          const element = el;
-          const name_final = row?.name || document.title.replace(/卡布西游|技能表.*/g,'').trim() || '未知';
-          const base_offense = row.attack;
-          const base_survive = row.hp;
-          const base_control = (row.defense + row.magic) / 2;
-          const base_tempo = row.speed;
-          const base_pp = row.resist;
+      const mask = document.createElement('div');
+      mask.className = 'kbxy-mask';
+      const panel = document.createElement('div');
+      panel.className = 'kbxy-panel';
 
-          const chosen = skills.filter(s => {
-            const id = `kbxy-s-${s.name}`;
-            return !!checked[id];
-          });
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'kbxy-close';
+      closeBtn.textContent = '×';
+      closeBtn.onclick = () => { document.body.removeChild(mask); document.body.removeChild(panel); };
 
-          // 记住 API
-          localStorage.setItem('kbxy_api_base', apiBase);
+      // 默认选择最后一行（通常是进化后一阶）
+      let currentIdx = Math.max(0, statsRows.length - 1);
+      let apiBase = API_BASE;
+      let filterText = '';
+      let onlyLikelyCore = false;
+      const likelyCore = (s) => /(提高|降低|免疫|回复|暴击|速度|抗性|防御|命中|昏迷|窒息|先手)/.test((s.name + ' ' + (s.description||'')).toLowerCase());
 
-          const monsterId = await upsertMonster(apiBase, {
-            name_final,
-            element,
-            role: null,
-            base_offense, base_survive, base_control, base_tempo, base_pp
-          });
+      function render() {
+        panel.innerHTML = '';
+        panel.appendChild(closeBtn);
 
-          await saveSkills(apiBase, monsterId, chosen);
+        const title = document.createElement('div');
+        title.className = 'kbxy-title';
+        title.textContent = '一键导入到自制图鉴（选择关键技能 / 匹配推荐配招）';
+        panel.appendChild(title);
 
-          alert(`导入成功：${name_final}（ID=${monsterId}），关键技能 ${chosen.length} 个。`);
-        } catch (e) {
-          alert('导入失败：' + e.message);
+        // 行 1：左六维 / 右配置
+        const row1 = document.createElement('div'); row1.className = 'kbxy-row';
+
+        const left = document.createElement('div'); left.className = 'kbxy-card';
+        left.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+            <select class="kbxy-input" id="kbxy-monster-row">
+              ${statsRows.map((r, i)=>`<option value="${i}" ${i===currentIdx?'selected':''}>选择行：${r.name}（sum=${r.sum}）</option>`).join('')}
+            </select>
+            <span class="kbxy-chip">元素：${el || '未知'}</span>
+          </div>
+          <div class="kbxy-stat">
+            <div class="kbxy-chip">体力：${statsRows[currentIdx]?.hp ?? '-'}</div>
+            <div class="kbxy-chip">速度：${statsRows[currentIdx]?.speed ?? '-'}</div>
+            <div class="kbxy-chip">攻击：${statsRows[currentIdx]?.attack ?? '-'}</div>
+            <div class="kbxy-chip">防御：${statsRows[currentIdx]?.defense ?? '-'}</div>
+            <div class="kbxy-chip">法术：${statsRows[currentIdx]?.magic ?? '-'}</div>
+            <div class="kbxy-chip">抗性：${statsRows[currentIdx]?.resist ?? '-'}</div>
+          </div>
+        `;
+        row1.appendChild(left);
+
+        const right = document.createElement('div'); right.className = 'kbxy-card';
+        right.innerHTML = `
+          <div class="kbxy-title">导入配置</div>
+          <label style="display:block;margin-bottom:6px">
+            <div class="kbxy-note" style="margin-bottom:4px">后端 API Base</div>
+            <input id="kbxy-api" class="kbxy-input" value="${apiBase}">
+          </label>
+          <div class="kbxy-badges">
+            <span class="kbxy-chip">POST /monsters（upsert）</span>
+            <span class="kbxy-chip">PUT/POST /monsters/{id}/skills（覆盖技能）</span>
+          </div>
+        `;
+        row1.appendChild(right);
+        panel.appendChild(row1);
+
+        // 行 2：技能面板
+        const row2 = document.createElement('div'); row2.className = 'kbxy-card';
+        const header = document.createElement('div'); header.style = 'display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px';
+        header.innerHTML = `
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input id="kbxy-search" class="kbxy-input" placeholder="搜索技能名称/描述…（回车）" style="width:260px">
+            <label style="display:flex;gap:6px;align-items:center;font-size:13px;color:#4b5563">
+              <input id="kbxy-core-only" type="checkbox" ${onlyLikelyCore?'checked':''} />
+              仅显示“可能是关键”的技能
+            </label>
+            <button id="kbxy-match-rec" class="kbxy-btn">匹配推荐</button>
+            <span class="kbxy-note">${recCombos.length ? `识别到“推荐配招”：${recCombos.join(' + ')}` : '未找到“推荐配招”'}</span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button id="kbxy-select-all" class="kbxy-btn">全选</button>
+            <button id="kbxy-clear" class="kbxy-btn">清空</button>
+          </div>
+        `;
+        row2.appendChild(header);
+
+        const listWrap = document.createElement('div'); listWrap.className = 'kbxy-list';
+        if (!window.__kbxy_checked) window.__kbxy_checked = {};
+        const checked = window.__kbxy_checked;
+
+        const visibleSkills = skills.filter(s => {
+          const hit = (s.name + ' ' + (s.description||'')).toLowerCase().includes((filterText||'').toLowerCase());
+          const coreOK = !onlyLikelyCore || likelyCore(s);
+          return hit && coreOK;
+        });
+
+        for (const s of visibleSkills) {
+          const id = `kbxy-s-${s.name}`;
+          const card = document.createElement('div');
+          card.className = 'kbxy-skill';
+          card.innerHTML = `
+            <label style="display:flex;gap:10px;align-items:flex-start">
+              <input type="checkbox" id="${id}" ${checked[id]?'checked':''} />
+              <div style="flex:1">
+                <h5>${s.name}</h5>
+                ${s.description ? `<div class="kbxy-note" style="white-space:pre-wrap">${s.description}</div>` : `<div class="kbxy-note">（无描述）</div>`}
+                ${likelyCore(s) ? `<div class="kbxy-chip" style="margin-top:6px;background:#eef2ff;border-color:#e0e7ff;color:#4338ca">可能为关键</div>`:''}
+              </div>
+            </label>
+          `;
+          listWrap.appendChild(card);
         }
-      };
-      actions.appendChild(btnCancel); actions.appendChild(btnImport);
-      footer.appendChild(note); footer.appendChild(actions);
-      panel.appendChild(footer);
+        row2.appendChild(listWrap);
+        panel.appendChild(row2);
 
-      // 事件
-      panel.querySelector('#kbxy-monster-row')?.addEventListener('change', (e) => {
-        currentIdx = Number(e.target.value);
-        render();
-      });
-      panel.querySelector('#kbxy-api')?.addEventListener('input', (e) => {
-        apiBase = e.target.value;
-      });
-      panel.querySelector('#kbxy-search')?.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { filterText = e.target.value; render(); }
-      });
-      panel.querySelector('#kbxy-core-only')?.addEventListener('change', (e) => {
-        onlyLikelyCore = e.target.checked; render();
-      });
-      panel.querySelector('#kbxy-select-all')?.addEventListener('click', () => {
-        for (const s of skills) { window.__kbxy_checked[`kbxy-s-${s.name}`] = true; }
-        render();
-      });
-      panel.querySelector('#kbxy-clear')?.addEventListener('click', () => {
-        window.__kbxy_checked = {};
-        render();
-      });
-      // 代理勾选
-      $all('input[type=checkbox]', listWrap).forEach(cb => {
-        cb.addEventListener('change', (e) => {
-          window.__kbxy_checked[e.target.id] = e.target.checked;
-        })
-      });
+        // Footer（统计）
+        const footer = document.createElement('div'); footer.className = 'kbxy-footer';
+        const chosen = skills.filter(s => checked[`kbxy-s-${s.name}`]);
+        const overlap = recCombos.length ? chosen.filter(s => recCombos.includes(s.name)).length : 0;
+        const note = document.createElement('div'); note.className = 'kbxy-note';
+        note.textContent = `六维行：${statsRows.length}；技能共 ${skills.length}，当前显示 ${visibleSkills.length}；已选 ${chosen.length}${recCombos.length?`；与“推荐配招”重合 ${overlap}/${recCombos.length}`:''}。`;
+
+        const actions = document.createElement('div'); actions.style = 'display:flex;gap:8px';
+        const btnCancel = document.createElement('button'); btnCancel.className = 'kbxy-btn'; btnCancel.textContent = '取消';
+        btnCancel.onclick = () => { document.body.removeChild(mask); document.body.removeChild(panel); };
+        const btnImport = document.createElement('button'); btnImport.className = 'kbxy-btn primary'; btnImport.textContent = '导入到图鉴';
+        btnImport.onclick = async () => {
+          try {
+            const row = statsRows[currentIdx];
+            const element = el;
+            const name_final = row?.name || document.title.replace(/卡布西游|技能表.*/g,'').trim() || '未知';
+            const base_offense = row.attack;
+            const base_survive = row.hp;
+            const base_control = (row.defense + row.magic) / 2;
+            const base_tempo = row.speed;
+            const base_pp = row.resist;
+
+            const selectedSkills = skills.filter(s => !!checked[`kbxy-s-${s.name}`]);
+
+            localStorage.setItem('kbxy_api_base', apiBase);
+
+            const monsterId = await upsertMonster(apiBase, {
+              name_final, element, role: null,
+              base_offense, base_survive, base_control, base_tempo, base_pp
+            });
+
+            await saveSkills(apiBase, monsterId, selectedSkills);
+
+            alert(`导入成功：${name_final}（ID=${monsterId}），关键技能 ${selectedSkills.length} 个。`);
+          } catch (e) {
+            alert('导入失败：' + (e?.message || e));
+          }
+        };
+        actions.appendChild(btnCancel); actions.appendChild(btnImport);
+        footer.appendChild(note); footer.appendChild(actions);
+        panel.appendChild(footer);
+
+        // 事件
+        panel.querySelector('#kbxy-monster-row')?.addEventListener('change', (e) => {
+          currentIdx = Number(e.target.value);
+          render();
+        });
+        panel.querySelector('#kbxy-api')?.addEventListener('input', (e) => {
+          apiBase = e.target.value;
+        });
+        panel.querySelector('#kbxy-search')?.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { filterText = e.target.value; render(); }
+        });
+        panel.querySelector('#kbxy-core-only')?.addEventListener('change', (e) => {
+          onlyLikelyCore = e.target.checked; render();
+        });
+        panel.querySelector('#kbxy-select-all')?.addEventListener('click', () => {
+          for (const s of skills) { window.__kbxy_checked[`kbxy-s-${s.name}`] = true; }
+          render();
+        });
+        panel.querySelector('#kbxy-clear')?.addEventListener('click', () => {
+          window.__kbxy_checked = {};
+          render();
+        });
+        panel.querySelector('#kbxy-match-rec')?.addEventListener('click', () => {
+          if (!recCombos.length) { alert('未识别到“推荐配招”'); return; }
+          for (const s of skills) {
+            if (recCombos.includes(s.name)) window.__kbxy_checked[`kbxy-s-${s.name}`] = true;
+          }
+          render();
+        });
+
+        // 代理勾选
+        $all('input[type=checkbox]', listWrap).forEach(cb => {
+          cb.addEventListener('change', (e) => {
+            window.__kbxy_checked[e.target.id] = e.target.checked;
+          });
+        });
+      }
+
+      document.body.appendChild(mask);
+      document.body.appendChild(panel);
+      render();
+    } catch (err) {
+      console.error('[kbxy userscript] failed:', err);
+      alert('脚本运行出错：' + (err?.message || err));
     }
-
-    document.body.appendChild(mask);
-    document.body.appendChild(panel);
-    render();
   }
 
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
