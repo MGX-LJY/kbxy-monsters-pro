@@ -1,9 +1,10 @@
-# server/app/services/crawler_4399.py
+# server/app/services/crawler_server.py
 from __future__ import annotations
 
 import re
 import time
 import random
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Generator, Iterable, Optional, Tuple, Set
@@ -15,7 +16,7 @@ from DrissionPage import SessionPage
 log = logging.getLogger(__name__)
 
 
-# ---------- 数据模型（供上层入库用） ----------
+# ---------- 数据模型 ----------
 @dataclass
 class SkillRow:
     name: str
@@ -37,8 +38,10 @@ class MonsterRow:
     resist: int
     source_url: str
     img_url: Optional[str] = None
-    series_names: List[str] = field(default_factory=list)   # 同页多形态/进化线的名字
-    skills: List[SkillRow] = field(default_factory=list)    # 全量技能（通常按表格顺序）
+    series_names: List[str] = field(default_factory=list)            # 同页多形态名字
+    skills: List[SkillRow] = field(default_factory=list)             # 全量技能
+    recommended_names: List[str] = field(default_factory=list)       # “推荐配招”解析出的技能名
+    selected_skills: List[Dict[str, str]] = field(default_factory=list)  # 依据推荐筛出的技能（仅 name/description）
 
 
 # ---------- 工具 ----------
@@ -69,13 +72,12 @@ class Kabu4399Crawler:
     4399【卡布西游-妖怪大全】爬虫（requests 模式）
     - 列表页：抽取 ul#dq_list 下 li > a 的详情链接
     - 详情页：解析两张表：
-        1) “...资料/种族值”表 => 多行（同页可能含两只），返回 MonsterRow（可多条）
-        2) “技能表” => 一张，解析为 SkillRow 列表，挂到对应 MonsterRow 上
-    - 你可以传入 persist 回调将 MonsterRow 持久化到数据库
+        1) “资料/种族值”表 => 可能多行（同页多形态），先全取，最终只保留“最高形态”
+        2) “技能表” => 解析为 SkillRow 列表
+    - 额外：解析“推荐配招”，并在技能表中匹配出对应技能（仅 name/description）
     """
     BASE = "https://news.4399.com"
     ROOT = "/kabuxiyou/yaoguaidaquan/"
-    # 常见系别子目录（用于发现更多列表页；也可只从 ROOT 广度搜索）
     CANDIDATE_SLUGS = [
         "huoxi","jinxi","muxi","shuixi","tuxi","yixi","guaixi",
         "moxi","yaoxi","fengxi","duxi","leixi","huanxi",
@@ -92,7 +94,6 @@ class Kabu4399Crawler:
         headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.sp = SessionPage()
-        # 设置常见头（可被 DrissionPage 继承给后续请求）：
         self.sp.session.headers.update({
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -123,18 +124,15 @@ class Kabu4399Crawler:
     # ---- 列表页：抽取详情链接 ----
     def _extract_detail_links_from_list(self, page_url: str) -> List[str]:
         links: List[str] = []
-        # 1) 优先从 ul#dq_list 下抓
         for a in self.sp.eles('t:ul@@id=dq_list t:a'):
             href = a.attr('href') or ""
             if _is_detail_link(href):
                 links.append(_abs(self.BASE, href))
-        # 2) 兜底：整页所有 a
         if not links:
             for a in self.sp.eles('t:a'):
                 href = a.attr('href') or ""
                 if _is_detail_link(href):
                     links.append(_abs(self.BASE, href))
-        # 去重并保持顺序
         out, seen = [], set()
         for u in links:
             if u not in seen:
@@ -143,13 +141,11 @@ class Kabu4399Crawler:
         return out
 
     def iter_list_pages(self) -> Iterable[str]:
-        """产出所有可能的列表页 URL（ROOT + 各常见 slug）"""
         yield _abs(self.BASE, self.ROOT)
         for slug in self.CANDIDATE_SLUGS:
             yield _abs(self.BASE, f"{self.ROOT}{slug}/")
 
     def iter_detail_urls(self) -> Generator[str, None, None]:
-        """遍历所有列表页，产出详情链接。"""
         for list_url in self.iter_list_pages():
             if not self._get(list_url):
                 continue
@@ -158,25 +154,17 @@ class Kabu4399Crawler:
                     self.seen_urls.add(u)
                     yield u
 
-    # ---- 详情页：解析 ----
+    # ---- 详情页解析 ----
     def _pick_page_title_name(self) -> Optional[str]:
-        # 取 <h1> 的主要词作为本页“主怪名”（用于在多行种族值中首选）
         h1 = self.sp.ele('t:h1')
         if not h1:
             return None
         txt = _clean(h1.text)
-        # 常见标题格式：“卡布西游XXX、YYY资料/技能表...”，优先取标题中最后一个专名
-        # 先尝试页右侧“最新妖怪”同名；简单截取最后一个中文词
         m = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9·]+", txt)
         return m[-1] if m else None
 
     def _parse_stats_table(self, page_url: str) -> List[MonsterRow]:
-        """
-        解析“种族值”表。表头通常是：妖怪名 | 体力 | 速度 | 攻击 | 防御 | 法术 | 抗性
-        同页可能有 2 行（如初阶+进化），逐行返回 MonsterRow（暂不挂技能）。
-        """
         results: List[MonsterRow] = []
-        # 锁定包含“种族值”关键词的表（或邻近区域）
         target_tables = []
         for tbl in self.sp.eles('t:table'):
             txt = _clean(tbl.text)
@@ -185,15 +173,13 @@ class Kabu4399Crawler:
         if not target_tables:
             return results
 
-        # 取第一张“种族值”表
         tbl = target_tables[-1]
         rows = tbl.eles('t:tr')
         if len(rows) < 3:
             return results
 
-        # 找到列名行（包含“体力 速度 攻击 防御 法术 抗性”）
         header_idx = None
-        for i, tr in enumerate(rows[:6]):  # 前几行找一下
+        for i, tr in enumerate(rows[:6]):
             t = _clean(tr.text)
             if all(k in t for k in ("体力", "速度", "攻击", "防御", "法术", "抗性")):
                 header_idx = i
@@ -201,19 +187,17 @@ class Kabu4399Crawler:
         if header_idx is None:
             return results
 
-        # 每一行生成 MonsterRow
         title_name = self._pick_page_title_name()
-        # 尝试页面首图（不强制）
         img_ele = self.sp.ele('t:img')
         page_img = img_ele.attr('src') if img_ele else None
-        page_img = _abs(self.BASE, page_img) if page_img and page_img.startswith('//') else page_img
+        if page_img and page_img.startswith('//'):
+            page_img = _abs(self.BASE, page_img)
 
         for tr in rows[header_idx + 1:]:
             tds = tr.eles('t:td')
             if len(tds) < 7:
                 continue
             vals = [_clean(td.text) for td in tds]
-            # 有些表“妖怪名”占两列 -> 合并前两列
             if len(vals) >= 8:
                 name = vals[0] or vals[1]
                 cols = vals[2:8]
@@ -235,22 +219,14 @@ class Kabu4399Crawler:
             )
             results.append(m)
 
-        # 在详情页标题中标注“本页主怪名”，用于上层选择
         if title_name:
             for r in results:
                 r.series_names = [rr.name for rr in results]
-            # 排序：尽量把“标题名一致”的放前面，便于上层取第一条
-            results.sort(key=lambda x: 0 if x.name == title_name else 1)
-
+            # 仅用于信息参考，不参与最终输出选择
         return results
 
     def _parse_skills_table(self) -> List[SkillRow]:
-        """
-        解析“技能表”。表头通常：技能名称 | 等级 | 技能属性 | 类型 | 威力 | PP | 技能描述
-        """
         skills: List[SkillRow] = []
-
-        # 锁定包含“技能表”字样的表
         target_tbl = None
         for tbl in self.sp.eles('t:table'):
             if "技能表" in _clean(tbl.text):
@@ -262,7 +238,6 @@ class Kabu4399Crawler:
         if len(rows) <= 2:
             return skills
 
-        # 寻找表头行索引
         header_idx = None
         for i, tr in enumerate(rows[:6]):
             t = _clean(tr.text)
@@ -270,13 +245,11 @@ class Kabu4399Crawler:
                 header_idx = i
                 break
         if header_idx is None:
-            # 兜底：默认第一行是表头
             header_idx = 0
 
         for tr in rows[header_idx + 1:]:
             tds = tr.eles('t:td')
             if len(tds) < 7:
-                # 有些“无”行也跳过
                 continue
             vals = [_clean(td.text) for td in tds[:7]]
             name = vals[0]
@@ -291,70 +264,137 @@ class Kabu4399Crawler:
             skills.append(SkillRow(name, level, element, kind, power, pp, desc))
         return skills
 
-    def fetch_detail(self, url: str) -> List[MonsterRow]:
-        """抓取并解析详情页，可能返回 1~2 条 MonsterRow（含技能）。"""
-        if not self._get(url):
-            return []
-        monsters = self._parse_stats_table(url)
-        skills = self._parse_skills_table()
+    # ---- 推荐配招：解析 + 精选 ----
+    def _parse_recommended_names(self) -> List[str]:
+        for tbl in self.sp.eles('t:table'):
+            for tr in tbl.eles('t:tr'):
+                tds = tr.eles('t:td')
+                if not tds:
+                    continue
+                first = _clean(tds[0].text)
+                if "推荐配招" in first:
+                    raw = _clean(" ".join((td.text or "") for td in tds[1:])) if len(tds) > 1 else _clean(tr.text)
+                    raw = raw.replace("：", " ").replace("&nbsp;", " ").replace("\u3000", " ")
+                    parts = re.split(r"[+＋、/，,；;|\s]+", raw)
+                    names, seen = [], set()
+                    for p in parts:
+                        n = _clean(p)
+                        if not n or n == "无":
+                            continue
+                        if n not in seen:
+                            seen.add(n); names.append(n)
+                    return names
+        return []
 
-        # 将技能挂到每个 MonsterRow（多数情况下同页共用同一技能表）
-        for m in monsters:
-            m.skills = skills
-        return monsters
+    def _select_skills_from_recommend(self, rec_names: List[str], skills: List[SkillRow]) -> List[Dict[str, str]]:
+        """按推荐名在已解析技能中匹配，返回 [{name, description}, ...]（不含 PP）。"""
+        def norm(s: str) -> str:
+            return re.sub(r"\s+", "", s or "")
+
+        skill_map = {norm(s.name): s for s in skills}
+        out: List[Dict[str, str]] = []
+        for rec in rec_names:
+            key = norm(rec)
+            s = skill_map.get(key)
+            if not s:
+                for cand in skills:
+                    n = norm(cand.name)
+                    if key and (key in n or n in key):
+                        s = cand
+                        break
+            if s:
+                out.append({"name": s.name, "description": s.description})
+            else:
+                out.append({"name": rec, "description": ""})
+        return out
+
+    @staticmethod
+    def _six_sum(m: MonsterRow) -> int:
+        return int(m.hp + m.speed + m.attack + m.defense + m.magic + m.resist)
+
+    def fetch_detail(self, url: str) -> Optional[MonsterRow]:
+        """
+        抓取并解析详情页，只返回“最高形态”一条 MonsterRow：
+        - 以六维和的最大值为最高形态（更稳妥兼容不同页顺序）
+        - 解析推荐配招，并在技能表中筛选出对应技能（仅 name/description）
+        """
+        if not self._get(url):
+            return None
+
+        monsters = self._parse_stats_table(url)
+        if not monsters:
+            return None
+
+        skills = self._parse_skills_table()
+        rec_names = self._parse_recommended_names()
+        selected = self._select_skills_from_recommend(rec_names, skills) if rec_names else []
+
+        # 仅保留最高形态
+        best = max(monsters, key=self._six_sum)
+        best.skills = skills
+        best.recommended_names = rec_names
+        best.selected_skills = selected
+        return best
 
     # ---- 顶层 API ----
     def crawl_all(
         self,
         *,
-        limit_pages: Optional[int] = None,
         persist: Optional[callable] = None,
     ) -> Generator[MonsterRow, None, None]:
-        """
-        按列表页遍历（ROOT + 常见系别目录），挨个抓详情。
-        - limit_pages: 限制最大“列表页数量”（非详情页数量），用于试跑
-        - persist: 回调，如 persist(mon: MonsterRow) -> None，用于写库
-        """
-        page_cnt = 0
+        """遍历所有列表页，产出各详情页的“最高形态”记录。"""
         for detail_url in self.iter_detail_urls():
-            # 可选：限制列表页来源数量（粗粒度控制）
-            if limit_pages is not None:
-                # 这里粗略按每个列表页第一次进入时累加；已在 iter_list_pages 控制
-                pass
-
-            mons = self.fetch_detail(detail_url)
-            if not mons:
+            m = self.fetch_detail(detail_url)
+            if not m:
                 continue
-            for m in mons:
-                if persist:
-                    try:
-                        persist(m)
-                    except Exception as e:
-                        log.exception("persist error: %s", e)
-                yield m
+            if persist:
+                try:
+                    persist(m)
+                except Exception as e:
+                    log.exception("persist error: %s", e)
+            yield m
             time.sleep(random.uniform(*self.throttle_range))
 
 
-# ---------- 示例：如何接到你现有的持久化逻辑 ----------
+# ---------- 示例持久化（可接你自己的入库逻辑） ----------
 def example_persist(mon: MonsterRow) -> None:
+    log.info(
+        "PERSIST %s hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d",
+        mon.name, mon.hp, mon.attack, mon.speed,
+        len(mon.recommended_names), len(mon.selected_skills), len(mon.skills)
+    )
+
+
+# ---------- 输出裁剪 ----------
+def _to_public_json(m: MonsterRow) -> Dict[str, object]:
     """
-    把 MonsterRow 映射到你项目内的 Monster / Skill 表。
-    这里给出字段名示意；请对接你项目的 Session / upsert 方法。
+    仅保留：
+      - 最高形态：name, hp, speed, attack, defense, magic, resist
+      - selected_skills: [{name, description}]
     """
-    # from ..db import SessionLocal
-    # from ..models import Monster, Skill
-    # ... 映射并 upsert
-    log.info("PERSIST %s hp=%s atk=%s spd=%s ... skills=%d",
-             mon.name, mon.hp, mon.attack, mon.speed, len(mon.skills))
+    return {
+        "name": m.name,
+        "hp": m.hp,
+        "speed": m.speed,
+        "attack": m.attack,
+        "defense": m.defense,
+        "magic": m.magic,
+        "resist": m.resist,
+        "selected_skills": m.selected_skills,
+    }
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     crawler = Kabu4399Crawler()
-    # 试跑：只打印前若干个
-    cnt = 0
+
+    # 收集前 10 个含“推荐配招”的角色（最高形态）并输出 JSON
+    N = 10
+    out: List[Dict[str, object]] = []
     for item in crawler.crawl_all(persist=example_persist):
-        log.info("GOT: %s @ %s", item.name, item.source_url)
-        cnt += 1
-        if cnt >= 5:
-            break
+        if item.selected_skills:  # 只要能解析出推荐配招
+            out.append(_to_public_json(item))
+            if len(out) >= N:
+                break
+
+    print(json.dumps(out, ensure_ascii=False, indent=2))
