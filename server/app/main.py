@@ -8,7 +8,7 @@ from .db import Base, engine
 from .middleware import TraceIDMiddleware
 
 # 常规路由
-from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl_4399
+from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl
 
 
 # 可选路由（不存在也不报错）
