@@ -97,6 +97,7 @@ export default function MonstersPage() {
   const [sort, setSort] = useState<SortKey>('updated_at')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库
+  const [onlyGettable, setOnlyGettable] = useState(false)   // 仅显示可获得妖怪（new_type=true）
 
   // 分页
   const [page, setPage] = useState(1)
@@ -125,8 +126,9 @@ export default function MonstersPage() {
   const [magic, setMagic] = useState<number>(100)
   const [resist, setResist] = useState<number>(100)
 
-  // 编辑态的技能（仅 name/description，显示时会带 element/kind/power）
-  const [editSkills, setEditSkills] = useState<{ name: string; description?: string }[]>([{ name: '', description: '' }])
+  // 技能编辑：合并为一个大文本框（每行：技能名 | 描述）
+  const [skillsText, setSkillsText] = useState<string>('')
+
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
@@ -157,7 +159,7 @@ export default function MonstersPage() {
 
   // 列表 & 基础数据
   const list = useQuery({
-    queryKey: ['monsters', { q, element, tag, role, acqType, sort, order, page, pageSize, warehouseOnly }],
+    queryKey: ['monsters', { q, element, tag, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable }],
     queryFn: async () => {
       const endpoint = warehouseOnly ? '/warehouse' : '/monsters'
       return (await api.get(endpoint, {
@@ -167,6 +169,7 @@ export default function MonstersPage() {
           tag: tag || undefined,
           role: role || undefined,
           type: acqType || undefined,      // 获取途径筛选（后端需支持）
+          new_type: onlyGettable ? true : undefined, // 仅显示可获得
           sort,
           order,
           page,
@@ -208,17 +211,12 @@ export default function MonstersPage() {
     queryKey: ['stats'],
     queryFn: async () => (await api.get('/stats')).data as StatsDTO
   })
-  // 仓库数量
+  // 仓库数量（严格以 /warehouse 的 total 为准，0 也能正确显示）
   const wstats = useQuery({
-    queryKey: ['warehouse_stats'],
+    queryKey: ['warehouse_stats_total_only'],
     queryFn: async () => {
-      try {
-        return (await api.get('/warehouse/stats')).data as WarehouseStatsDTO
-      } catch {
-        // 兜底：用 /warehouse 列表的 total 当数量
-        const d = (await api.get('/warehouse', { params: { page: 1, page_size: 1 } })).data as MonsterListResp
-        return { warehouse_total: d?.total ?? 0 }
-      }
+      const d = (await api.get('/warehouse', { params: { page: 1, page_size: 1 } })).data as MonsterListResp
+      return { warehouse_total: d?.total ?? 0 } as WarehouseStatsDTO
     }
   })
 
@@ -302,11 +300,11 @@ export default function MonstersPage() {
   // —— 导出/备份/恢复
   const restoreInputRef = useRef<HTMLInputElement>(null)
   const exportCSV = async () => {
-    const endpoint = warehouseOnly ? '/export/monsters.csv' : '/export/monsters.csv'
-    const res = await api.get(endpoint, {
+    const res = await api.get('/export/monsters.csv', {
       params: {
         q: q || undefined, element: element || undefined, tag: tag || undefined, role: role || undefined,
         type: acqType || undefined,
+        new_type: onlyGettable ? true : undefined,
         sort, order
       },
       responseType: 'blob'
@@ -346,7 +344,7 @@ export default function MonstersPage() {
     setIsEditing(false)
   }
 
-  // —— 进入编辑：预填
+  // —— 进入编辑（技能合并为文本）——
   const enterEdit = () => {
     if (!selected) return
     const s: any = selected
@@ -355,10 +353,9 @@ export default function MonstersPage() {
     setEditRole(s.role || '')
     setEditPossess(!!s.possess)
     setEditGettable(!!s.new_type)
-    setEditType(s.type || '')            // 预填获取渠道
-    setEditMethod(s.method || '')        // 预填获取方式
+    setEditType(s.type || '')
+    setEditMethod(s.method || '')
 
-    // 只把新前缀标签写入编辑框
     const onlyNew = (s.tags || []).filter((t: string) => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
     setEditTags(onlyNew.join(' '))
 
@@ -369,27 +366,50 @@ export default function MonstersPage() {
     setMagic(Math.round(s.magic ?? 100))
     setResist(Math.round(s.resist ?? 100))
 
-    const existing = (skills.data || []).map(s => ({ name: s.name || '', description: s.description || '' }))
-    setEditSkills(existing.length ? existing : [{ name: '', description: '' }])
+    const lines = (skills.data || [])
+      .filter(x => isValidSkillName(x.name))
+      .map(x => {
+        const desc = (x.description || '').trim()
+        return desc ? `${x.name} | ${desc}` : `${x.name}`
+      })
+    setSkillsText(lines.join('\n'))
+
     setIsEditing(true)
   }
   const cancelEdit = () => setIsEditing(false)
 
-  // —— 保存技能（保持后兼容） —— //
-  const saveSkillsWithFallback = async (monsterId: number, skillsBody: { name: string; description?: string }[]) => {
+  // —— 技能保存优先 /skills/set —— //
+  const saveSkills = async (monsterId: number, body: { name: string; description?: string }[]) => {
     try {
-      return await api.put(`/monsters/${monsterId}/skills`, { skills: skillsBody })
-    } catch (e: any) {
-      const st = e?.response?.status
-      if (st === 405 || st === 404) {
-        try {
-          return await api.post(`/monsters/${monsterId}/skills`, { skills: skillsBody })
-        } catch {
-          return await api.post(`/skills/set`, { monster_id: monsterId, skills: skillsBody })
-        }
+      return await api.post('/skills/set', { monster_id: monsterId, skills: body })
+    } catch {
+      try {
+        return await api.put(`/monsters/${monsterId}/skills`, { skills: body })
+      } catch {
+        return await api.post(`/monsters/${monsterId}/skills`, { skills: body })
       }
-      throw e
     }
+  }
+
+  // 解析技能多行文本
+  const parseSkillsText = (txt: string): { name: string; description?: string }[] => {
+    const lines = (txt || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+    const out: { name: string; description?: string }[] = []
+    for (const line of lines) {
+      let name = ''
+      let desc = ''
+      if (line.includes('|') || line.includes('｜')) {
+        const [n, ...rest] = line.split(/[|｜]/)
+        name = (n || '').trim()
+        desc = rest.join('|').trim()
+      } else {
+        const m = line.match(/^(\S+)\s+(.*)$/)
+        if (m) { name = m[1]; desc = m[2] }
+        else { name = line }
+      }
+      if (isValidSkillName(name)) out.push({ name, description: desc || undefined })
+    }
+    return out
   }
 
   // —— 保存（一次性 PUT /monsters/{id}），确保不丢 type/method —— //
@@ -404,18 +424,15 @@ export default function MonstersPage() {
         role: editRole || null,
         possess: !!editPossess,
         new_type: !!editGettable,
-        type: editType || null,            // 保持/更新获取渠道
-        method: editMethod || null,        // 保持/更新获取方式
+        type: editType || null,
+        method: editMethod || null,
         hp, speed, attack, defense, magic, resist,
-        // 仅保存新前缀标签到 Monster.tags
         tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(t => t && (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))),
       })
 
-      // 技能
-      const filtered = editSkills.filter(s => (s.name || '').trim())
-      await saveSkillsWithFallback((selected as any).id, filtered)
+      const skillsBody = parseSkillsText(skillsText)
+      await saveSkills((selected as any).id, skillsBody)
 
-      // 刷新
       const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
       setSelected(fresh)
       skills.refetch()
@@ -430,7 +447,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 主页一键自动匹配：优先 /monsters/auto_match，失败逐条兜底
+  // —— 主页一键自动匹配 —— //
   const autoMatchBatch = async () => {
     const items = (list.data?.items as any[]) || []
     if (!items.length) return alert('当前没有可处理的记录')
@@ -462,7 +479,7 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 抽屉内“一键匹配（填充）”：拉取建议写入编辑框
+  // —— 抽屉内“一键匹配（填充）” —— //
   const fillEditByAutoMatch = async () => {
     if (!selected) return
     const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
@@ -482,8 +499,9 @@ export default function MonstersPage() {
     '冰系','毒系','雷系','幻系','妖系',
     '翼系','怪系','灵系','音系','圣系','机械',
     '火风系','木灵系','土幻系','水妖系',
-  ]  // 获取途径选项（与后端/爬虫归类一致）
-    const acquireTypeOptions = ['可捕捉宠物','BOSS宠物','活动获取宠物','兑换/商店','任务获取','超进化','其它']
+  ]
+  // 获取途径选项（与后端/爬虫归类一致）
+  const acquireTypeOptions = ['可捕捉宠物','BOSS宠物','活动获取宠物','兑换/商店','任务获取','超进化','其它']
 
   // —— 批量加入/移出仓库 —— //
   const bulkSetWarehouse = async (flag: boolean) => {
@@ -499,42 +517,26 @@ export default function MonstersPage() {
     <div className="container my-6 space-y-4">
       {/* 工具栏 */}
       <div className="card p-4">
-        {/* 第一行：搜索 + 爬取上限(移到搜索旁) + 刷新/导出/备份/恢复 */}
-        <div className="mb-3 grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-          <div className="flex items-center gap-2">
+        {/* 第一行：搜索与上限 —— 2 列等宽，各占一半 */}
+        <div className="mb-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0">
             <input
-              className="input flex-1"
+              className="input w-full min-w-0"
               placeholder="搜索名称 / 技能关键词…"
               value={q}
               onChange={e => { setQ(e.target.value); setPage(1) }}
               aria-label="搜索"
             />
-            {/* 爬取上限放在搜索框旁边 */}
             <input
-              className="input w-32"
+              className="input w-full min-w-0"
               placeholder="抓取上限(可选)"
               value={crawlLimit}
               onChange={e => setCrawlLimit(e.target.value.replace(/[^\d]/g, ''))}
             />
           </div>
-          <div className="hidden md:block" />
-          <div className="flex justify-end gap-2">
-            <button
-              className={`btn ${warehouseOnly ? 'btn-secondary' : ''}`}
-              onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
-              title="仅显示仓库中已有的宠物"
-            >
-              {warehouseOnly ? '仅看仓库：开' : '仅看仓库：关'}
-            </button>
-            <button className="btn" onClick={() => list.refetch()}>刷新</button>
-            <button className="btn" onClick={exportCSV}>导出 CSV</button>
-            <button className="btn" onClick={exportBackup}>备份 JSON</button>
-            <button className="btn" onClick={openRestore}>恢复 JSON</button>
-            <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
-          </div>
         </div>
 
-        {/* 第二行：元素 + 获取途径 + 标签(汉化显示) + 定位 + 排序 */}
+        {/* 第二行：元素 + 获取途径 + 标签 + 定位 + 排序 */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
             <option value="">全部</option>
@@ -572,24 +574,45 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 第三行：操作按钮区 —— “仅看仓库”按钮已放在上面；这里紧挨自动匹配 */}
+        {/* 第三行：筛选下方一排按钮 */}
         <div className="mt-3 flex flex-wrap justify-end gap-2">
+          <button
+            className={`btn btn-lg ${warehouseOnly ? 'btn-primary' : ''}`}
+            onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
+            title="只显示仓库已有的宠物 / 再次点击还原"
+          >
+            仓库管理
+          </button>
+
+          <button
+            className={`btn ${onlyGettable ? 'btn-primary' : ''}`}
+            onClick={() => { setOnlyGettable(v => !v); setPage(1) }}
+            title="只显示当前可获得妖怪"
+          >
+            仅显示可获得妖怪
+          </button>
+
+          <button className="btn" onClick={() => list.refetch()}>刷新</button>
+          <button className="btn" onClick={exportCSV}>导出 CSV</button>
+          <button className="btn" onClick={exportBackup}>备份 JSON</button>
+          <button className="btn" onClick={openRestore}>恢复 JSON</button>
           <button className="btn" onClick={startCrawl} disabled={crawling}>
             {crawling ? '爬取中…' : '一键爬取图鉴'}
           </button>
           <button className="btn btn-primary" onClick={autoMatchBatch} disabled={autoMatching}>
             {autoMatching ? '自动匹配中…' : '自动匹配（选中/可见）'}
           </button>
+          <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
         </div>
       </div>
 
-      {/* 统计栏：仓库数量 + 总数 */}
+      {/* 统计栏：仓库妖怪数量 + 总数 */}
       <div className="card p-4">
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
-            <div className="text-xs text-gray-500">仓库数量</div>
+            <div className="text-xs text-gray-500">仓库妖怪数量</div>
             <div className="text-xl font-semibold">
-              {wstats.data?.warehouse_total ?? wstats.data?.total ?? '—'}
+              {typeof wstats.data?.warehouse_total === 'number' ? wstats.data.warehouse_total : '—'}
             </div>
           </div>
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
@@ -612,7 +635,7 @@ export default function MonstersPage() {
         </div>
       )}
 
-      {/* 列表（展示派生五维 + 三列标签） */}
+      {/* 列表 */}
       <div className="card">
         <div className="overflow-auto">
           <table className="table">
@@ -655,7 +678,7 @@ export default function MonstersPage() {
                       <td className="text-center">{m.id}</td>
                       <td className="text-left">
                         <button className="text-blue-600 hover:underline" onClick={() => openDetail(m)}>
-                          {m.name || m.name_final /* 兜底兼容 */}
+                          {m.name || m.name_final}
                         </button>
                       </td>
                       <td className="text-center">{m.element}</td>
@@ -698,7 +721,7 @@ export default function MonstersPage() {
         </div>
       </div>
 
-      {/* 详情抽屉：六维直接显示列；编辑时直接保存到列；名称/拥有/可获取/获取渠道/方式 */}
+      {/* 详情抽屉 */}
       <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false) }} title={(selected as any)?.name || (selected as any)?.name_final}>
         {selected && (
           <div className="space-y-5">
@@ -759,7 +782,6 @@ export default function MonstersPage() {
                       <li key={`${s.id || s.name}`} className="p-3 bg-gray-50 rounded">
                         <div className="flex items-center justify-between">
                           <div className="font-medium">{s.name}</div>
-                          {/* 显示 element/kind/power */}
                           <div className="text-xs text-gray-500">
                             {[s.element, s.kind, (s.power ?? '')].filter(Boolean).join(' / ') || '—'}
                           </div>
@@ -825,7 +847,8 @@ export default function MonstersPage() {
                         <option value="辅助">辅助</option><option value="坦克">坦克</option><option value="通用">通用</option>
                       </select>
                     </div>
-                    {/* 拥有/可获取 开关 */}
+
+                    {/* 仓库/可获取 */}
                     <div className="flex items-center gap-2">
                       <input id="possess" type="checkbox" checked={editPossess} onChange={e => setEditPossess(e.target.checked)} />
                       <label htmlFor="possess" className="text-sm">已拥有（加入仓库）</label>
@@ -879,26 +902,19 @@ export default function MonstersPage() {
                   <div className="p-2 bg-gray-50 rounded text-sm text-center">六维总和：<b>{sum}</b></div>
                 </div>
 
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <h4 className="font-semibold">技能（可编辑/添加多个）</h4>
-                    <button className="btn" onClick={() => setEditSkills(prev => [...prev, { name: '', description: '' }])}>
-                      + 添加技能
-                    </button>
+                {/* 技能：单个大文本框 */}
+                <div className="card p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-semibold">技能（每行：技能名 | 描述）</h4>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {editSkills.map((s, idx) => (
-                      <div key={idx} className="card p-3 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <input className="input flex-1" value={s.name}
-                            placeholder={`技能 ${idx + 1} 名称`}
-                            onChange={e => setEditSkills(prev => prev.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))} />
-                          <button className="btn" onClick={() => setEditSkills(prev => prev.filter((_, i) => i !== idx))} disabled={editSkills.length === 1}>删除</button>
-                        </div>
-                        <textarea className="input h-24" value={s.description || ''} placeholder="技能描述"
-                          onChange={e => setEditSkills(prev => prev.map((x, i) => i === idx ? { ...x, description: e.target.value } : x))} />
-                      </div>
-                    ))}
+                  <textarea
+                    className="input h-56"
+                    placeholder={`示例：\n沸焰劫波 | 火 / 法术 / 威力145，有25%几率令对手抗性下降一级\n盏心共鸣 | 自身攻击、法术、防御各提高一级\n净火洗礼 | 消除对手加防御和加抗性的状态`}
+                    value={skillsText}
+                    onChange={e => setSkillsText(e.target.value)}
+                  />
+                  <div className="text-xs text-gray-500">
+                    保存时会自动解析为多条技能；留空的行将被忽略。
                   </div>
                 </div>
               </>
