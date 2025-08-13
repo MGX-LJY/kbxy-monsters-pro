@@ -7,8 +7,8 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..services.crawler_server import Kabu4399Crawler, MonsterRow
-from ..services.skills_service import upsert_skill  # 按 (name, element, kind, power) 唯一写技能
+from ..services.crawler_server import Kabu4399Crawler, MonsterRow, SkillRow
+from ..services.skills_service import upsert_skills  # 修复：导入正确的 upsert_skills
 from ..services.derive_service import recompute_and_autolabel
 from ..db import SessionLocal
 from .. import models as M
@@ -17,26 +17,33 @@ router = APIRouter(prefix="/api/v1/crawl/4399", tags=["crawl_4399"])
 log = logging.getLogger(__name__)
 
 
+def _skill_public(s: SkillRow) -> Dict[str, object]:
+    """对外输出的技能字段：name/element/kind/power/description/level。"""
+    return {
+        "name": s.name,
+        "element": s.element,
+        "kind": s.kind,
+        "power": s.power,
+        "description": s.description,
+        "level": s.level,
+    }
+
+
 def _to_payload(m: MonsterRow) -> Dict[str, object]:
     """
-    API 对外样例/单抓输出：
-    - 六维与 element
-    - selected_skills：带 element/kind/power/description（与导入唯一键一致）
-    - 附带获取渠道：type/new_type/method（便于前端查看）
+    仅保留：
+      - 最高形态：name, element, hp, speed, attack, defense, magic, resist
+      - 获取渠道：type, new_type, method
+      - selected_skills: 完整字段（便于前端/导入）
     """
     skills = []
     for s in (m.selected_skills or []):
-        # s 为 SkillRow 数据类
+        # SkillRow 是 dataclass，用属性访问而不是 dict.get
         n = (s.name or "").strip()
         if not n or n in {"推荐配招", "推荐技能", "推荐配招："}:
             continue
-        skills.append({
-            "name": n,
-            "element": (s.element or "").strip(),
-            "kind": (s.kind or "").strip(),
-            "power": s.power,
-            "description": (s.description or "").strip(),
-        })
+        skills.append(_skill_public(s))
+
     return {
         "name": m.name,
         "element": m.element,
@@ -56,7 +63,7 @@ def _to_payload(m: MonsterRow) -> Dict[str, object]:
 @router.get("/samples")
 def crawl_samples(limit: int = Query(10, ge=1, le=100)):
     """
-    抓取若干详情，返回“精选技能”完整字段（element/kind/power/description）。
+    从 4399 图鉴抓若干条样本，输出带 element/kind/power/description/level 的精选技能。
     """
     crawler = Kabu4399Crawler()
     results: List[Dict[str, object]] = []
@@ -79,7 +86,7 @@ def crawl_samples(limit: int = Query(10, ge=1, le=100)):
 @router.get("/fetch_one")
 def fetch_one(url: str):
     """
-    单个详情抓取，输出与 samples 一致的完整字段。
+    抓取单个详情页；输出带 element/kind/power/description/level 的精选技能。
     """
     crawler = Kabu4399Crawler()
     row = crawler.fetch_detail(url)
@@ -88,18 +95,16 @@ def fetch_one(url: str):
     return _to_payload(row)
 
 
-# --------- 写库工具（Monster 按 name 唯一；Skill 按 (name, element, kind, power) 唯一） ---------
-def _upsert_one(db: Session, mon: MonsterRow, *, overwrite: bool = False, do_recompute: bool = True) -> Tuple[bool, int]:
+# --------- 写库工具（Monster 以 name 唯一；Skill 唯一键为 (name, element, kind, power)） ---------
+def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive: bool = True) -> Tuple[bool, int]:
     """
-    将 MonsterRow 落入业务库：
-      1) Monster upsert（唯一键 name）：
-         写入 element/hp/speed/attack/defense/magic/resist 及获取渠道 method/type/new_type
-         possess 由业务默认；如模型存在该列且新建时未设值，可在此保持默认（不强行覆盖）
-      2) Skill upsert（唯一键 (name, element, kind, power)）：
-         仅当新描述“更像描述或更长”时覆盖旧描述（由 skills_service.upsert_skill 处理）
-      3) MonsterSkill 关联（若已存在跳过；将 selected=True；如有关联描述列且为空则补 s.description）
-      4) 可选 recompute_and_autolabel()
-    返回：(is_insert, affected_count) —— 受影响计入新增/更新的技能与关联变更条数
+    将 MonsterRow 落库。
+    - 唯一键：Monster.name（使用 mon.name）
+    - overwrite=False：已存在则只补齐空字段；True：覆盖基础字段
+    - 技能：
+        * Skill 全局去重，唯一 (name, element, kind, power)
+        * 通过 MonsterSkill 关联，记录 selected/level/description
+    返回：(is_insert, affected_skills)
     """
     is_insert = False
 
@@ -111,18 +116,16 @@ def _upsert_one(db: Session, mon: MonsterRow, *, overwrite: bool = False, do_rec
         db.add(m)
         db.flush()  # 先拿到 id
 
-    def _set(field: str, value: Optional[int | str | bool]):
-        # 覆盖策略：overwrite=True 则无条件覆盖；否则仅在现值为空/0/"" 时写入
-        if not hasattr(m, field):
-            return
+    def _set(field: str, value):
         if overwrite:
             setattr(m, field, value)
         else:
             cur = getattr(m, field)
-            if cur in (None, 0, "", False) and value not in (None, ""):
+            # 仅在当前字段空/None/0 时补齐
+            if cur in (None, "", 0) and value not in (None, ""):
                 setattr(m, field, value)
 
-    # 六维与 element
+    # 基础属性/获取渠道/原始六维
     _set("element", mon.element)
     _set("hp", mon.hp)
     _set("speed", mon.speed)
@@ -130,97 +133,88 @@ def _upsert_one(db: Session, mon: MonsterRow, *, overwrite: bool = False, do_rec
     _set("defense", mon.defense)
     _set("magic", mon.magic)
     _set("resist", mon.resist)
-
-    # 获取渠道（method / type / new_type）
+    _set("type", mon.type)
+    if mon.new_type is not None:
+        _set("new_type", mon.new_type)
     _set("method", mon.method)
-    _set("type", mon.type)           # 注意：你的模型若将列名定义为 type_，则相应改为 "type_"
-    _set("new_type", mon.new_type)
-
     db.flush()
 
-    # 2) 技能写库 + 3) 关联
+    # 2) 技能 upsert + 关联
     affected = 0
-    if mon.selected_skills:
-        for s in mon.selected_skills:
-            name = (s.name or "").strip()
-            if not name:
-                continue
-            element = (s.element or "").strip()
-            kind = (s.kind or "").strip()
-            power = s.power
-            desc = (s.description or "").strip()
+    selected_list: List[SkillRow] = mon.selected_skills or []
 
-            # 2) upsert Skill（以四元组唯一）
-            skill = upsert_skill(db, name=name, element=element, kind=kind, power=power, description=desc)
-            db.flush()
+    if selected_list:
+        # 2.1 先批量 upsert 全部技能（唯一：name, element, kind, power）
+        items = [
+            (s.name, s.element, s.kind, s.power, s.description)
+            for s in selected_list
+            if (s.name or "").strip()
+        ]
+        skills = upsert_skills(db, items)
 
-            # 3) 建立 MonsterSkill 关联（并将 selected=True）
-            if hasattr(M, "MonsterSkill"):
-                ms = (
-                    db.query(M.MonsterSkill)
-                    .filter(M.MonsterSkill.monster_id == m.id, M.MonsterSkill.skill_id == skill.id)
-                    .first()
+        # 为了快速找到对应 Skill -> SkillRow 的 level/selected/rel-desc
+        # 构建一个键：(name, element, kind, power)
+        def _key(sr: SkillRow) -> tuple:
+            return (sr.name or "", sr.element or None, sr.kind or None, sr.power if sr.power is not None else None)
+
+        sr_map = { _key(s): s for s in selected_list }
+
+        # 2.2 逐一建立 MonsterSkill 关联（若已存在则跳过；空描述时可补）
+        for sk in skills:
+            # 找回对应 SkillRow 以拿 level/description
+            sr = sr_map.get((sk.name, sk.element, sk.kind, sk.power))
+            rel_desc = (sr.description or "").strip() if sr else ""
+            rel_level = sr.level if sr else None
+
+            ms = (
+                db.query(M.MonsterSkill)
+                .filter(M.MonsterSkill.monster_id == m.id, M.MonsterSkill.skill_id == sk.id)
+                .first()
+            )
+            if not ms:
+                ms = M.MonsterSkill(
+                    monster_id=m.id,
+                    skill_id=sk.id,
+                    selected=True,
+                    level=rel_level,
+                    description=rel_desc or None,
                 )
-                if not ms:
-                    # 若模型上有 selected/description 等列，尽可能写入
-                    kwargs = {"monster_id": m.id, "skill_id": skill.id}
-                    if hasattr(M.MonsterSkill, "selected"):
-                        kwargs["selected"] = True
-                    if hasattr(M.MonsterSkill, "description"):
-                        kwargs["description"] = desc
-                    ms = M.MonsterSkill(**kwargs)  # type: ignore
-                    db.add(ms)
-                    affected += 1
-                else:
-                    changed = False
-                    if hasattr(ms, "selected") and not bool(getattr(ms, "selected")):
-                        ms.selected = True  # type: ignore
-                        changed = True
-                    if hasattr(ms, "description"):
-                        curd = (getattr(ms, "description") or "").strip()
-                        if (not curd) and desc:
-                            ms.description = desc  # type: ignore
-                            changed = True
-                    if changed:
-                        affected += 1
+                db.add(ms)
+                affected += 1
             else:
-                # 若没有显式关联模型，尝试通过多对多关系维护（secondary）
-                if hasattr(m, "skills"):
-                    already = any(getattr(s2, "id", None) == skill.id for s2 in (m.skills or []))
-                    if not already:
-                        m.skills.append(skill)  # type: ignore
-                        affected += 1
-                    # 无处写 selected/描述，只能依赖 Skill.description 已在 upsert_skill 中按策略更新
-                else:
-                    # 实在没有关联关系，只能略过（不计入 affected）
-                    pass
+                changed = False
+                if ms.selected is not True:
+                    ms.selected = True; changed = True
+                if ms.level is None and rel_level is not None:
+                    ms.level = rel_level; changed = True
+                if (not (ms.description or "").strip()) and rel_desc:
+                    ms.description = rel_desc; changed = True
+                if changed:
+                    affected += 1
 
-    # 4) 可选：派生五维 + 自动标签
-    if do_recompute:
-        try:
-            recompute_and_autolabel(db, m)
-        except Exception as e:
-            log.exception("recompute_and_autolabel failed for %s: %s", m.name, e)
+    # 3) 可选：重算派生 + 自动定位/标签
+    if do_derive:
+        recompute_and_autolabel(db, m)
 
     return is_insert, affected
 
 
 class CrawlAllBody(BaseModel):
-    limit: Optional[int] = None          # 最多处理多少只；不填全量
-    overwrite: bool = False              # 是否覆盖怪物已有字段
-    skip_existing: bool = True           # 已存在则跳过
-    slugs: Optional[List[str]] = None    # 限定目录
-    recompute: bool = True               # 导入后是否重算派生/标签
+    limit: Optional[int] = None
+    overwrite: bool = False
+    skip_existing: bool = True
+    slugs: Optional[List[str]] = None
+    derive: bool = True  # 是否在导入后立即派生/自动标签（默认开启）
 
 
 @router.post("/crawl_all")
 def crawl_all(body: CrawlAllBody):
     """
-    批量抓取并导入：
-      - Monster 以 name 为唯一键；写 element/hp/.../method/type/new_type
-      - Skill 以 (name, element, kind, power) 唯一；按“更像描述/更长”策略更新 description
-      - 写 MonsterSkill 关联；若有 selected 字段则置 True
-      - 可选导入后重算派生五维与建议标签
+    全量/批量爬取：
+      - 若 skip_existing=True：库里已存在 name 则跳过
+      - 否则执行 upsert；overwrite=True 时覆盖基础字段
+      - 技能按“全局 Skill + MonsterSkill 关联”处理（唯一键为 name/element/kind/power）
+      - 可选：导入后调用 recompute_and_autolabel()
     """
     crawler = Kabu4399Crawler()
 
@@ -230,7 +224,7 @@ def crawl_all(body: CrawlAllBody):
     seen = 0
     inserted = 0
     updated = 0
-    skill_changes = 0
+    skills_changed = 0
 
     with SessionLocal() as db:
         for detail_url in crawler.iter_detail_urls():
@@ -239,17 +233,17 @@ def crawl_all(body: CrawlAllBody):
                 continue
             seen += 1
 
-            # 已有就跳过（按 name）
+            # 是否跳过
             exists = db.query(M.Monster.id).filter(M.Monster.name == mon.name).first()
             if exists and body.skip_existing:
                 continue
 
-            is_insert, skills_affected = _upsert_one(db, mon, overwrite=body.overwrite, do_recompute=body.recompute)
+            is_insert, n_aff = _upsert_one(db, mon, overwrite=body.overwrite, do_derive=body.derive)
             if is_insert:
                 inserted += 1
             else:
                 updated += 1
-            skill_changes += skills_affected
+            skills_changed += n_aff
             db.commit()
 
             if body.limit and (inserted + updated) >= body.limit:
@@ -257,8 +251,9 @@ def crawl_all(body: CrawlAllBody):
 
     return {
         "ok": True,
-        "seen": seen,
+        "fetched": seen,
         "inserted": inserted,
         "updated": updated,
-        "skills_changed": skill_changes,
+        "skills_changed": skills_changed,
+        "skipped": max(0, seen - inserted - updated),
     }

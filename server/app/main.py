@@ -51,7 +51,7 @@ app.include_router(utils.router)
 app.include_router(skills.router)
 app.include_router(recalc.router)
 app.include_router(derive.router)
-app.include_router(crawl_4399.router)
+app.include_router(crawl.router)
 
 # 任务相关（如存在则使用）
 app.include_router(tasks.router)

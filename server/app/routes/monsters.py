@@ -1,13 +1,13 @@
 # server/app/routes/monsters.py
-from typing import Optional, List
+from typing import Optional, List, Tuple, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
 
 from ..db import SessionLocal
-from ..models import Monster
-from ..schemas import MonsterIn, MonsterOut, MonsterList  # 假定已将 name_final 改为 name，并补充新字段
+from ..models import Monster, MonsterSkill
+from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
 from ..services.derive_service import (
@@ -23,12 +23,14 @@ from ..services.tags_service import (
 
 router = APIRouter()
 
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 # ---------- 请求体验证 ----------
 class RawStatsIn(BaseModel):
@@ -39,8 +41,10 @@ class RawStatsIn(BaseModel):
     magic: float = Field(..., description="法术")
     resist: float = Field(..., description="抗性")
 
+
 class AutoMatchIdsIn(BaseModel):
     ids: List[int]
+
 
 class SkillOut(BaseModel):
     id: int
@@ -50,13 +54,15 @@ class SkillOut(BaseModel):
     power: Optional[int] = None
     description: Optional[str] = None
 
+
 class SkillIn(BaseModel):
     name: str
     element: Optional[str] = None
     kind: Optional[str] = None
     power: Optional[int] = None
     description: Optional[str] = None
-    selected: Optional[bool] = None  # 若关联表支持，可写入；否则忽略
+    selected: Optional[bool] = None  # 若模型含此列，则写入；否则忽略
+
 
 # ---------- 列表 ----------
 @router.get("/monsters", response_model=MonsterList)
@@ -79,14 +85,14 @@ def list_api(
         sort=sort, order=order, page=page, page_size=page_size
     )
 
-    # 预加载集合，避免 N+1
+    # 预加载集合（注意：不能对 association_proxy 做 loader）
     ids = [m.id for m in items]
     if ids:
         _ = db.execute(
             select(Monster)
             .where(Monster.id.in_(ids))
             .options(
-                selectinload(Monster.skills),
+                selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
                 selectinload(Monster.tags),
                 selectinload(Monster.derived),
             )
@@ -96,20 +102,20 @@ def list_api(
     changed = False
 
     for m in items:
-        # 若缺 role / tags，自动补齐
+        # 缺 role/tags 自动补齐
         if (not m.role) or (not m.tags):
             apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
             changed = True
 
-        # 保证派生是最新
+        # 保证派生最新
         fresh = compute_derived_out(m)
         need_update = (
-            (not m.derived) or
-            m.derived.offense != fresh["offense"] or
-            m.derived.survive != fresh["survive"] or
-            m.derived.control != fresh["control"] or
-            m.derived.tempo != fresh["tempo"] or
-            m.derived.pp_pressure != fresh["pp_pressure"]
+            (not m.derived)
+            or m.derived.offense != fresh["offense"]
+            or m.derived.survive != fresh["survive"]
+            or m.derived.control != fresh["control"]
+            or m.derived.tempo != fresh["tempo"]
+            or m.derived.pp_pressure != fresh["pp_pressure"]
         )
         if need_update:
             compute_and_persist(db, m)
@@ -148,12 +154,13 @@ def list_api(
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
 
+
 # ---------- 详情 ----------
 @router.get("/monsters/{monster_id}", response_model=MonsterOut)
 def detail(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(
         select(Monster).where(Monster.id == monster_id).options(
-            selectinload(Monster.skills),
+            selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
             selectinload(Monster.tags),
             selectinload(Monster.derived),
         )
@@ -161,17 +168,17 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 缺失信息自动补
+    # 自动补
     if (not m.role) or (not m.tags):
         apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
 
     fresh = compute_derived_out(m)
     if (not m.derived) or (
-        m.derived.offense != fresh["offense"] or
-        m.derived.survive != fresh["survive"] or
-        m.derived.control != fresh["control"] or
-        m.derived.tempo != fresh["tempo"] or
-        m.derived.pp_pressure != fresh["pp_pressure"]
+        m.derived.offense != fresh["offense"]
+        or m.derived.survive != fresh["survive"]
+        or m.derived.control != fresh["control"]
+        or m.derived.tempo != fresh["tempo"]
+        or m.derived.pp_pressure != fresh["pp_pressure"]
     ):
         compute_and_persist(db, m)
         db.commit()
@@ -196,110 +203,108 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         },
     )
 
-# ---------- 只读：当前怪物的技能列表（前端抽屉使用） ----------
+
+# ---------- 只读：当前怪物的技能列表 ----------
 @router.get("/monsters/{monster_id}/skills", response_model=List[SkillOut])
 def monster_skills(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(
         select(Monster)
         .where(Monster.id == monster_id)
-        .options(selectinload(Monster.skills))
+        .options(selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill))
     ).scalar_one_or_none()
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 直接回传全局 Skill 字段（若需要关联描述/selected，可扩展 MonsterSkill 读取）
-    return [
-        SkillOut(
+    out: List[SkillOut] = []
+    for ms in (m.monster_skills or []):
+        s = ms.skill
+        if not s:
+            continue
+        # 关联上的描述优先；否则回退到全局技能描述
+        desc = (getattr(ms, "description", None) or s.description or None)
+        out.append(SkillOut(
             id=s.id,
             name=s.name,
             element=getattr(s, "element", None),
             kind=getattr(s, "kind", None),
             power=getattr(s, "power", None),
-            description=s.description or None
-        )
-        for s in (m.skills or [])
-    ]
+            description=desc
+        ))
+    return out
 
-# ---------- 写入：覆盖（或更新）怪物的技能集合 ----------
+
+# ---------- 覆盖设置怪物技能（唯一键 upsert + 维护关联表） ----------
 @router.put("/monsters/{monster_id}/skills")
 def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = Depends(get_db)):
-    """
-    用唯一键 (name, element, kind, power) upsert 技能并更新怪物关联。
-    - 若存在显式关联模型 MonsterSkill：逐条 upsert 关联（并可写 selected/关联描述等）
-    - 否则 fallback 用 m.skills 多对多集合维护
-    """
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 1) upsert 全局技能
     items = [
-        (it.name, (it.element or ""), (it.kind or ""), (it.power if it.power is not None else None), (it.description or ""))
+        (it.name, it.element or None, it.kind or None, it.power if it.power is not None else None, it.description or "")
         for it in (payload or [])
     ]
-    skills = upsert_skills(db, items)  # 返回 Skill 实体列表
+    skills = upsert_skills(db, items)  # Skill 列表
     db.flush()
 
-    # 2) 更新/替换关联
-    changed = False
-    if hasattr(m, "skills") and m.skills is not None:
-        # 清空再设（也可 diff 更新，这里简单处理）
-        m.skills.clear()
-        for s in skills:
-            m.skills.append(s)
-        changed = True
+    # 建立 (name,element,kind,power) -> payload 行 的映射，便于拿 selected/描述
+    def key_of(n: str, e: Optional[str], k: Optional[str], p: Optional[int]) -> Tuple[str, Optional[str], Optional[str], Optional[int]]:
+        return (n or "", e or None, k or None, p if p is not None else None)
 
-    # 2.1 若存在 MonsterSkill 关联模型，确保二元唯一并可写 selected
-    if hasattr(__import__("server.app.models", fromlist=[""]), "MonsterSkill") or hasattr(m, "monster_skills"):
-        try:
-            from .. import models as M  # 延迟导入，避免循环
-            for s_in in payload:
-                # 找到 upsert_skills 返回的对应实体
-                sk = next((x for x in skills if x.name == s_in.name
-                           and getattr(x, "element", None) == (s_in.element or "")
-                           and getattr(x, "kind", None) == (s_in.kind or "")
-                           and getattr(x, "power", None) == s_in.power), None)
-                if not sk:
-                    continue
-                ms = (
-                    db.query(M.MonsterSkill)
-                    .filter(M.MonsterSkill.monster_id == m.id, M.MonsterSkill.skill_id == sk.id)
-                    .first()
-                )
-                if not ms:
-                    ms = M.MonsterSkill(monster_id=m.id, skill_id=sk.id)
-                    db.add(ms)
-                    changed = True
-                # 可选字段：selected
-                if hasattr(ms, "selected") and (s_in.selected is not None):
-                    if ms.selected != s_in.selected:
-                        ms.selected = s_in.selected
-                        changed = True
-        except Exception:
-            # 若导入失败，则忽略显式关联模型写入，以上 m.skills 已覆盖
-            pass
+    in_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int]], SkillIn] = {
+        key_of(it.name, it.element, it.kind, it.power): it for it in (payload or [])
+    }
+    sk_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int]], int] = {
+        key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None)): sk.id
+        for sk in skills
+    }
 
-    if changed:
-        db.flush()
+    # 现有关联
+    existing: Dict[int, MonsterSkill] = {ms.skill_id: ms for ms in (m.monster_skills or [])}
 
-    # 3) 更新 explain_json 里技能名快照
+    # 需要的 skill_id 集合
+    desired_ids = set(sk_map.values())
+
+    # 删除多余关联
+    for sid, ms in list(existing.items()):
+        if sid not in desired_ids:
+            db.delete(ms)
+
+    # 新增/更新关联
+    for key, sid in sk_map.items():
+        ms = existing.get(sid)
+        if not ms:
+            ms = MonsterSkill(monster_id=m.id, skill_id=sid)
+            db.add(ms)
+        # 更新关联级字段
+        s_in = in_map.get(key)
+        if s_in:
+            if hasattr(ms, "selected") and (s_in.selected is not None):
+                ms.selected = bool(s_in.selected)
+            if hasattr(ms, "description"):
+                # 若传了描述则覆盖到关联描述（更贴合“该怪物的该技能”）
+                if s_in.description and s_in.description.strip():
+                    ms.description = s_in.description.strip()
+
+    # explain_json 快照
     ex = m.explain_json or {}
-    ex["skill_names"] = [s.name for s in (m.skills or [])]
+    ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
     m.explain_json = ex
 
-    # 4) 重新自动打 role/tags，并重算派生
+    # 自动定位/标签 + 重算派生
     recompute_and_autolabel(db, m)
     db.commit()
-    return {"ok": True, "monster_id": m.id, "skills": [s.name for s in (m.skills or [])]}
+    return {"ok": True, "monster_id": m.id, "skills": ex["skill_names"]}
 
-# ---------- 保存原始六维（列 + explain_json.raw_stats + 立刻重算派生） ----------
+
+# ---------- 保存原始六维 ----------
 @router.put("/monsters/{monster_id}/raw_stats")
 def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(get_db)):
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 1) 写列
+    # 写列
     m.hp = float(payload.hp)
     m.speed = float(payload.speed)
     m.attack = float(payload.attack)
@@ -307,7 +312,7 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     m.magic = float(payload.magic)
     m.resist = float(payload.resist)
 
-    # 2) 写 explain_json.raw_stats
+    # explain_json.raw_stats
     ex = m.explain_json or {}
     ex["raw_stats"] = {
         "hp": float(payload.hp),
@@ -320,11 +325,12 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     }
     m.explain_json = ex
 
-    # 3) 重算派生
+    # 重算派生
     compute_and_persist(db, m)
 
     db.commit()
     return {"ok": True, "monster_id": m.id}
+
 
 # ---------- 派生 + 建议（供前端“填充”） ----------
 @router.get("/monsters/{monster_id}/derived")
@@ -332,7 +338,11 @@ def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(
         select(Monster)
         .where(Monster.id == monster_id)
-        .options(selectinload(Monster.skills), selectinload(Monster.tags), selectinload(Monster.derived))
+        .options(
+            selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
+            selectinload(Monster.tags),
+            selectinload(Monster.derived),
+        )
     ).scalar_one_or_none()
     if not m:
         raise HTTPException(status_code=404, detail="not found")
@@ -348,7 +358,8 @@ def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
         "derived": derived_now,
     }
 
-# ---------- 批量自动匹配（打 role/tags 并重算派生；不改技能） ----------
+
+# ---------- 批量自动匹配 ----------
 @router.post("/monsters/auto_match")
 def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
     if not body.ids:
@@ -357,7 +368,11 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
     mons = db.execute(
         select(Monster)
         .where(Monster.id.in_(body.ids))
-        .options(selectinload(Monster.skills), selectinload(Monster.tags), selectinload(Monster.derived))
+        .options(
+            selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
+            selectinload(Monster.tags),
+            selectinload(Monster.derived),
+        )
     ).scalars().all()
 
     n = 0
@@ -368,6 +383,7 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
 
     db.commit()
     return {"ok": True, "processed": n}
+
 
 # ---------- 创建 ----------
 @router.post("/monsters", response_model=MonsterOut)
@@ -387,79 +403,123 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
     m.tags = upsert_tags(db, payload.tags or [])
     db.add(m); db.flush()
 
-    # skills（可选）
+    # skills（可选，走唯一键 upsert + 写 MonsterSkill）
     if getattr(payload, "skills", None):
         items = [
-            (s.name, (s.element or ""), (s.kind or ""), (s.power if s.power is not None else None), (s.description or ""))
+            (s.name, s.element or None, s.kind or None, s.power if s.power is not None else None, s.description or "")
             for s in payload.skills
         ]
         skills = upsert_skills(db, items)
-        m.skills = list(skills)
+        db.flush()
+
+        # 建立 key -> (skill, payload) 映射
+        def key_of(n, e, k, p): return (n or "", e or None, k or None, p if p is not None else None)
+        in_map = {key_of(s.name, s.element, s.kind, s.power): s for s in payload.skills}
+        for sk in skills:
+            key = key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None))
+            s_in = in_map.get(key)
+            ms = MonsterSkill(monster_id=m.id, skill_id=sk.id)
+            # 关联级字段
+            if s_in and hasattr(ms, "selected") and (s_in.selected is not None):
+                ms.selected = bool(s_in.selected)
+            if s_in and hasattr(ms, "description") and (s_in.description or "").strip():
+                ms.description = s_in.description.strip()
+            db.add(ms)
+
+        # explain 快照
         ex = m.explain_json or {}
-        ex["skill_names"] = [s.name for s in m.skills]
+        ex["skill_names"] = [s.name for s in skills]
         m.explain_json = ex
 
-    # 初次：打标签+定位，并计算派生
+    # 初次自动打标 + 派生
     recompute_and_autolabel(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
 
-# ---------- 更新（只有显式提供 skills 字段才会改技能；否则不动） ----------
+
+# ---------- 更新（显式提供 skills 才改技能） ----------
 @router.put("/monsters/{monster_id}", response_model=MonsterOut)
 def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 写基础字段（按新模型）
+    # 写基础字段
     for k in ["name", "element", "role", "hp", "speed", "attack", "defense", "magic", "resist",
               "possess", "new_type", "type", "method"]:
         if hasattr(payload, k):
             setattr(m, k, getattr(payload, k))
 
-    # 写 explain_json（可选整体替换）
+    # explain_json（可整体替换）
     if hasattr(payload, "explain_json") and (payload.explain_json is not None):
         m.explain_json = payload.explain_json
 
-    # 写标签
+    # 标签
     m.tags = upsert_tags(db, payload.tags or [])
 
-    # —— 关键：只有当请求体“显式包含 skills 字段”时才更新技能 —— #
+    # 只有显式包含 skills 字段才更新技能集合
     skills_field_provided = hasattr(payload, "model_fields_set") and ("skills" in payload.model_fields_set)
     if skills_field_provided:
-        m.skills.clear()
-        if getattr(payload, "skills", None):
-            items = [
-                (s.name, (s.element or ""), (s.kind or ""), (s.power if s.power is not None else None), (s.description or ""))
-                for s in payload.skills
-            ]
-            skills = upsert_skills(db, items)
-            m.skills = list(skills)
+        # 目标 skills
+        items = [
+            (s.name, s.element or None, s.kind or None, s.power if s.power is not None else None, s.description or "")
+            for s in (payload.skills or [])
+        ]
+        skills = upsert_skills(db, items)
+        db.flush()
+
+        # 建映射
+        def key_of(n, e, k, p): return (n or "", e or None, k or None, p if p is not None else None)
+        in_map = {key_of(s.name, s.element, s.kind, s.power): s for s in (payload.skills or [])}
+        sk_map = {key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None)): sk.id for sk in skills}
+
+        # 现有关联
+        existing: Dict[int, MonsterSkill] = {ms.skill_id: ms for ms in (m.monster_skills or [])}
+        desired_ids = set(sk_map.values())
+
+        # 删除多余
+        for sid, ms in list(existing.items()):
+            if sid not in desired_ids:
+                db.delete(ms)
+
+        # 新增/更新
+        for key, sid in sk_map.items():
+            ms = existing.get(sid)
+            if not ms:
+                ms = MonsterSkill(monster_id=m.id, skill_id=sid)
+                db.add(ms)
+            s_in = in_map.get(key)
+            if s_in:
+                if hasattr(ms, "selected") and (s_in.selected is not None):
+                    ms.selected = bool(s_in.selected)
+                if hasattr(ms, "description") and (s_in.description or "").strip():
+                    ms.description = s_in.description.strip()
+
+        # explain 快照
         ex = m.explain_json or {}
-        ex["skill_names"] = [s.name for s in (m.skills or [])]
+        ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
         m.explain_json = ex
 
-    # 更新后：按最新标签/技能重算派生
+    # 更新后：重打标+重算派生
     recompute_and_autolabel(db, m)
     db.commit()
     return detail(monster_id, db)
 
+
 # ---------- 删除 ----------
 @router.delete("/monsters/{monster_id}")
 def delete(monster_id: int, db: Session = Depends(get_db)):
-    """
-    删除怪物时，清理关联的 skills/tags（联结表），避免残留。
-    """
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    if m.skills is not None:
-        m.skills.clear()
+    # 关系清理由 delete-orphan & 外键 ondelete 兜底；这里显式清空更稳妥
+    for ms in (m.monster_skills or []):
+        db.delete(ms)
     if m.tags is not None:
         m.tags.clear()
     db.flush()
 
-    db.delete(m)  # MonsterDerived 走 delete-orphan 一并删
+    db.delete(m)  # MonsterDerived 通过 delete-orphan 一并删除
     db.commit()
     return {"ok": True}
