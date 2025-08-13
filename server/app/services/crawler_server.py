@@ -463,7 +463,7 @@ class Kabu4399Crawler:
     def _six_sum(m: MonsterRow) -> int:
         return int(m.hp + m.speed + m.attack + m.defense + m.magic + m.resist)
 
-    def _filter_weak(self, s: SkillRow, power_threshold: int = 70) -> bool:
+    def _filter_weak(self, s: SkillRow, power_threshold: int = 110) -> bool:
         """
         无推荐时的“弱技能过滤”：
         - 若 kind ∈ {物理, 法术} 且 power < 阈值 且 文案不含任何特殊关键词 => 过滤
