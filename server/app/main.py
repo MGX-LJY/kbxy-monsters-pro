@@ -8,7 +8,8 @@ from .db import Base, engine
 from .middleware import TraceIDMiddleware
 
 # 常规路由
-from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive
+from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl_4399
+
 
 # 可选路由（不存在也不报错）
 try:
@@ -49,7 +50,8 @@ app.include_router(backup.router)
 app.include_router(utils.router)
 app.include_router(skills.router)
 app.include_router(recalc.router)
-app.include_router(derive.router)     # 五维与标签派生接口
+app.include_router(derive.router)
+app.include_router(crawl_4399.router)
 
 # 任务相关（如存在则使用）
 app.include_router(tasks.router)

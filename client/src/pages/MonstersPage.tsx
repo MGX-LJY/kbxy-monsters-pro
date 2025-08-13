@@ -27,7 +27,7 @@ const isValidSkillName = (name?: string) => !!(name && name.trim() && /[\u4e00-\
 type TagBuckets = { buf: string[]; deb: string[]; util: string[] }
 const bucketizeTags = (tags: string[] | undefined): TagBuckets => {
   const b: TagBuckets = { buf: [], deb: [], util: [] }
-  for (const t of tags || []) {
+  for (const t of (tags || [])) {
     if (t.startsWith('buf_')) b.buf.push(t)
     else if (t.startsWith('deb_')) b.deb.push(t)
     else if (t.startsWith('util_')) b.util.push(t)
@@ -109,9 +109,34 @@ export default function MonstersPage() {
   const [magic, setMagic] = useState<number>(100)
   const [resist, setResist] = useState<number>(100)
 
-  const [editSkills, setEditSkills] = useState<SkillDTO[]>([{ name: '', description: '' }])
+  const [editSkills, setEditSkills] = useState([{ name: '', description: '' }])
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
+
+  // —— 一键爬取（新增） —— //
+  const [crawling, setCrawling] = useState(false)
+  const [crawlLimit, setCrawlLimit] = useState<string>('') // 可选：限制条数
+
+  const startCrawl = async () => {
+    if (!window.confirm(`将触发后端“全站爬取图鉴”。${crawlLimit ? `最多抓取 ${crawlLimit} 条。` : '将尽可能多地抓取。'}是否继续？`)) return
+    setCrawling(true)
+    try {
+      const payload: any = {}
+      if (crawlLimit && /^\d+$/.test(crawlLimit)) payload.limit = parseInt(crawlLimit, 10)
+      const res = await api.post('/api/v1/crawl/4399/crawl_all', payload)
+      const d = res?.data || {}
+      alert(`完成：新增 ${d.inserted||0}，更新 ${d.updated||0}，跳过 ${d.skipped||0}（共抓取 ${d.fetched||0} ）`)
+      await Promise.all([list.refetch(), stats.refetch()])
+      if (selected) {
+        const fresh = (await api.get(`/monsters/${selected.id}`)).data as Monster
+        setSelected(fresh)
+      }
+    } catch (e:any) {
+      alert('触发失败：' + (e?.response?.data?.detail || e?.message || '未知错误'))
+    } finally {
+      setCrawling(false)
+    }
+  }
 
   // 列表 & 基础数据
   const list = useQuery({
@@ -305,7 +330,7 @@ export default function MonstersPage() {
   const cancelEdit = () => setIsEditing(false)
 
   // —— 保存技能（保持不变）
-  const saveSkillsWithFallback = async (monsterId: number, skillsBody: SkillDTO[]) => {
+  const saveSkillsWithFallback = async (monsterId: number, skillsBody: { name: string; description?: string }[]) => {
     try {
       return await api.put(`/monsters/${monsterId}/skills`, { skills: skillsBody })
     } catch (e: any) {
@@ -406,7 +431,7 @@ export default function MonstersPage() {
     <div className="container my-6 space-y-4">
       {/* 工具栏 */}
       <div className="card p-4">
-        <div className="mb-3">
+        <div className="mb-3 grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
           <input
             className="input"
             placeholder="搜索名称 / 技能关键词…"
@@ -414,6 +439,25 @@ export default function MonstersPage() {
             onChange={e => { setQ(e.target.value); setPage(1) }}
             aria-label="搜索"
           />
+          {/* 新增：一键爬取图鉴 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="input w-28"
+              placeholder="抓取上限(可选)"
+              value={crawlLimit}
+              onChange={e => setCrawlLimit(e.target.value.replace(/[^\d]/g, ''))}
+            />
+            <button className="btn btn-primary" onClick={startCrawl} disabled={crawling}>
+              {crawling ? '爬取中…' : '一键爬取图鉴'}
+            </button>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button className="btn" onClick={() => list.refetch()}>刷新</button>
+            <button className="btn" onClick={exportCSV}>导出 CSV</button>
+            <button className="btn" onClick={exportBackup}>备份 JSON</button>
+            <button className="btn" onClick={openRestore}>恢复 JSON</button>
+            <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
+          </div>
         </div>
 
         {/* 第二行：元素 + 标签(汉化显示) + 定位 + 排序 */}
@@ -449,11 +493,6 @@ export default function MonstersPage() {
         </div>
 
         <div className="mt-3 flex flex-wrap justify-end gap-2">
-          <button className="btn" onClick={() => list.refetch()}>刷新</button>
-          <button className="btn" onClick={exportCSV}>导出 CSV</button>
-          <button className="btn" onClick={exportBackup}>备份 JSON</button>
-          <button className="btn" onClick={openRestore}>恢复 JSON</button>
-          <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
           <button className="btn btn-primary" onClick={autoMatchBatch} disabled={autoMatching}>
             {autoMatching ? '自动匹配中…' : '自动匹配（选中/可见）'}
           </button>
