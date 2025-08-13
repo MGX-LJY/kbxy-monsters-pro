@@ -12,38 +12,9 @@ from urllib.parse import urljoin, urlparse
 
 from DrissionPage import SessionPage
 
-# --- 尝试引入项目内的数据库会话（可选缓存，不依赖业务库） ---
-try:
-    from ..db import SessionLocal, Base  # type: ignore
-    _DB_AVAILABLE = True
-except Exception:
-    SessionLocal = None  # type: ignore
-    Base = None          # type: ignore
-    _DB_AVAILABLE = False
-
-# 若无项目 Base，则兜底一个本地 Base 以便声明 ORM
-if not _DB_AVAILABLE:
-    try:
-        from sqlalchemy.orm import declarative_base  # type: ignore
-        Base = declarative_base()  # type: ignore
-    except Exception:
-        Base = None  # type: ignore
-
-# ORM 依赖
-try:
-    from sqlalchemy import (
-        Column, Integer, String, Text, ForeignKey, UniqueConstraint, Boolean
-    )
-    from sqlalchemy.orm import relationship, Session
-    _SA_AVAILABLE = True
-except Exception:
-    _SA_AVAILABLE = False
-
-
 log = logging.getLogger(__name__)
 
-
-# ---------- 数据模型（抓取侧） ----------
+# ---------- 抓取结果数据模型 ----------
 @dataclass
 class SkillRow:
     name: str
@@ -74,56 +45,6 @@ class MonsterRow:
     skills: List[SkillRow] = field(default_factory=list)    # 全量技能
     recommended_names: List[str] = field(default_factory=list)      # “推荐配招”解析出的技能名
     selected_skills: List[SkillRow] = field(default_factory=list)   # 推荐命中或回退（完整字段）
-
-
-# ---------- ORM（轻量缓存，可选） ----------
-if _SA_AVAILABLE and Base is not None:
-    class Monster4399(Base):  # type: ignore
-        __tablename__ = "monsters_4399"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        name = Column(String(128), index=True, nullable=False)
-        element = Column(String(32))
-        hp = Column(Integer, default=0)
-        speed = Column(Integer, default=0)
-        attack = Column(Integer, default=0)
-        defense = Column(Integer, default=0)
-        magic = Column(Integer, default=0)
-        resist = Column(Integer, default=0)
-        source_url = Column(String(512), nullable=False, unique=True, index=True)
-        img_url = Column(String(512))
-
-        # 新增：获取渠道三件套
-        acquire_type = Column(String(64))        # 对应 MonsterRow.type
-        is_obtainable = Column(Boolean)          # 对应 MonsterRow.new_type
-        acquire_method = Column(Text)            # 对应 MonsterRow.method
-
-        # 推荐与精选（JSON 文本）
-        recommended_names_json = Column(Text, default="[]")
-        selected_skills_json = Column(Text, default="[]")
-
-        skills = relationship(
-            "MonsterSkill4399",
-            back_populates="monster",
-            cascade="all, delete-orphan",
-            lazy="selectin",
-        )
-
-        __table_args__ = (
-            UniqueConstraint("source_url", name="uq_monsters_4399_source_url"),
-        )
-
-    class MonsterSkill4399(Base):  # type: ignore
-        __tablename__ = "monster_skills_4399"
-        id = Column(Integer, primary_key=True, autoincrement=True)
-        monster_id = Column(Integer, ForeignKey("monsters_4399.id", ondelete="CASCADE"), index=True)
-        name = Column(String(128), index=True, nullable=False)
-        level = Column(Integer)
-        element = Column(String(32))
-        kind = Column(String(32))
-        power = Column(Integer)
-        description = Column(Text, default="")
-
-        monster = relationship("Monster4399", back_populates="skills")
 
 
 # ---------- 工具 ----------
@@ -158,7 +79,7 @@ class Kabu4399Crawler:
         2) “技能表” => 解析为 SkillRow 列表
     - 额外：解析“推荐配招”（精选技能），并识别“妖怪系别 element”
     - 新增：解析“获取渠道”（type/new_type/method）
-    - DB 缓存：可选（命中则不再抓取）
+    - ⚠️ 已移除任何数据库缓存/ORM 定义，不会创建本地表。
     """
     BASE = "https://news.4399.com"
     ROOT = "/kabuxiyou/yaoguaidaquan/"
@@ -568,15 +489,26 @@ class Kabu4399Crawler:
                 out.append(s)
         return out
 
-    # ---------- DB <-> 抓取模型 互转 ----------
+    # ---------- 输出裁剪（对下游导入/调试友好） ----------
     @staticmethod
-    def _skill_to_dict(s: SkillRow) -> Dict[str, object]:
+    def _skill_public(s: SkillRow) -> Dict[str, object]:
         return {
-            "name": s.name, "level": s.level, "element": s.element, "kind": s.kind,
-            "power": s.power, "description": s.description
+            "name": s.name,
+            "level": s.level,
+            "element": s.element,
+            "kind": s.kind,
+            "power": s.power,
+            "description": s.description,
         }
 
-    def _to_db_model(self, m: MonsterRow) -> Dict[str, object]:
+    @staticmethod
+    def _to_public_json(m: MonsterRow) -> Dict[str, object]:
+        """
+        仅保留：
+          - 最高形态：name, element, hp, speed, attack, defense, magic, resist
+          - 获取渠道：type, new_type, method
+          - selected_skills: 完整字段（便于后续按 (name, element, kind, power) 做唯一）
+        """
         return {
             "name": m.name,
             "element": m.element,
@@ -586,96 +518,13 @@ class Kabu4399Crawler:
             "defense": m.defense,
             "magic": m.magic,
             "resist": m.resist,
-            "source_url": m.source_url,
-            "img_url": m.img_url,
-            # 获取渠道
-            "acquire_type": m.type,
-            "is_obtainable": m.new_type,
-            "acquire_method": m.method,
-            # 精选
-            "recommended_names_json": json.dumps(m.recommended_names, ensure_ascii=False),
-            "selected_skills_json": json.dumps([self._skill_to_dict(s) for s in (m.selected_skills or [])], ensure_ascii=False),
+            "type": m.type,
+            "new_type": m.new_type,
+            "method": m.method,
+            "selected_skills": [Kabu4399Crawler._skill_public(s) for s in (m.selected_skills or [])],
         }
 
-    def _from_db_model(self, db_m: "Monster4399") -> MonsterRow:  # type: ignore
-        skills = [
-            SkillRow(
-                name=s.name, level=s.level, element=s.element or "", kind=s.kind or "",
-                power=s.power, description=s.description or ""
-            )
-            for s in getattr(db_m, "skills", []) or []
-        ]
-        try:
-            rec_names = json.loads(db_m.recommended_names_json or "[]")
-        except Exception:
-            rec_names = []
-        try:
-            selected_json = json.loads(db_m.selected_skills_json or "[]")
-            selected = [
-                SkillRow(
-                    name=(it.get("name") or ""), level=it.get("level"),
-                    element=(it.get("element") or ""), kind=(it.get("kind") or ""),
-                    power=it.get("power"),
-                    description=(it.get("description") or "")
-                )
-                for it in selected_json if isinstance(it, dict)
-            ]
-        except Exception:
-            selected = []
-
-        if not selected:
-            selected = self._all_skills_as_selected(skills, apply_filter=True)
-
-        return MonsterRow(
-            name=db_m.name,
-            element=db_m.element,
-            hp=db_m.hp, speed=db_m.speed, attack=db_m.attack, defense=db_m.defense,
-            magic=db_m.magic, resist=db_m.resist,
-            source_url=db_m.source_url,
-            img_url=db_m.img_url,
-            type=getattr(db_m, "acquire_type", None),
-            new_type=getattr(db_m, "is_obtainable", None),
-            method=getattr(db_m, "acquire_method", None),
-            series_names=[],
-            skills=skills,
-            recommended_names=rec_names,
-            selected_skills=selected,
-        )
-
-    # ---------- DB 读写 ----------
-    def _db_load(self, sess: Session, url: str) -> Optional[MonsterRow]:
-        if not (_DB_AVAILABLE and _SA_AVAILABLE and Base is not None):
-            return None
-        db_m = sess.query(Monster4399).filter(Monster4399.source_url == url).first()
-        if db_m:
-            log.info("CACHE HIT %s", url)
-            return self._from_db_model(db_m)
-        return None
-
-    def _db_upsert(self, sess: Session, m: MonsterRow) -> None:
-        if not (_DB_AVAILABLE and _SA_AVAILABLE and Base is not None):
-            return
-        data = self._to_db_model(m)
-        db_m = sess.query(Monster4399).filter(Monster4399.source_url == m.source_url).first()
-        if db_m is None:
-            db_m = Monster4399(**data)  # type: ignore
-            sess.add(db_m)
-            sess.flush()
-        else:
-            for k, v in data.items():
-                setattr(db_m, k, v)
-
-        # 覆盖写技能（缓存用，简单粗暴）
-        db_m.skills[:] = []  # type: ignore
-        for s in m.skills or []:
-            db_s = MonsterSkill4399(  # type: ignore
-                name=s.name, level=s.level, element=s.element, kind=s.kind,
-                power=s.power, description=s.description
-            )
-            db_m.skills.append(db_s)  # type: ignore
-        sess.commit()
-
-    # ---- 页面抓取（不触库，内部使用）----
+    # ---- 页面抓取（不触库）----
     def fetch_detail(self, url: str) -> Optional[MonsterRow]:
         """
         仅抓取解析，不访问数据库；返回“最高形态” MonsterRow：
@@ -717,56 +566,28 @@ class Kabu4399Crawler:
         best.selected_skills = selected
         return best
 
-    # ---- 顶层 API：遍历列表，读库或抓取 ----
+    # ---- 顶层 API：遍历列表，仅网络抓取 ----
     def crawl_all(
         self,
         *,
         persist: Optional[callable] = None,
-        use_db_cache: bool = True,
     ) -> Generator[MonsterRow, None, None]:
         """
         遍历所有详情页：
-        - use_db_cache=True 时，优先从库按 source_url 命中返回；
-          未命中则抓取 → 入库 → 返回
-        - persist 回调仍然可用（例如打印或写你自己的业务库）
+        - 不再使用任何数据库缓存
+        - 若提供 persist 回调，则在每次抓取完成后调用 persist(mon)（例如把数据写你的业务库）
         """
-        sess: Optional["Session"] = None  # type: ignore
-        if use_db_cache and _DB_AVAILABLE and SessionLocal is not None:
-            sess = SessionLocal()  # type: ignore
-        try:
-            for detail_url in self.iter_detail_urls():
-                m: Optional[MonsterRow] = None
-                if use_db_cache and sess is not None:
-                    m = self._db_load(sess, detail_url)
-                    if m:
-                        if persist:
-                            try:
-                                persist(m)
-                            except Exception as e:
-                                log.exception("persist error (cache): %s", e)
-                        yield m
-                        time.sleep(random.uniform(*self.throttle_range))
-                        continue
-
-                # 抓取 + 入库（仅缓存库）
-                m = self.fetch_detail(detail_url)
-                if not m:
-                    continue
-                if use_db_cache and sess is not None:
-                    try:
-                        self._db_upsert(sess, m)
-                    except Exception as e:
-                        log.exception("db upsert error: %s", e)
-                if persist:
-                    try:
-                        persist(m)
-                    except Exception as e:
-                        log.exception("persist error: %s", e)
-                yield m
-                time.sleep(random.uniform(*self.throttle_range))
-        finally:
-            if sess is not None:
-                sess.close()
+        for detail_url in self.iter_detail_urls():
+            m = self.fetch_detail(detail_url)
+            if not m:
+                continue
+            if persist:
+                try:
+                    persist(m)
+                except Exception as e:
+                    log.exception("persist error: %s", e)
+            yield m
+            time.sleep(random.uniform(*self.throttle_range))
 
 
 # ---------- 示例持久化（可接你自己的入库逻辑） ----------
@@ -779,39 +600,9 @@ def example_persist(mon: MonsterRow) -> None:
     )
 
 
-# ---------- 输出裁剪（对下游导入/调试友好） ----------
-def _skill_public(s: SkillRow) -> Dict[str, object]:
-    return {
-        "name": s.name,
-        "level": s.level,
-        "element": s.element,
-        "kind": s.kind,
-        "power": s.power,
-        "description": s.description,
-    }
-
+# ---------- 独立运行：输出前 N 个角色的 JSON（不触库） ----------
 def _to_public_json(m: MonsterRow) -> Dict[str, object]:
-    """
-    仅保留：
-      - 最高形态：name, element, hp, speed, attack, defense, magic, resist
-      - 获取渠道：type, new_type, method
-      - selected_skills: 完整字段（便于后续按 (name, element, kind, power) 做唯一）
-    """
-    return {
-        "name": m.name,
-        "element": m.element,
-        "hp": m.hp,
-        "speed": m.speed,
-        "attack": m.attack,
-        "defense": m.defense,
-        "magic": m.magic,
-        "resist": m.resist,
-        "type": m.type,
-        "new_type": m.new_type,
-        "method": m.method,
-        "selected_skills": [_skill_public(s) for s in (m.selected_skills or [])],
-    }
-
+    return Kabu4399Crawler._to_public_json(m)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -820,17 +611,9 @@ if __name__ == "__main__":
     # 收集前 10 个角色（最高形态）并输出 JSON
     N = 10
     out: List[Dict[str, object]] = []
-
-    if _DB_AVAILABLE and SessionLocal is not None:
-        with SessionLocal() as _sess:  # type: ignore
-            for item in crawler.crawl_all(persist=example_persist, use_db_cache=True):
-                out.append(_to_public_json(item))
-                if len(out) >= N:
-                    break
-    else:
-        for item in crawler.crawl_all(persist=example_persist, use_db_cache=False):
-            out.append(_to_public_json(item))
-            if len(out) >= N:
-                break
+    for item in crawler.crawl_all(persist=example_persist):
+        out.append(_to_public_json(item))
+        if len(out) >= N:
+            break
 
     print(json.dumps(out, ensure_ascii=False, indent=2))

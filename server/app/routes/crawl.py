@@ -13,7 +13,7 @@ from ..services.derive_service import recompute_and_autolabel
 from ..db import SessionLocal
 from .. import models as M
 
-router = APIRouter(prefix="/api/v1/crawl/4399", tags=["crawl_4399"])
+router = APIRouter(prefix="/api/v1/crawl", tags=["crawl_4399"])
 log = logging.getLogger(__name__)
 
 
