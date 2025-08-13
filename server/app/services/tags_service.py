@@ -1,8 +1,24 @@
-# server/app/services/tags_service.py
 from __future__ import annotations
 
+import json
+import os
 import re
-from typing import List, Set, Dict, Tuple
+import time
+import uuid
+import threading
+from dataclasses import dataclass, field
+from functools import lru_cache
+from datetime import datetime, timezone
+from typing import List, Set, Dict, Tuple, Any, Optional, Callable
+
+try:
+    import httpx  # 仅 AI 接口需要；未安装也不影响默认正则路径
+    _HAS_HTTPX = True
+except Exception:
+    _HAS_HTTPX = False
+
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from ..models import Monster
 
@@ -33,7 +49,6 @@ DEBUFF_CANON: Dict[str, str] = {
     "deb_res_down":     "抗↓",
     "deb_spd_down":     "速↓",
     "deb_acc_down":     "命中↓",
-    # 控制与其他
     "deb_stun":         "眩晕/昏迷",
     "deb_bind":         "束缚/禁锢",
     "deb_sleep":        "睡眠",
@@ -58,8 +73,13 @@ SPECIAL_CANON: Dict[str, str] = {
 CODE2CN: Dict[str, str] = {**BUFF_CANON, **DEBUFF_CANON, **SPECIAL_CANON}
 CN2CODE: Dict[str, str] = {v: k for k, v in CODE2CN.items()}
 
+ALL_BUFF_CODES: Set[str] = set(BUFF_CANON.keys())
+ALL_DEBUFF_CODES: Set[str] = set(DEBUFF_CANON.keys())
+ALL_SPECIAL_CODES: Set[str] = set(SPECIAL_CANON.keys())
+ALL_CODES: Set[str] = set(CODE2CN.keys())
+
 # ======================
-# 通用片段（用于 rf"" 拼装）
+# 通用片段（用于正则）
 # ======================
 
 CN_NUM = r"[一二两三四五六七八九十百千]+"
@@ -69,90 +89,74 @@ UP     = r"(?:提升|提高|上升|增强|增加|加成|升高|强化)"
 DOWN   = r"(?:下降|降低|减少|衰减|减弱)"
 LEVEL  = rf"(?:\s*(?:{CN_NUM}|\d+)\s*级)?"
 ONE_OR_TWO = r"(?:一|1|两|2|一或两|1或2|1-2|1～2|1~2)"
-SEP    = r"(?:\s*[、，,/和与及]+\s*)"   # 列表分隔符
+SEP    = r"(?:\s*[、，,/和与及]+\s*)"
 
 # ======================
-# 文本正则（code -> patterns）
-# Buff 必须出现 SELF 以避免把“对方加攻/加防”识别成己方增益；
-# 支持“X、Y 各提高/各下降”并列句式。
+# 文本正则（默认路径用它；AI 失败不回退到这里，AI 是独立接口）
 # ======================
 
-# —— Buff —— #
 BUFF_PATTERNS: Dict[str, List[str]] = {
-    # 攻击 ↑
     "buf_atk_up": [
         rf"{SELF}.*?攻击.*?{UP}",
         rf"{UP}.*?{SELF}.*?攻击",
         rf"攻击(?:{SEP}(?:法术|魔法|防御|速度|抗性|命中率|暴击率))*?各{UP}{LEVEL}",
         rf"有\d+%?机会.*?{UP}.*?{SELF}.*?攻击",
     ],
-    # 法术 ↑
     "buf_mag_up": [
         rf"{SELF}.*?(法术|魔法).*?{UP}",
         rf"{UP}.*?{SELF}.*?(法术|魔法)",
         rf"(法术|魔法)(?:{SEP}(?:攻击|防御|速度|抗性|命中率|暴击率))*?各{UP}{LEVEL}",
         rf"有\d+%?机会.*?{UP}.*?{SELF}.*?(法术|魔法)",
     ],
-    # 速度 ↑
     "buf_spd_up": [
         rf"{SELF}.*?速度.*?{UP}|{SELF}.*?(加速|迅捷|敏捷提升|加快速度)",
         rf"{UP}.*?{SELF}.*?速度",
         rf"速度(?:{SEP}(?:攻击|防御|法术|魔法|抗性))*?各{UP}{LEVEL}",
     ],
-    # 防御 ↑
     "buf_def_up": [
         rf"{SELF}.*?(防御|防御力).*?{UP}|{SELF}.*?(护甲|硬化|铁壁)",
         rf"{UP}.*?{SELF}.*?(防御|防御力)",
         rf"(防御|防御力)(?:{SEP}(?:攻击|法术|魔法|速度|抗性))*?各{UP}{LEVEL}",
     ],
-    # 抗性 ↑
     "buf_res_up": [
         rf"{SELF}.*?(抗性|抗性值).*?{UP}|{SELF}.*?抗性增强|{SELF}.*?减易伤",
         rf"{UP}.*?{SELF}.*?(抗性|抗性值)",
         rf"(抗性|抗性值)(?:{SEP}(?:攻击|防御|速度|法术|魔法))*?各{UP}{LEVEL}",
     ],
-    # 命中 ↑（只认“命中率↑”，不吃“命中时必定暴击”）
     "buf_acc_up": [
         rf"{SELF}.*?命中率.*?{UP}",
         rf"{UP}.*?{SELF}.*?命中率",
         rf"命中率(?:{SEP}(?:暴击率|攻击|防御|速度|抗性|法术|魔法))*?各{UP}{LEVEL}",
     ],
-    # 暴击 ↑（允许“必定暴击/命中时必定暴击”视为暴击强化）
     "buf_crit_up": [
         rf"{SELF}.*?(暴击|暴击率|会心).*?{UP}",
         rf"(必定暴击|命中时必定暴击)",
         rf"{UP}.*?{SELF}.*?(暴击|暴击率|会心)",
         rf"暴击率(?:{SEP}(?:命中率|攻击|防御|速度|抗性|法术|魔法))*?各{UP}{LEVEL}",
     ],
-    # 治疗/回复
     "buf_heal": [
         rf"(回复|治疗|恢复).*?({SELF}|自身体力|自身HP|自身生命|自身最大血量)",
         r"给对手造成伤害的\s*1/2\s*回复",
         r"(?:[一二三四五六七八九十]|\d+)\s*回合内.*?每回合.*?(回复|恢复)",
     ],
-    # 护盾/减伤
     "buf_shield": [
         r"护盾|护体|结界",
         r"(所受|受到).*(法术|物理)?伤害.*(减少|降低|减半|减免|降低\d+%|减少\d+%|减)(?!.*敌方)",
         r"伤害(减少|降低|减半|减免|降低\d+%|减少\d+%)",
         r"减伤(?!.*敌方)|庇护|保护",
     ],
-    # 自净
     "buf_purify": [
         r"净化",
         rf"(清除|消除|解除|去除|移除).*?{SELF}.*?(负面|异常|减益|不良|状态)",
         rf"(将|把).*?{SELF}.*?(负面|异常|减益).*?(转移|移交).*?{ENEMY}",
     ],
-    # 免疫异常
     "buf_immunity": [
         r"免疫(异常|控制|不良)状态?",
         r"([一二三四五六七八九十]+|\d+)\s*回合.*?免疫.*?(异常|控制|不良)",
     ],
 }
 
-# —— Debuff —— #
 DEBUFF_PATTERNS: Dict[str, List[str]] = {
-    # 属性下降（支持数字/中文数字 + “各下降”并列）
     "deb_atk_down": [
         rf"(?:{ENEMY}.*?)?攻击{DOWN}{LEVEL}",
         rf"{DOWN}.*?{ENEMY}.*?攻击{LEVEL}",
@@ -178,23 +182,18 @@ DEBUFF_PATTERNS: Dict[str, List[str]] = {
         rf"{DOWN}.*?{ENEMY}.*?速度{LEVEL}",
         rf"速度(?:{SEP}(?:攻击|防御|法术|魔法|抗性|命中率))*?各{DOWN}{LEVEL}",
     ],
-    # 命中↓：只认“命中率”，避免“命中时…”
     "deb_acc_down": [
         rf"(?:{ENEMY}.*?)?命中率{DOWN}{LEVEL}",
         rf"{DOWN}.*?{ENEMY}.*?命中率{LEVEL}",
         rf"命中率(?:{SEP}(?:攻击|防御|速度|法术|魔法|抗性))*?各{DOWN}{LEVEL}",
     ],
-    # 控制与异常
     "deb_stun":           [r"眩晕|昏迷"],
     "deb_bind":           [r"束缚|禁锢"],
     "deb_sleep":          [r"睡眠"],
     "deb_freeze":         [r"冰冻"],
-    # “禁物攻/禁技/无法使用技能”
     "deb_confuse_seal":   [r"混乱|封印|禁技|无法使用技能|禁止使用技能|不能使用物理攻击|禁用物理攻击"],
     "deb_suffocate":      [r"窒息"],
-    # DOT（含“灼伤”）
     "deb_dot":            [r"流血|中毒|灼烧|燃烧|腐蚀|灼伤"],
-    # 敌方增益驱散（含“消除对方所有增益效果”“消除对手加攻加防状态”）
     "deb_dispel": [
         rf"(消除|驱散|清除).*?{ENEMY}.*?(增益|强化|状态)",
         rf"(消除|清除).*?{ENEMY}.*?(加|提升).*?(攻|攻击|法术|魔法|防御|速度).*(状态|效果)",
@@ -202,11 +201,9 @@ DEBUFF_PATTERNS: Dict[str, List[str]] = {
     ],
 }
 
-# —— Special —— #
 SPECIAL_PATTERNS: Dict[str, List[str]] = {
     "util_first":        [r"先手|先制"],
     "util_multi":        [r"多段|连击|(\d+)[-~–](\d+)次|[二两三四五六七八九十]+连"],
-    # PP 压制：随机/所有技能/一次/一或两次/1次等
     "util_pp_drain": [
         r"扣\s*PP",
         rf"(随机)?减少.*?{ENEMY}.*?(所有)?技能.*?(使用)?次数{ONE_OR_TWO}?次",
@@ -214,11 +211,8 @@ SPECIAL_PATTERNS: Dict[str, List[str]] = {
         r"使用次数.*?减少",
         r"降(低)?技能次数",
     ],
-    # 反击/反伤/反馈
     "util_reflect":      [r"反击|反伤|反弹|反馈给对手|反射伤害"],
-    # 下一击强化/伤害加倍/蓄力/触发暴击
     "util_charge_next":  [r"伤害加倍|威力加倍|威力倍增|下一回合.*?(伤害|威力).*?加倍|下回合.*?必定暴击|命中时必定暴击|蓄力.*?(强力|加倍|倍增)"],
-    # 穿透/无视防御/破防
     "util_penetrate":    [r"无视防御|破防|穿透(护盾|防御)"],
 }
 
@@ -233,7 +227,7 @@ def _text_of_skills(monster: Monster) -> str:
             parts.append(str(s.name))
         if s.description:
             parts.append(str(s.description))
-    return " ".join(parts)
+    return " ".join(parts).strip()
 
 def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float]:
     hp      = float(monster.hp or 0)
@@ -258,15 +252,291 @@ def _detect(pattern_map: Dict[str, List[str]], text: str) -> List[str]:
     return out
 
 # ======================
-# 对外：三类建议 / 一维建议 / 定位 / 信号
+# 内置 AI 识别（OpenAI 兼容 DeepSeek）—— 独立接口
+# ======================
+
+AI_SYSTEM_PROMPT = (
+    "你是一个标签分类器。根据输入的宠物技能文本，"
+    "只在以下固定标签集合中做多选，输出 JSON 对象（必须是严格 JSON）：\n\n"
+    "三类：\n"
+    "- buff: {buff_codes}\n"
+    "- debuff: {debuff_codes}\n"
+    "- special: {special_codes}\n\n"
+    "要求：\n"
+    "1) 只返回以上代码，不要新增标签或返回中文；\n"
+    "2) 按语义判断是否存在该效果，有就包含到对应数组；\n"
+    "3) 若没有则留空数组；\n"
+    "4) 仅输出形如 {{\"buff\":[],\"debuff\":[],\"special\":[]}} 的 JSON；不要任何额外解释；\n"
+    "5) 输入可能含中文描述与技能名。"
+)
+
+def _build_ai_payload(text: str) -> Dict[str, Any]:
+    base_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions").strip()
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
+    txt = (text or "").strip()
+    if len(txt) > 8000:
+        txt = txt[:8000]
+
+    system = AI_SYSTEM_PROMPT.format(
+        buff_codes=", ".join(sorted(ALL_BUFF_CODES)),
+        debuff_codes=", ".join(sorted(ALL_DEBUFF_CODES)),
+        special_codes=", ".join(sorted(ALL_SPECIAL_CODES)),
+    )
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"技能文本：\n{txt}\n\n请输出 JSON。"},
+        ],
+    }
+    return {"url": base_url, "payload": payload}
+
+def _validate_ai_result(obj: Any) -> Dict[str, List[str]]:
+    def _pick(arr: Any, allowed: Set[str]) -> List[str]:
+        if not isinstance(arr, list):
+            return []
+        seen: Set[str] = set()
+        out: List[str] = []
+        for x in arr:
+            if isinstance(x, str) and x in allowed and x not in seen:
+                seen.add(x)
+                out.append(x)
+        return sorted(out)
+
+    buff = _pick(obj.get("buff", []), ALL_BUFF_CODES) if isinstance(obj, dict) else []
+    debuff = _pick(obj.get("debuff", []), ALL_DEBUFF_CODES) if isinstance(obj, dict) else []
+    special = _pick(obj.get("special", []), ALL_SPECIAL_CODES) if isinstance(obj, dict) else []
+    return {"buff": buff, "debuff": debuff, "special": special}
+
+@lru_cache(maxsize=8192)
+def _ai_classify_cached(text: str) -> Dict[str, List[str]]:
+    """
+    直接调用 DeepSeek/OpenAI 兼容接口。
+    - 未安装 httpx / 未配置密钥 / 调用错误将抛出 RuntimeError。
+    - 使用 LRU 缓存避免重复费用。
+    """
+    if not _HAS_HTTPX:
+        raise RuntimeError("AI 标签识别需要 httpx，请先安装依赖：pip install httpx")
+
+    key = os.getenv("DEEPSEEK_API_KEY", "sk-7a1c5bc1d84240dcbb754ca169dbf741").strip()
+    if not key:
+        raise RuntimeError("缺少 DEEPSEEK_API_KEY，无法进行 AI 标签识别")
+
+    conf = _build_ai_payload(text)
+    url: str = conf["url"]
+    payload: Dict[str, Any] = conf["payload"]
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            resp = client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        obj = json.loads(content) if isinstance(content, str) and content.strip().startswith("{") else {}
+        return _validate_ai_result(obj)
+    except Exception as e:
+        raise RuntimeError(f"AI 标签识别调用失败：{e}")
+
+def ai_classify_text(text: str) -> Dict[str, List[str]]:
+    """
+    对任意技能文本进行 AI 识别（独立接口）。
+    失败将抛 RuntimeError（不回落正则）。
+    """
+    txt = (text or "").strip()
+    if not txt:
+        return {"buff": [], "debuff": [], "special": []}
+    return _ai_classify_cached(txt)
+
+def ai_suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
+    """
+    对单个 Monster 的技能文本进行 AI 识别（独立接口）。
+    失败将抛 RuntimeError（不回落正则）。
+    """
+    text = _text_of_skills(monster)
+    return ai_classify_text(text)
+
+def ai_suggest_tags_for_monster(monster: Monster) -> List[str]:
+    """
+    AI 版拍平结果。
+    """
+    g = ai_suggest_tags_grouped(monster)
+    flat: List[str] = []
+    for cat in ("buff", "debuff", "special"):
+        flat.extend(g.get(cat, []))
+    # 去重保持顺序（且必须在固定 code 集）
+    seen: Set[str] = set()
+    out: List[str] = []
+    for t in flat:
+        if t in ALL_CODES and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+# ======================
+# 批量 AI 打标签：进度注册表（内存）
+# ======================
+
+@dataclass
+class BatchJobState:
+    job_id: str
+    total: int
+    done: int = 0
+    failed: int = 0
+    running: bool = True
+    canceled: bool = False
+    errors: List[Dict[str, Any]] = field(default_factory=list)  # {"id": int, "error": str}
+    started_at: float = field(default_factory=lambda: time.time())
+    updated_at: float = field(default_factory=lambda: time.time())
+
+    def to_dict(self) -> Dict[str, Any]:
+        processed = self.done + self.failed
+        pct = (processed / self.total) if self.total > 0 else 1.0
+        elapsed = time.time() - self.started_at
+        speed = (processed / elapsed) if elapsed > 0 else 0.0
+        eta = int((self.total - processed) / speed) if speed > 0 else None
+        def _iso(ts: float) -> str:
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        return {
+            "job_id": self.job_id,
+            "total": self.total,
+            "done": self.done,
+            "failed": self.failed,
+            "processed": processed,
+            "percent": round(pct * 100, 2),
+            "running": self.running,
+            "canceled": self.canceled,
+            "started_at": _iso(self.started_at),
+            "updated_at": _iso(self.updated_at),
+            "eta_seconds": eta,
+            "errors": self.errors[-20:],  # 只返回最近 20 条
+        }
+
+class _BatchRegistry:
+    def __init__(self):
+        self._jobs: Dict[str, BatchJobState] = {}
+        self._lock = threading.Lock()
+
+    def create(self, total: int) -> BatchJobState:
+        with self._lock:
+            job_id = uuid.uuid4().hex[:12]
+            st = BatchJobState(job_id=job_id, total=int(total or 0))
+            self._jobs[job_id] = st
+            return st
+
+    def get(self, job_id: str) -> Optional[BatchJobState]:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def update(self, job_id: str, *, done_inc: int = 0, failed_inc: int = 0,
+               error: Optional[Dict[str, Any]] = None, running: Optional[bool] = None,
+               canceled: Optional[bool] = None) -> None:
+        with self._lock:
+            st = self._jobs.get(job_id)
+            if not st:
+                return
+            st.done += int(done_inc)
+            st.failed += int(failed_inc)
+            if error:
+                st.errors.append(error)
+            if running is not None:
+                st.running = bool(running)
+            if canceled is not None:
+                st.canceled = bool(canceled)
+            st.updated_at = time.time()
+
+    def cancel(self, job_id: str) -> bool:
+        with self._lock:
+            st = self._jobs.get(job_id)
+            if not st:
+                return False
+            st.canceled = True
+            st.updated_at = time.time()
+            return True
+
+    def cleanup(self, older_than_seconds: int = 3600) -> int:
+        now = time.time()
+        removed = 0
+        with self._lock:
+            for k in list(self._jobs.keys()):
+                st = self._jobs[k]
+                if (not st.running) and (now - st.updated_at > older_than_seconds):
+                    self._jobs.pop(k, None)
+                    removed += 1
+        return removed
+
+_registry = _BatchRegistry()
+
+def get_ai_batch_progress(job_id: str) -> Optional[Dict[str, Any]]:
+    st = _registry.get(job_id)
+    return st.to_dict() if st else None
+
+def cancel_ai_batch(job_id: str) -> bool:
+    return _registry.cancel(job_id)
+
+def cleanup_finished_jobs(older_than_seconds: int = 3600) -> int:
+    return _registry.cleanup(older_than_seconds)
+
+def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str:
+    """
+    启动后台线程，按顺序对给定 monster id 列表进行 AI 打标签并落库。
+    - 返回 job_id，前端可轮询 /tags/ai_batch/{job_id} 获取进度。
+    """
+    ids = [int(x) for x in (ids or []) if isinstance(x, (int, str)) and str(x).isdigit()]
+    ids = list(dict.fromkeys(ids))  # 去重保序
+    st = _registry.create(total=len(ids))
+    job_id = st.job_id
+
+    def _worker(_ids: List[int], _job_id: str):
+        from .monsters_service import upsert_tags  # 延迟导入，避免循环依赖
+        try:
+            for mid in _ids:
+                if _registry.get(_job_id) and _registry.get(_job_id).canceled:
+                    # 用户取消
+                    _registry.update(_job_id, running=False)
+                    return
+                try:
+                    # 独立会话
+                    session = db_factory()
+                    try:
+                        m = session.execute(
+                            select(Monster)
+                            .where(Monster.id == mid)
+                            .options(selectinload(Monster.skills), selectinload(Monster.tags))
+                        ).scalar_one_or_none()
+                        if not m:
+                            _registry.update(_job_id, failed_inc=1, error={"id": mid, "error": "monster not found"})
+                            continue
+
+                        # AI 打标签
+                        tags = ai_suggest_tags_for_monster(m)  # 这里会抛 RuntimeError，外面捕获
+                        m.tags = upsert_tags(session, tags)
+                        session.commit()
+                        _registry.update(_job_id, done_inc=1)
+                    finally:
+                        session.close()
+                except Exception as e:
+                    _registry.update(_job_id, failed_inc=1, error={"id": mid, "error": str(e)})
+            _registry.update(_job_id, running=False)
+        except Exception as e:
+            _registry.update(_job_id, failed_inc=0, error={"id": -1, "error": f"worker crash: {e}"}, running=False)
+
+    th = threading.Thread(target=_worker, args=(ids, job_id), name=f"ai-batch-{job_id}", daemon=True)
+    th.start()
+    return job_id
+
+# ======================
+# 对外（默认路径）：三类建议 / 一维建议 / 定位 / 信号（正则）
 # ======================
 
 def suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
     """
-    返回 code 三类标签：
-      {"buff":[...], "debuff":[...], "special":[...]}
-    注意：不再注入阈值型增益（speed/attack/magic/resist/hp 等），
-         阈值仅用于派生五维计算；展示标签仅根据技能文本匹配。
+    默认：仅用正则，返回固定 code 三类标签。
     """
     text = _text_of_skills(monster)
     buff = set(_detect(BUFF_PATTERNS, text))
@@ -279,38 +549,35 @@ def suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
     }
 
 def suggest_tags_for_monster(monster: Monster) -> List[str]:
-    """拍平为一维 code 列表，用于 Monster.tags 存库（仅文本匹配结果）。"""
+    """
+    默认：正则版拍平（用于 Monster.tags 存库）。
+    """
     g = suggest_tags_grouped(monster)
     flat: List[str] = []
     for cat in ("buff", "debuff", "special"):
-        flat.extend(g[cat])
-    # 去重保持顺序
+        flat.extend(g.get(cat, []))
     seen: Set[str] = set()
     out: List[str] = []
     for t in flat:
-        if t not in seen:
+        if t in ALL_CODES and t not in seen:
             seen.add(t)
             out.append(t)
     return out
 
 def infer_role_for_monster(monster: Monster) -> str:
     """
-    极简定位（只依赖文本标签；不使用阈值注入）：
-      - 主攻：有 buf_atk_up/buf_mag_up 或 util_multi/util_penetrate/util_charge_next，且非明显控制/纯辅助
-      - 控制：有任一控制 debuff 或 deb_spd_down / deb_acc_down
-      - 辅助：有治疗/护盾/净化/免疫/防/抗/速 等，而无明显主攻特征
-      - 坦克：血量或抗性很高而非主攻（此处仅作兜底）
+    极简定位（依赖默认正则标签；AI 接口不参与此处逻辑）
     """
     hp, _speed, _atk, _def, _mag, resist = _raw_six(monster)
     g = suggest_tags_grouped(monster)
 
-    offensive_hint = any(t in g["buff"] for t in ("buf_atk_up", "buf_mag_up")) \
-        or any(t in g["special"] for t in ("util_multi", "util_penetrate", "util_charge_next"))
-    control_hint = any(t in g["debuff"] for t in (
+    offensive_hint = any(t in set(g["buff"]) for t in ("buf_atk_up", "buf_mag_up")) \
+        or any(t in set(g["special"]) for t in ("util_multi", "util_penetrate", "util_charge_next"))
+    control_hint = any(t in set(g["debuff"]) for t in (
         "deb_stun","deb_bind","deb_sleep","deb_freeze","deb_confuse_seal","deb_suffocate",
         "deb_spd_down","deb_acc_down",
     ))
-    support_hint = any(t in g["buff"] for t in (
+    support_hint = any(t in set(g["buff"]) for t in (
         "buf_heal","buf_shield","buf_purify","buf_immunity","buf_def_up","buf_res_up","buf_spd_up"
     ))
     tanky_hint = (hp >= 115) or (resist >= 115)
@@ -327,15 +594,10 @@ def infer_role_for_monster(monster: Monster) -> str:
 
 def extract_signals(monster: Monster) -> Dict[str, object]:
     """
-    v2 细粒度信号（仅保留派生所需）：
-      - 进攻：crit_up / ignore_def / armor_break / def_down / res_down / mark / has_multi_hit
-      - 生存：heal / shield / dmg_reduce / cleanse_self / immunity / life_steal / def_up_sig / res_up_sig
-      - 控制：hard_cc / soft_cc
-      - 节奏：first_strike / speed_up / extra_turn / action_bar
-      - 压制：pp_hits / dispel_enemy / skill_seal / buff_steal / mark_expose
+    v2 细粒度信号（仅保留派生所需）
     """
     text = _text_of_skills(monster)
-    g = suggest_tags_grouped(monster)
+    g = suggest_tags_grouped(monster)  # 使用默认正则标签
     deb = set(g["debuff"]); buf = set(g["buff"]); util = set(g["special"])
 
     # 进攻
@@ -426,13 +688,13 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     }
 
 # ======================
-# v2：派生五维（保留给需要直接调用 derive 的地方）
+# v2：派生五维
 # ======================
 
 def derive(monster: Monster) -> Dict[str, int]:
     """
     五维（offense/survive/control/tempo/pp_pressure）
-    - 线性基底 + 信号加分；展示层 clip 到 [0,120]（offense 内部 130 用于排序可选）
+    - 线性基底 + 信号加分；展示层 clip 到 [0,120]（offense 内部 130 可用于排序）
     """
     hp, spd, atk, dfe, mag, res = _raw_six(monster)
     s = extract_signals(monster)
@@ -466,11 +728,13 @@ def derive(monster: Monster) -> Dict[str, int]:
     )
     survive = int(max(0, min(120, round(base_sur + add_sur))))
 
-    # 3) 控 control
-    acc_down_bonus = 6 * int("deb_acc_down" in suggest_tags_grouped(monster)["debuff"])
-    spd_down_bonus = 4 * int("deb_spd_down" in suggest_tags_grouped(monster)["debuff"])
-    atk_down_bonus = 3 * int("deb_atk_down" in suggest_tags_grouped(monster)["debuff"])
-    mag_down_bonus = 3 * int("deb_mag_down" in suggest_tags_grouped(monster)["debuff"])
+    # 3) 控 control（用默认正则标签）
+    g = suggest_tags_grouped(monster)
+    deb = set(g["debuff"])
+    acc_down_bonus = 6 * int("deb_acc_down" in deb)
+    spd_down_bonus = 4 * int("deb_spd_down" in deb)
+    atk_down_bonus = 3 * int("deb_atk_down" in deb)
+    mag_down_bonus = 3 * int("deb_mag_down" in deb)
 
     control = int(max(0, min(120, round(
         0.1 * spd +
@@ -485,8 +749,8 @@ def derive(monster: Monster) -> Dict[str, int]:
         15 * int(s.get("first_strike", False)) +
         10 * int(s.get("extra_turn", False)) +
          8 * int(s.get("speed_up", False)) +
-         6 * int(s.get("action_bar", False)
-    )))))
+         6 * int(s.get("action_bar", False))
+    ))))
 
     # 5) 压 pp_pressure
     pp_pressure = int(max(0, min(120, round(
@@ -507,9 +771,14 @@ def derive(monster: Monster) -> Dict[str, int]:
     }
 
 __all__ = [
+    # 标签映射
     "BUFF_CANON", "DEBUFF_CANON", "SPECIAL_CANON",
     "CODE2CN", "CN2CODE",
+    # 默认（正则）接口
     "suggest_tags_grouped", "suggest_tags_for_monster",
-    "infer_role_for_monster", "extract_signals",
-    "derive",
+    "infer_role_for_monster", "extract_signals", "derive",
+    # AI 独立接口（单个/文本）
+    "ai_classify_text", "ai_suggest_tags_grouped", "ai_suggest_tags_for_monster",
+    # 批量 AI 打标签（进度）
+    "start_ai_batch_tagging", "get_ai_batch_progress", "cancel_ai_batch", "cleanup_finished_jobs",
 ]
