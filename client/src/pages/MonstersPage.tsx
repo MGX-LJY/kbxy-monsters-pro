@@ -161,8 +161,16 @@ export default function MonstersPage() {
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
-  // 全屏模糊等待弹框
-  const [overlay, setOverlay] = useState<{show: boolean; title?: string; sub?: string}>({ show: false })
+  // 全屏模糊等待弹框 + 真实进度
+  const [overlay, setOverlay] = useState<{
+    show: boolean
+    title?: string
+    sub?: string
+    total?: number
+    done?: number
+    ok?: number
+    fail?: number
+  }>({ show: false })
 
   // —— 一键爬取 —— //
   const [crawling, setCrawling] = useState(false)
@@ -176,7 +184,9 @@ export default function MonstersPage() {
       if (crawlLimit && /^\d+$/.test(crawlLimit)) payload.limit = parseInt(crawlLimit, 10)
       const res = await api.post('/api/v1/crawl/crawl_all', payload)
       const d = res?.data || {}
-      alert(`完成：遍历 ${d.seen||0}，新增 ${d.inserted||0}，更新 ${d.updated||0}，技能变更 ${d.skills_changed||0}`)
+      // 兼容后端字段名
+      const fetched = d.fetched ?? d.seen ?? 0
+      alert(`完成：遍历 ${fetched}，新增 ${d.inserted||0}，更新 ${d.updated||0}，技能变更 ${d.skills_changed||0}`)
       await Promise.all([list.refetch(), stats.refetch(), wstats.refetch()])
       if (selected) {
         const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
@@ -530,58 +540,97 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 一键 AI 打标签（未勾选 → 全部；单条不弹） —— //
+  // —— 工具：根据当前筛选收集“全部要处理的 IDs”（未勾选时用它） —— //
+  const collectAllTargetIds = async (): Promise<number[]> => {
+    const endpoint = warehouseOnly ? '/warehouse' : '/monsters'
+    const pageSizeFetch = 200
+    let pageNo = 1
+    let total = 0
+    const ids: number[] = []
+    while (true) {
+      const resp = await api.get(endpoint, {
+        params: {
+          q: q || undefined,
+          element: element || undefined,
+          tag: tag || undefined,
+          role: role || undefined,
+          type: acqType || undefined,
+          new_type: onlyGettable ? true : undefined,
+          sort, order,
+          page: pageNo,
+          page_size: pageSizeFetch
+        }
+      })
+      const data = resp.data as MonsterListResp
+      const arr = (data.items as any[]) || []
+      ids.push(...arr.map(x => x.id))
+      total = data.total || ids.length
+      if (arr.length === 0 || ids.length >= total) break
+      pageNo += 1
+    }
+    // 去重
+    return Array.from(new Set(ids))
+  }
+
+  // —— 一键 AI 打标签（真实进度版） —— //
   const aiTagBatch = async () => {
-    const items = (list.data?.items as any[]) || []
-    if (!items.length) return alert('当前没有可处理的记录')
+    // 1) 计算目标 ID 集
+    let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
+    if (!targetIds.length) return alert('当前没有可处理的记录')
 
-    const ids = selectedIds.size ? Array.from(selectedIds) : undefined
-    const showOverlay = !ids || ids.length > 1
+    // 2) 显示进度遮罩
+    setOverlay({ show: true, title: 'AI 打标签进行中…', sub: '正在分析', total: targetIds.length, done: 0, ok: 0, fail: 0 })
 
-    if (showOverlay) setOverlay({ show: true, title: 'AI 打标签进行中…', sub: '可爱的等等呦 (=^･ω･^=)' })
+    // 3) 逐条调用（带兜底：retag_ai → retag）
+    let okCount = 0
+    let failCount = 0
     try {
-      try {
-        await api.post('/api/v1/tags/ai/batch', { ids })
-      } catch {
+      for (const id of targetIds) {
         try {
-          await api.post('/tags/ai_batch', { ids })
-        } catch {
-          const fallbackIds = ids ?? (items.map(i => i.id) as number[])
-          for (const id of fallbackIds) {
-            try { await api.post(`/tags/monsters/${id}/retag_ai`) }
-            catch { await api.post(`/tags/monsters/${id}/retag`) }
+          try {
+            await api.post(`/tags/monsters/${id}/retag_ai`)
+          } catch {
+            await api.post(`/tags/monsters/${id}/retag`)
           }
+          okCount += 1
+          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, ok: (prev.ok || 0) + 1 }))
+        } catch {
+          failCount += 1
+          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, fail: (prev.fail || 0) + 1 }))
         }
       }
+
+      // 刷新视图
       await list.refetch()
       if (selected) {
         const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
         setSelected(fresh)
       }
-      alert('AI 打标签完成')
+
+      alert(`AI 打标签完成：共 ${targetIds.length} 条，成功 ${okCount}，失败 ${failCount}`)
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'AI 打标签失败')
     } finally {
-      if (showOverlay) setOverlay({ show: false })
+      setOverlay({ show: false })
     }
   }
 
   // —— 一键全部派生（未勾选 → 全部；无需进度） —— //
   const deriveBatch = async () => {
     const items = (list.data?.items as any[]) || []
-    if (!items.length) return alert('当前没有可处理的记录')
-    const ids = selectedIds.size ? Array.from(selectedIds) : undefined
-    const showOverlay = !ids || ids.length > 1
+    const ids = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
+    if (!ids.length && !items.length) return alert('当前没有可处理的记录')
 
+    const showOverlay = ids.length > 1
     if (showOverlay) setOverlay({ show: true, title: '派生计算中…', sub: '可爱的等等呦 (=^･ω･^=)' })
     try {
       try {
-        await api.post('/api/v1/derived/batch', { ids })
+        await api.post('/api/v1/derived/batch', { ids: ids.length ? ids : undefined })
       } catch {
         try {
-          await api.post('/derived/batch', { ids })
+          await api.post('/derived/batch', { ids: ids.length ? ids : undefined })
         } catch {
-          const fallbackIds = ids ?? (items.map(i => i.id) as number[])
+          const fallbackIds = ids.length ? ids : (items.map(i => i.id) as number[])
           for (const id of fallbackIds) {
             try { await api.get(`/monsters/${id}/derived`) } catch {}
           }
@@ -628,6 +677,9 @@ export default function MonstersPage() {
       setEditSkills([{ name: '', element: '', kind: '', power: null, description: '' }])
     }
   }, [isEditing, editSkills.length])
+
+  // 计算进度百分比
+  const progressPct = overlay.total ? Math.floor(((overlay.done || 0) / overlay.total) * 100) : null
 
   return (
     <div className="container my-6 space-y-4">
@@ -1090,16 +1142,29 @@ export default function MonstersPage() {
         )}
       </SideDrawer>
 
-      {/* 全屏模糊等待弹框（无进度，仅陪伴感 & 小猫） */}
+      {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 */}
       {overlay.show && (
         <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
           <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
             <div className="text-2xl">🐱</div>
             <div className="text-lg font-semibold">{overlay.title || '处理中…'}</div>
             <div className="text-sm text-gray-600">{overlay.sub || '请稍候~'}</div>
+
+            {/* 进度条 */}
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
+              {typeof progressPct === 'number' ? (
+                <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
+              ) : (
+                <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
+              )}
             </div>
+
+            {/* 进度文字 */}
+            {typeof progressPct === 'number' && (
+              <div className="text-xs text-gray-500">
+                {overlay.done}/{overlay.total}（成功 {overlay.ok}，失败 {overlay.fail}） — {progressPct}%
+              </div>
+            )}
           </div>
         </div>
       )}
