@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -19,23 +19,55 @@ def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float
     只读列（hp/speed/attack/defense/magic/resist），None 当 0。
     不再回退 explain_json.raw_stats。
     """
-    hp      = float(monster.hp or 0)
-    speed   = float(monster.speed or 0)
-    attack  = float(monster.attack or 0)
-    defense = float(monster.defense or 0)
-    magic   = float(monster.magic or 0)
-    resist  = float(monster.resist or 0)
+    hp      = float(getattr(monster, "hp", 0) or 0)
+    speed   = float(getattr(monster, "speed", 0) or 0)
+    attack  = float(getattr(monster, "attack", 0) or 0)
+    defense = float(getattr(monster, "defense", 0) or 0)
+    magic   = float(getattr(monster, "magic", 0) or 0)
+    resist  = float(getattr(monster, "resist", 0) or 0)
     return hp, speed, attack, defense, magic, resist
 
 
 def _skills_text(monster: Monster) -> str:
+    """
+    汇总技能名与描述文本。
+    兼容两种结构：
+      1) monster.skills 是 Skill 列表（Skill.name / Skill.description / Skill.power）
+      2) monster.skills 是 MonsterSkill 列表，且经 .skill 指向 Skill（MonsterSkill.skill.name / .description / .power）
+         若 MonsterSkill 上也直挂了 name/description/power，同样兼容读取。
+    """
     parts: List[str] = []
-    for s in (monster.skills or []):
-        if getattr(s, "name", None):
-            parts.append(str(s.name))
-        if getattr(s, "description", None):
-            parts.append(str(s.description))
+    for item in (getattr(monster, "skills", None) or []):
+        # 优先经关联到 Skill
+        skill = getattr(item, "skill", None)
+        if skill is not None:
+            n = getattr(skill, "name", None)
+            d = getattr(skill, "description", None)
+        else:
+            n = getattr(item, "name", None)
+            d = getattr(item, "description", None)
+        if n:
+            parts.append(str(n))
+        if d:
+            parts.append(str(d))
     return " ".join(parts)
+
+
+def _skill_powers(monster: Monster) -> List[int]:
+    """
+    收集技能威力（int，>0）。兼容 Skill 与 MonsterSkill 两种结构。
+    """
+    out: List[int] = []
+    for item in (getattr(monster, "skills", None) or []):
+        power: Optional[int] = None
+        skill = getattr(item, "skill", None)
+        if skill is not None:
+            power = getattr(skill, "power", None)
+        if power is None:
+            power = getattr(item, "power", None)
+        if isinstance(power, (int, float)) and power > 0:
+            out.append(int(power))
+    return out
 
 
 def _clip(v: float, lo: float = 0.0, hi: float = 120.0) -> float:
@@ -65,12 +97,6 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     def has(patterns: List[str]) -> bool:
         return any(re.search(p, text) for p in patterns)
 
-    def cnt(patterns: List[str]) -> int:
-        c = 0
-        for p in patterns:
-            c += len(re.findall(p, text))
-        return c
-
     # —— Offense 相关 —— #
     crit_up = ("buf_crit_up" in codes) or has([
         r"必定暴击",
@@ -79,11 +105,9 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     ])
 
     # 无视防御/穿透
-    ignore_def = ("util_penetrate" in codes) or has([
-        r"无视防御", r"穿透(防御|护盾)"
-    ])
+    ignore_def = ("util_penetrate" in codes) or has([r"无视防御", r"穿透(防御|护盾)"])
 
-    # 破防（语义上区别于“无视防御”）
+    # 破防
     armor_break = has([r"破防", r"护甲破坏"])
 
     # 防御/抗性下降
@@ -98,9 +122,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
 
     # —— Survive 相关 —— #
     heal = ("buf_heal" in codes) or has([r"治疗|回复|恢复"])
-    # 护盾：偏“盾体”
     shield = ("buf_shield" in codes) or has([r"护盾|屏障"])
-    # 减伤：偏“伤害减少/减半/减免”
     dmg_reduce = has([
         r"(所受|受到).*(法术)?伤害.*(减少|降低|减半|减免|减)",
         r"伤害(减少|降低|减半|减免)"
@@ -121,9 +143,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     res_up = ("buf_res_up" in codes)
 
     # —— Control 相关 —— #
-    # 硬控：晕/禁锢/睡/冻/窒息
     hard_cc = sum(1 for c in ("deb_stun", "deb_bind", "deb_sleep", "deb_freeze", "deb_suffocate") if c in codes)
-    # 软控：混乱/封印
     soft_cc = 1 if ("deb_confuse_seal" in codes) else 0
     acc_down = ("deb_acc_down" in codes)
     spd_down = ("deb_spd_down" in codes)
@@ -142,7 +162,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     dispel_enemy = ("deb_dispel" in codes) or has([r"(消除|驱散).*(对方|对手).*(增益|强化)"])
     skill_seal = ("deb_confuse_seal" in codes) or has([r"封印|禁技|无法使用技能"])
     buff_steal = has([r"(偷取|夺取|窃取).*(增益|buff|护盾)"])
-    mark_or_expose = marked  # 复用 offense 的 marked
+    mark_or_expose = marked
 
     return {
         # offense
@@ -165,7 +185,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
         "res_up": float(res_up),
 
         # control
-        "hard_cc": float(hard_cc),   # 注意：是“类目命中数”，不是 bool
+        "hard_cc": float(hard_cc),
         "soft_cc": float(soft_cc),
         "acc_down": float(acc_down),
         "spd_down": float(spd_down),
@@ -188,15 +208,26 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     }
 
 
-# ============ v2 计算公式 ============
+# ============ v2 计算公式（加入技能威力参考） ============
 
 def compute_derived(monster: Monster) -> Dict[str, float]:
     """
     使用 v2 规则计算派生五维（float 版本，未四舍五入，展示时 clip 到 [0,120]）。
+    新增：在 Offense 中引入“技能威力”作为参考（取技能威力 Top3 的平均，给与温和权重）。
     offense 内部封顶 130（用于相对排序），最终展示仍 clip 到 120。
     """
     hp, speed, attack, defense, magic, resist = _raw_six(monster)
     s = _detect_v2_signals(monster)
+
+    # —— 技能威力参考（Top3 平均）——
+    powers = sorted(_skill_powers(monster), reverse=True)
+    if powers:
+        top3 = powers[:3]
+        avg_top3 = sum(top3) / len(top3)
+        # 温和加权：100 威力≈+12 分，150≈+18 分；可按需要微调 0.12
+        offense_power = 0.12 * avg_top3
+    else:
+        offense_power = 0.0
 
     # 1) 攻 offense
     atk_hi = max(attack, magic)
@@ -211,7 +242,7 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
         4.0  * s["res_down"] +
         3.0  * s["mark"]
     )
-    offense_raw = offense_base + offense_sig
+    offense_raw = offense_base + offense_sig + offense_power
     offense_capped = min(130.0, offense_raw)  # 内部最多 130
 
     # 2) 生 survive
@@ -321,7 +352,7 @@ def apply_role_tags(
 
     # role
     if override_role_if_blank:
-        if not monster.role:
+        if not getattr(monster, "role", None):
             monster.role = role_suggest
     else:
         monster.role = role_suggest
@@ -339,6 +370,7 @@ def apply_role_tags(
     else:
         # 彻底替换（仅保留本次建议）
         monster.tags = upsert_tags(db, sorted(set(tags_suggest)))
+
 
 def recompute_and_autolabel(db: Session, monster: Monster) -> MonsterDerived:
     """
