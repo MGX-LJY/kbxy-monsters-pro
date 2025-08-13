@@ -1,3 +1,4 @@
+# server/app/services/monsters_service.py
 from typing import List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, asc, desc, outerjoin
@@ -18,9 +19,12 @@ def _get_sort_target(sort: str):
     }
     if s in derived_map:
         return derived_map[s], True
-    if s == "name": return m.name_final, False
-    if s == "element": return m.element, False
-    if s == "role": return m.role, False
+    if s == "name":
+        return m.name, False
+    if s == "element":
+        return m.element, False
+    if s == "role":
+        return m.role, False
     return m.updated_at, False
 
 def list_monsters(
@@ -30,6 +34,8 @@ def list_monsters(
 ) -> Tuple[List[Monster], int]:
     """
     列表：可按标签/元素/定位过滤；按派生五维或更新时间排序。
+    说明：
+      - 本实现未包含“按技能文本过滤”的 JOIN；若需支持，可在注释位扩展。
     """
     # 计数子查询（避免笛卡尔计数偏大）
     base_stmt = select(Monster.id)
@@ -37,7 +43,9 @@ def list_monsters(
         base_stmt = base_stmt.join(Monster.tags).where(Tag.name == tag)
     if q:
         like = f"%{q}%"
-        base_stmt = base_stmt.where(Monster.name_final.like(like))
+        base_stmt = base_stmt.where(Monster.name.like(like))     # ← 原来是 Monster.name_final
+        # 若需扩展到技能关键词，可在这里额外 JOIN 你的技能关联，并把过滤放到一个子查询中防止计数放大
+
     if element:
         base_stmt = base_stmt.where(Monster.element == element)
     if role:
@@ -48,6 +56,7 @@ def list_monsters(
         base_stmt = base_stmt.select_from(
             outerjoin(Monster, MonsterDerived, MonsterDerived.monster_id == Monster.id)
         )
+
     subq = base_stmt.subquery()
     total = db.scalar(select(func.count()).select_from(subq)) or 0
 
@@ -57,18 +66,23 @@ def list_monsters(
         rows_stmt = rows_stmt.join(Monster.tags).where(Tag.name == tag)
     if q:
         like = f"%{q}%"
-        rows_stmt = rows_stmt.where(Monster.name_final.like(like))
+        rows_stmt = rows_stmt.where(Monster.name.like(like))     # ← 原来是 Monster.name_final
+        # 同上，若扩展到技能过滤，请在这里复制与计数子查询一致的 JOIN/WHERE 以保持一致性
+
     if element:
         rows_stmt = rows_stmt.where(Monster.element == element)
     if role:
         rows_stmt = rows_stmt.where(Monster.role == role)
+
     if need_join:
         rows_stmt = rows_stmt.select_from(
             outerjoin(Monster, MonsterDerived, MonsterDerived.monster_id == Monster.id)
         )
+
     is_asc = (order or "desc").lower() == "asc"
     rows_stmt = rows_stmt.order_by(asc(sort_col) if is_asc else desc(sort_col))
     rows_stmt = rows_stmt.offset((page - 1) * page_size).limit(page_size)
+
     rows = db.scalars(rows_stmt).unique().all()
     return rows, int(total)
 
@@ -82,11 +96,13 @@ def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
         n = (s or "").strip()
         if not n or n in seen:
             continue
-        seen.add(n); uniq.append(n)
+        seen.add(n)
+        uniq.append(n)
     for n in uniq:
         tag = db.execute(select(Tag).where(Tag.name == n)).scalar_one_or_none()
         if not tag:
             tag = Tag(name=n)
-            db.add(tag); db.flush()
+            db.add(tag)
+            db.flush()
         result.append(tag)
     return result
