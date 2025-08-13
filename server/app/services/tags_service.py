@@ -1,3 +1,4 @@
+# server/app/services/tags_service.py
 from __future__ import annotations
 
 import json
@@ -223,19 +224,19 @@ SPECIAL_PATTERNS: Dict[str, List[str]] = {
 def _text_of_skills(monster: Monster) -> str:
     parts: List[str] = []
     for s in (monster.skills or []):
-        if s.name:
+        if getattr(s, "name", None):
             parts.append(str(s.name))
-        if s.description:
+        if getattr(s, "description", None):
             parts.append(str(s.description))
     return " ".join(parts).strip()
 
 def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float]:
-    hp      = float(monster.hp or 0)
-    speed   = float(monster.speed or 0)
-    attack  = float(monster.attack or 0)
-    defense = float(monster.defense or 0)
-    magic   = float(monster.magic or 0)
-    resist  = float(monster.resist or 0)
+    hp      = float(getattr(monster, "hp", 0) or 0)
+    speed   = float(getattr(monster, "speed", 0) or 0)
+    attack  = float(getattr(monster, "attack", 0) or 0)
+    defense = float(getattr(monster, "defense", 0) or 0)
+    magic   = float(getattr(monster, "magic", 0) or 0)
+    resist  = float(getattr(monster, "resist", 0) or 0)
     return hp, speed, attack, defense, magic, resist
 
 def _hit_any(patterns: List[str], text: str) -> bool:
@@ -496,12 +497,11 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
         from .monsters_service import upsert_tags  # 延迟导入，避免循环依赖
         try:
             for mid in _ids:
-                if _registry.get(_job_id) and _registry.get(_job_id).canceled:
-                    # 用户取消
+                cur = _registry.get(_job_id)
+                if cur and cur.canceled:
                     _registry.update(_job_id, running=False)
                     return
                 try:
-                    # 独立会话
                     session = db_factory()
                     try:
                         m = session.execute(
@@ -513,8 +513,7 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
                             _registry.update(_job_id, failed_inc=1, error={"id": mid, "error": "monster not found"})
                             continue
 
-                        # AI 打标签
-                        tags = ai_suggest_tags_for_monster(m)  # 这里会抛 RuntimeError，外面捕获
+                        tags = ai_suggest_tags_for_monster(m)  # 失败抛出，外层捕获
                         m.tags = upsert_tags(session, tags)
                         session.commit()
                         _registry.update(_job_id, done_inc=1)
@@ -524,14 +523,15 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
                     _registry.update(_job_id, failed_inc=1, error={"id": mid, "error": str(e)})
             _registry.update(_job_id, running=False)
         except Exception as e:
-            _registry.update(_job_id, failed_inc=0, error={"id": -1, "error": f"worker crash: {e}"}, running=False)
+            _registry.update(_job_id, error={"id": -1, "error": f"worker crash: {e}"}, running=False)
 
     th = threading.Thread(target=_worker, args=(ids, job_id), name=f"ai-batch-{job_id}", daemon=True)
     th.start()
     return job_id
 
 # ======================
-# 对外（默认路径）：三类建议 / 一维建议 / 定位 / 信号（正则）
+# 对外（默认路径）：三类建议 / 一维建议 / 信号（正则）
+# ※ 定位与派生已迁入 derive_service；本模块仅保留标签相关逻辑。
 # ======================
 
 def suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
@@ -564,37 +564,9 @@ def suggest_tags_for_monster(monster: Monster) -> List[str]:
             out.append(t)
     return out
 
-def infer_role_for_monster(monster: Monster) -> str:
-    """
-    极简定位（依赖默认正则标签；AI 接口不参与此处逻辑）
-    """
-    hp, _speed, _atk, _def, _mag, resist = _raw_six(monster)
-    g = suggest_tags_grouped(monster)
-
-    offensive_hint = any(t in set(g["buff"]) for t in ("buf_atk_up", "buf_mag_up")) \
-        or any(t in set(g["special"]) for t in ("util_multi", "util_penetrate", "util_charge_next"))
-    control_hint = any(t in set(g["debuff"]) for t in (
-        "deb_stun","deb_bind","deb_sleep","deb_freeze","deb_confuse_seal","deb_suffocate",
-        "deb_spd_down","deb_acc_down",
-    ))
-    support_hint = any(t in set(g["buff"]) for t in (
-        "buf_heal","buf_shield","buf_purify","buf_immunity","buf_def_up","buf_res_up","buf_spd_up"
-    ))
-    tanky_hint = (hp >= 115) or (resist >= 115)
-
-    if offensive_hint and not control_hint and not support_hint:
-        return "主攻"
-    if control_hint and not offensive_hint:
-        return "控制"
-    if support_hint and not offensive_hint:
-        return "辅助"
-    if tanky_hint and not offensive_hint:
-        return "坦克"
-    return "通用"
-
 def extract_signals(monster: Monster) -> Dict[str, object]:
     """
-    v2 细粒度信号（仅保留派生所需）
+    v2 细粒度信号（仅保留派生所需；供 derive_service 使用）
     """
     text = _text_of_skills(monster)
     g = suggest_tags_grouped(monster)  # 使用默认正则标签
@@ -688,87 +660,24 @@ def extract_signals(monster: Monster) -> Dict[str, object]:
     }
 
 # ======================
-# v2：派生五维
+# 兼容转发（定位 / 派生）—— 请尽快把调用方迁到 derive_service
 # ======================
+
+def infer_role_for_monster(monster: Monster) -> str:
+    """
+    兼容函数：已迁入 derive_service。
+    请改用：from .derive_service import infer_role_for_monster
+    """
+    from .derive_service import infer_role_for_monster as _infer
+    return _infer(monster)
 
 def derive(monster: Monster) -> Dict[str, int]:
     """
-    五维（offense/survive/control/tempo/pp_pressure）
-    - 线性基底 + 信号加分；展示层 clip 到 [0,120]（offense 内部 130 可用于排序）
+    兼容函数：已迁入 derive_service。
+    请改用：from .derive_service import compute_derived_out
     """
-    hp, spd, atk, dfe, mag, res = _raw_six(monster)
-    s = extract_signals(monster)
-
-    # 1) 攻 offense
-    base_off = 0.55 * max(atk, mag) + 0.15 * min(atk, mag) + 0.20 * spd
-    add_off = (
-        10 * int(s.get("crit_up", False)) +
-        12 * int(s.get("ignore_def", False)) +
-         8 * int(s.get("has_multi_hit", False)) +
-         6 * int(s.get("armor_break", False)) +
-         4 * int(s.get("def_down", False)) +
-         4 * int(s.get("res_down", False)) +
-         3 * int(s.get("mark", False))
-    )
-    off_raw = base_off + add_off
-    off_sort = min(130.0, off_raw)
-    offense = int(max(0, min(120, round(off_sort))))
-
-    # 2) 生 survive
-    base_sur = 0.45 * hp + 0.30 * dfe + 0.25 * res
-    add_sur = (
-        10 * int(s.get("heal", False)) +
-        10 * int(s.get("shield", False)) +
-         8 * int(s.get("dmg_reduce", False)) +
-         5 * int(s.get("cleanse_self", False)) +
-         4 * int(s.get("immunity", False)) +
-         3 * int(s.get("life_steal", False)) +
-         2 * int(s.get("def_up_sig", False)) +
-         2 * int(s.get("res_up_sig", False))
-    )
-    survive = int(max(0, min(120, round(base_sur + add_sur))))
-
-    # 3) 控 control（用默认正则标签）
-    g = suggest_tags_grouped(monster)
-    deb = set(g["debuff"])
-    acc_down_bonus = 6 * int("deb_acc_down" in deb)
-    spd_down_bonus = 4 * int("deb_spd_down" in deb)
-    atk_down_bonus = 3 * int("deb_atk_down" in deb)
-    mag_down_bonus = 3 * int("deb_mag_down" in deb)
-
-    control = int(max(0, min(120, round(
-        0.1 * spd +
-        14 * int(s.get("hard_cc", 0)) +
-         8 * int(s.get("soft_cc", 0)) +
-        acc_down_bonus + spd_down_bonus + atk_down_bonus + mag_down_bonus
-    ))))
-
-    # 4) 速 tempo
-    tempo = int(max(0, min(120, round(
-        1.0 * spd +
-        15 * int(s.get("first_strike", False)) +
-        10 * int(s.get("extra_turn", False)) +
-         8 * int(s.get("speed_up", False)) +
-         6 * int(s.get("action_bar", False))
-    ))))
-
-    # 5) 压 pp_pressure
-    pp_pressure = int(max(0, min(120, round(
-        18 * int(s.get("pp_hits", 0) > 0) +
-         5 * int(s.get("pp_hits", 0)) +
-         8 * int(s.get("dispel_enemy", False)) +
-        10 * int(s.get("skill_seal", False)) +
-         6 * int(s.get("buff_steal", False)) +
-         3 * int(s.get("mark_expose", False))
-    ))))
-
-    return {
-        "offense": offense,
-        "survive": survive,
-        "control": control,
-        "tempo": tempo,
-        "pp_pressure": pp_pressure,
-    }
+    from .derive_service import compute_derived_out
+    return compute_derived_out(monster)
 
 __all__ = [
     # 标签映射
@@ -776,7 +685,9 @@ __all__ = [
     "CODE2CN", "CN2CODE",
     # 默认（正则）接口
     "suggest_tags_grouped", "suggest_tags_for_monster",
-    "infer_role_for_monster", "extract_signals", "derive",
+    "extract_signals",
+    # 兼容（转发到 derive_service）
+    "infer_role_for_monster", "derive",
     # AI 独立接口（单个/文本）
     "ai_classify_text", "ai_suggest_tags_grouped", "ai_suggest_tags_for_monster",
     # 批量 AI 打标签（进度）

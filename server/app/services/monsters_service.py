@@ -1,10 +1,16 @@
 # server/app/services/monsters_service.py
-from typing import List, Tuple
+from __future__ import annotations
+
+from typing import List, Tuple, Optional, Dict, Any
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, asc, desc, outerjoin
+
 from ..models import Monster, Tag, MonsterDerived
 
-# 排序字段解析：支持派生五维（pp / pp_pressure 都支持）
+
+# ---- 排序字段解析：支持派生五维（pp / pp_pressure 都支持） ----
+
 def _get_sort_target(sort: str):
     s = (sort or "updated_at").lower()
     md = MonsterDerived
@@ -27,29 +33,44 @@ def _get_sort_target(sort: str):
         return m.role, False
     return m.updated_at, False
 
+
+# ---- 列表查询：可按标签/元素/定位/获取途径/是否可获取 过滤；按派生或更新时间排序 ----
+
 def list_monsters(
-    db: Session, *, q: str | None, element: str | None, role: str | None,
-    tag: str | None, sort: str | None, order: str | None,
-    page: int, page_size: int
+    db: Session,
+    *,
+    q: Optional[str] = None,
+    element: Optional[str] = None,
+    role: Optional[str] = None,
+    tag: Optional[str] = None,
+    acq_type: Optional[str] = None,      # ← 获取途径：Monster.type
+    new_type: Optional[bool] = None,     # ← 是否当前可获取：Monster.new_type
+    sort: Optional[str] = None,
+    order: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
 ) -> Tuple[List[Monster], int]:
     """
-    列表：可按标签/元素/定位过滤；按派生五维或更新时间排序。
     说明：
-      - 本实现未包含“按技能文本过滤”的 JOIN；若需支持，可在注释位扩展。
+      - 若需“按技能文本过滤”，建议在路由层构造子查询，避免计数笛卡尔积。
+      - 这里统一支持 type/new_type 过滤，以契合前端“获取途径/可获取”的 UI。
     """
-    # 计数子查询（避免笛卡尔计数偏大）
+    # 计数子查询（避免 JOIN 计数膨胀）
     base_stmt = select(Monster.id)
     if tag:
         base_stmt = base_stmt.join(Monster.tags).where(Tag.name == tag)
     if q:
         like = f"%{q}%"
-        base_stmt = base_stmt.where(Monster.name.like(like))     # ← 原来是 Monster.name_final
-        # 若需扩展到技能关键词，可在这里额外 JOIN 你的技能关联，并把过滤放到一个子查询中防止计数放大
+        base_stmt = base_stmt.where(Monster.name.like(like))
 
     if element:
         base_stmt = base_stmt.where(Monster.element == element)
     if role:
         base_stmt = base_stmt.where(Monster.role == role)
+    if acq_type:
+        base_stmt = base_stmt.where(Monster.type == acq_type)
+    if isinstance(new_type, bool):
+        base_stmt = base_stmt.where(Monster.new_type == new_type)
 
     sort_col, need_join = _get_sort_target(sort or "updated_at")
     if need_join:
@@ -66,13 +87,16 @@ def list_monsters(
         rows_stmt = rows_stmt.join(Monster.tags).where(Tag.name == tag)
     if q:
         like = f"%{q}%"
-        rows_stmt = rows_stmt.where(Monster.name.like(like))     # ← 原来是 Monster.name_final
-        # 同上，若扩展到技能过滤，请在这里复制与计数子查询一致的 JOIN/WHERE 以保持一致性
+        rows_stmt = rows_stmt.where(Monster.name.like(like))
 
     if element:
         rows_stmt = rows_stmt.where(Monster.element == element)
     if role:
         rows_stmt = rows_stmt.where(Monster.role == role)
+    if acq_type:
+        rows_stmt = rows_stmt.where(Monster.type == acq_type)
+    if isinstance(new_type, bool):
+        rows_stmt = rows_stmt.where(Monster.new_type == new_type)
 
     if need_join:
         rows_stmt = rows_stmt.select_from(
@@ -86,9 +110,13 @@ def list_monsters(
     rows = db.scalars(rows_stmt).unique().all()
     return rows, int(total)
 
+
+# ---- 标签 upsert（保持返回 Tag 实体列表） ----
+
 def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
     """
-    将一维标签名写入 Tag 表后返回 Tag 实体列表；调用前应保证 names 已经是新三类规范化的名字。
+    将一维标签名写入 Tag 表后返回 Tag 实体列表；
+    调用方应保证 names 已经是新三类规范化的代码（buf_/deb_/util_）。
     """
     result: List[Tag] = []
     uniq, seen = [], set()
@@ -106,3 +134,74 @@ def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
             db.flush()
         result.append(tag)
     return result
+
+
+# ---- 设置标签即派生：统一依赖 derive_service，避免旧 infer_role_for_monster ----
+
+def set_tags_and_rederive(
+    db: Session,
+    monster: Monster,
+    names: List[str],
+    *,
+    commit: bool = True,
+) -> None:
+    """
+    写入规范化标签并立刻调用 recompute_and_autolabel：
+      - 会更新 monster.tags
+      - 会计算派生五维与定位（monster.role / derived.*）
+    """
+    from .derive_service import recompute_and_autolabel  # 延迟导入，避免循环依赖
+    monster.tags = upsert_tags(db, names or [])
+    recompute_and_autolabel(db, monster)
+    if commit:
+        db.commit()
+
+
+# ---- 批量“自动匹配”：用正则建议标签 → set_tags_and_rederive ----
+
+def auto_match_monsters(
+    db: Session,
+    *,
+    ids: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """
+    对给定 id 列表（为空则全量）执行：
+      suggest_tags_for_monster -> set_tags_and_rederive
+    返回处理统计与前 200 条明细。
+    """
+    from .tags_service import suggest_tags_for_monster  # 延迟导入，避免循环依赖
+
+    if ids:
+        id_list = [int(i) for i in ids if isinstance(i, (int, str)) and str(i).isdigit()]
+        id_list = list(dict.fromkeys(id_list))
+    else:
+        id_list = db.scalars(select(Monster.id)).all()
+
+    success = 0
+    failed = 0
+    details: List[Dict[str, Any]] = []
+
+    for mid in id_list:
+        m = db.get(Monster, int(mid))
+        if not m:
+            failed += 1
+            details.append({"id": mid, "ok": False, "error": "monster not found"})
+            continue
+        try:
+            tags = suggest_tags_for_monster(m)
+            set_tags_and_rederive(db, m, tags, commit=False)
+            success += 1
+            details.append({"id": mid, "ok": True, "tags": tags})
+        except Exception as e:
+            db.rollback()
+            failed += 1
+            details.append({"id": mid, "ok": False, "error": str(e)})
+
+    db.commit()
+    return {
+        "ok": True,
+        "total": len(id_list),
+        "success": success,
+        "failed": failed,
+        "details": details[:200],
+    }

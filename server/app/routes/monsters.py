@@ -14,11 +14,6 @@ from ..services.derive_service import (
     compute_derived_out,
     compute_and_persist,
     recompute_and_autolabel,
-    apply_role_tags,
-)
-from ..services.tags_service import (
-    suggest_tags_for_monster,
-    infer_role_for_monster,
 )
 
 router = APIRouter()
@@ -102,12 +97,12 @@ def list_api(
     changed = False
 
     for m in items:
-        # 缺 role/tags 自动补齐
-        if (not m.role) or (not m.tags):
-            apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
+        # 缺 role/tags/derived 自动补齐（统一走 recompute_and_autolabel）
+        if (not m.role) or (not m.tags) or (not m.derived):
+            recompute_and_autolabel(db, m)
             changed = True
 
-        # 保证派生最新
+        # 保证派生最新（与 compute_derived_out 对齐）
         fresh = compute_derived_out(m)
         need_update = (
             (not m.derived)
@@ -168,9 +163,9 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 自动补
-    if (not m.role) or (not m.tags):
-        apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
+    # 自动补（统一路径）
+    if (not m.role) or (not m.tags) or (not m.derived):
+        recompute_and_autolabel(db, m)
 
     fresh = compute_derived_out(m)
     if (not m.derived) or (
@@ -291,7 +286,7 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
     ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
     m.explain_json = ex
 
-    # 自动定位/标签 + 重算派生
+    # 自动定位/标签 + 重算派生（统一入口）
     recompute_and_autolabel(db, m)
     db.commit()
     return {"ok": True, "monster_id": m.id, "skills": ex["skill_names"]}
@@ -325,7 +320,7 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     }
     m.explain_json = ex
 
-    # 重算派生
+    # 重算派生（数值变化）
     compute_and_persist(db, m)
 
     db.commit()
@@ -347,14 +342,15 @@ def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    role_suggested = infer_role_for_monster(m)
-    tags_suggested = suggest_tags_for_monster(m)
-    derived_now = compute_derived_out(m)
+    # 统一通过 derive_service 更新并读取
+    recompute_and_autolabel(db, m)
+    db.commit()
 
+    derived_now = compute_derived_out(m)
     return {
         "monster_id": m.id,
-        "role_suggested": role_suggested,
-        "tags": tags_suggested,
+        "role_suggested": m.role,                     # 统一由 derive_service 产出
+        "tags": [t.name for t in (m.tags or [])],     # 当前建议标签（已落库）
         "derived": derived_now,
     }
 
@@ -377,8 +373,8 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
 
     n = 0
     for m in mons:
-        apply_role_tags(db, m, override_role_if_blank=True, merge_tags=True)
-        compute_and_persist(db, m)
+        # 统一入口：自动标签 + 定位 + 派生
+        recompute_and_autolabel(db, m)
         n += 1
 
     db.commit()
@@ -431,7 +427,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [s.name for s in skills]
         m.explain_json = ex
 
-    # 初次自动打标 + 派生
+    # 初次自动打标 + 派生（统一入口）
     recompute_and_autolabel(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
@@ -500,7 +496,7 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
         m.explain_json = ex
 
-    # 更新后：重打标+重算派生
+    # 更新后：重打标+重算派生（统一入口）
     recompute_and_autolabel(db, m)
     db.commit()
     return detail(monster_id, db)

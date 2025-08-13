@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from ..models import Monster, MonsterDerived
-from .tags_service import extract_signals, suggest_tags_for_monster, infer_role_for_monster
+from .tags_service import extract_signals, suggest_tags_for_monster  # 定位已迁出此模块
 from .monsters_service import upsert_tags
 
 
@@ -64,15 +64,35 @@ def _round_int_clip(v: float, hi: int = 120) -> int:
     return int(min(hi, max(0, round(v))))
 
 
-# ============ v2 信号抽取（不改对外契约） ============
+def _tag_codes_from_monster(monster: Monster) -> List[str]:
+    """
+    读取已落库的新前缀标签（buf_/deb_/util_）。
+    若没有，则回退到正则建议（避免“空标签”影响派生/定位）。
+    """
+    raw = []
+    for t in (getattr(monster, "tags", None) or []):
+        name = getattr(t, "name", None) or (t if isinstance(t, str) else None)
+        if isinstance(name, str):
+            raw.append(name)
+    # 只要 prefix 标签
+    codes = [c for c in raw if c.startswith("buf_") or c.startswith("deb_") or c.startswith("util_")]
+    if not codes:
+        # 回退：用正则建议的标签（同样只保留新前缀）
+        tried = suggest_tags_for_monster(monster)
+        codes = [c for c in tried if c.startswith("buf_") or c.startswith("deb_") or c.startswith("util_")]
+    return codes
+
+
+# ============ v2 信号抽取（只依赖：新前缀标签 + 技能文本特征） ============
 
 def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     """
-    基于新三类标签（buf_/deb_/util_）+ 正则提取信号。
+    基于新三类标签（buf_/deb_/util_）+ 技能文本正则提取信号。
+    不再从 tags_service 里获取“定位”，仅做信号。
     """
-    sig = extract_signals(monster)
+    sig = extract_signals(monster)  # 基础统计：multi_hit / first_strike / speed_up / pp_hits 等
     text = _skills_text(monster)
-    codes = set(suggest_tags_for_monster(monster))
+    codes = set(_tag_codes_from_monster(monster))
 
     def has(patterns: List[str]) -> bool:
         return any(re.search(p, text) for p in patterns)
@@ -86,7 +106,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     marked      = has([r"标记", r"易伤", r"暴露", r"破绽"])
     multi_hit   = bool(sig.get("has_multi_hit", False))
 
-    # Survive
+    # Survive / Support
     heal        = ("buf_heal" in codes) or has([r"治疗|回复|恢复"])
     shield      = ("buf_shield" in codes) or has([r"护盾|屏障"])
     dmg_reduce  = has([r"(所受|受到).*(伤害).*(减少|降低|减半|减免)", r"伤害(减少|降低|减半|减免)"])
@@ -127,7 +147,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
         "res_down": float(res_down),
         "mark": float(marked),
         "multi_hit": float(multi_hit),
-        # survive
+        # survive/support
         "heal": float(heal),
         "shield": float(shield),
         "dmg_reduce": float(dmg_reduce),
@@ -181,7 +201,7 @@ def _offense_power_bonus(powers: List[int]) -> float:
 def compute_derived(monster: Monster) -> Dict[str, float]:
     """
     使用 v2 规则计算派生五维（float 版本，未四舍五入）。
-    - 技能威力：改为分段、极低权重，仅 150/160 档触发。
+    - 技能威力：分段、极低权重，仅 150/160 档触发。
     - Offense 内部封顶 130，最终展示仍 clip 到 120。
     """
     hp, speed, attack, defense, magic, resist = _raw_six(monster)
@@ -267,7 +287,131 @@ def compute_derived_out(monster: Monster) -> Dict[str, int]:
     return _to_ints(compute_derived(monster))
 
 
-# ============ 持久化与自动标注（保持不变） ============
+# ============ 定位（迁入本模块，使用“派生 + 标签 + 六维”严谨判定） ============
+
+def _category_scores(
+    monster: Monster,
+    derived_int: Dict[str, int],
+    sig: Dict[str, float],
+) -> Dict[str, float]:
+    """
+    为各定位计算一个“鲜明度分数”，用于比较。
+    规则：
+      - 强控优先：hard_cc 明确、control 高 → 控制
+      - 强奶辅优先：治疗/护盾/净化/免疫 等 + survive 优 → 辅助
+      - 纯主攻：offense 高 + 穿盾/暴击/多段/破防 等 → 主攻
+      - 坦克：survive 高 + 高 HP/RES + 减伤/免疫/护盾 → 坦克
+      - 通用：分数都不够或差距小
+    """
+    hp, speed, attack, defense, magic, resist = _raw_six(monster)
+
+    offense  = float(derived_int.get("offense", 0))
+    survive  = float(derived_int.get("survive", 0))
+    control  = float(derived_int.get("control", 0))
+    tempo    = float(derived_int.get("tempo", 0))
+    pp_press = float(derived_int.get("pp_pressure", 0))
+
+    # 信号简化聚合
+    dps_sig   = (2*sig["crit_up"] + 2*sig["ignore_def"] + 1.5*sig["multi_hit"]
+                 + 1.2*sig["def_down"] + 1.2*sig["res_down"] + 1.2*sig["armor_break"] + 1.0*sig["mark"])
+    ctrl_sig  = (4*sig["hard_cc"] + 2.5*sig["soft_cc"] + 2*sig["spd_down"] + 2*sig["acc_down"]
+                 + 1.2*sig["atk_down"] + 1.2*sig["mag_down"])
+    supp_sig  = (3.5*sig["heal"] + 3.5*sig["shield"] + 2.5*sig["cleanse_self"] + 2.5*sig["immunity"]
+                 + 1.2*sig["def_up"] + 1.2*sig["res_up"] + 1.2*sig["dmg_reduce"])
+
+    # 各定位分
+    score_offense = 1.00*offense + 0.35*tempo + 8.0*dps_sig - 0.20*control - 0.15*supp_sig
+    score_control = 1.10*control + 0.20*tempo + 10.0*sig["hard_cc"] + 3.5*sig["soft_cc"] + 2.0*(sig["spd_down"]+sig["acc_down"]) - 0.15*offense
+    score_support = 0.90*survive + 0.25*tempo + 8.0*(sig["heal"]+sig["shield"]) + 5.0*(sig["cleanse_self"]+sig["immunity"]) + 1.5*(sig["def_up"]+sig["res_up"]) - 0.30*offense
+    score_tank    = 1.05*survive + 0.15*tempo + 5.0*(sig["shield"]+sig["dmg_reduce"]) + 2.0*sig["immunity"] \
+                    + (5.0 if hp >= 115 else 0.0) + (5.0 if resist >= 115 else 0.0) - 0.40*offense \
+                    + 0.5*pp_press  # 小幅拉开与“压制型辅助”的差异
+
+    return {
+        "主攻": score_offense,
+        "控制": score_control,
+        "辅助": score_support,
+        "坦克": score_tank,
+    }
+
+
+def _decide_role(scores: Dict[str, float], derived_int: Dict[str, int], sig: Dict[str, float]) -> Tuple[str, float, str]:
+    """
+    根据分数 + 规则决策最终定位，返回 (role, confidence, reason)。
+    优先级：强控 > 强奶辅 > 主攻 > 坦克 > 通用。
+    """
+    # 强规则优先（鲜明判定）
+    if sig["hard_cc"] >= 1 and derived_int.get("control", 0) >= 70:
+        top_role = "控制"
+        reason = "硬控存在且控制分高"
+        confidence = 0.9
+        return top_role, confidence, reason
+
+    support_trigger = (sig["heal"] + sig["shield"] + sig["cleanse_self"] + sig["immunity"]) >= 2 and derived_int.get("survive", 0) >= 70
+    if support_trigger:
+        # 如果同时 offense 很高且 dps 信号强，则稍降置信度但仍以“辅助”为主（满足“更鲜明”）
+        top_role = "辅助"
+        reason = "治疗/护盾/净化/免疫信号明显且生存分高"
+        confidence = 0.8 if derived_int.get("offense", 0) < 85 else 0.7
+        return top_role, confidence, reason
+
+    # 常规：按分数比较 + 阈值/差距
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    (r1, s1), (r2, s2) = ordered[0], ordered[1] if len(ordered) > 1 else (("通用", 0.0))
+    margin = s1 - s2
+
+    # 阈值：分数不够“鲜明”或差距太小 → 通用
+    if s1 < 55 and margin < 10:
+        return "通用", 0.55, "各项分数均不突出"
+
+    # 细化：当“主攻/坦克”相近时，用派生值与关键信号打破僵局
+    tie_break_order = ["控制", "辅助", "主攻", "坦克"]  # 规则中的优先级
+    if margin < 6:
+        # 小差距时，按优先级靠前的类别倾斜（如果它在前两名中）
+        for cat in tie_break_order:
+            if cat in (r1, r2):
+                r1 = cat
+                break
+        reason = f"分差较小，按优先级判定为{r1}"
+        confidence = 0.62
+        return r1, confidence, reason
+
+    # 正常选择
+    confidence = max(0.6, min(0.95, margin / max(1.0, s1)))  # 简易置信度：差距/最高分，裁剪至 [0.6,0.95]
+    return r1, confidence, f"类别分对比：{r1}={round(s1,1)} 高于 {r2}={round(s2,1)}"
+
+
+def infer_role_for_monster(monster: Monster) -> str:
+    """
+    对外主函数：仅返回角色字符串（兼容老接口）。
+    实际决策使用“派生五维 + 标签信号 + 六维”综合打分。
+    """
+    # 使用 int 版派生（若未计算，compute_derived_out 会即时算）
+    d_int = compute_derived_out(monster)
+    sig = _detect_v2_signals(monster)
+    scores = _category_scores(monster, d_int, sig)
+    role, _conf, _reason = _decide_role(scores, d_int, sig)
+    return role
+
+
+def infer_role_details(monster: Monster) -> Dict[str, object]:
+    """
+    扩展版：返回 role / confidence / reason / scores（便于派生接口回显）。
+    不强制持久化这些扩展字段。
+    """
+    d_int = compute_derived_out(monster)
+    sig = _detect_v2_signals(monster)
+    scores = _category_scores(monster, d_int, sig)
+    role, conf, reason = _decide_role(scores, d_int, sig)
+    return {
+        "role": role,
+        "confidence": round(float(conf), 3),
+        "reason": reason,
+        "scores": {k: round(float(v), 1) for k, v in scores.items()},
+    }
+
+
+# ============ 持久化派生 ============
 
 def compute_and_persist(db: Session, monster: Monster) -> MonsterDerived:
     vals = compute_derived_out(monster)
@@ -292,37 +436,44 @@ def compute_and_persist(db: Session, monster: Monster) -> MonsterDerived:
     return md
 
 
-def apply_role_tags(
-    db: Session,
-    monster: Monster,
-    *,
-    override_role_if_blank: bool = True,
-    merge_tags: bool = True,
-) -> None:
-    role_suggest = infer_role_for_monster(monster)
-    tags_suggest = suggest_tags_for_monster(monster)
-    if override_role_if_blank:
-        if not getattr(monster, "role", None):
-            monster.role = role_suggest
-    else:
-        monster.role = role_suggest
+def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
+    """
+    若 monster.tags 缺少新前缀标签（buf_/deb_/util_），用正则建议补齐并落库。
+    保持“已有的非新前缀标签”不丢失。
+    """
+    cur = [getattr(t, "name", None) or (t if isinstance(t, str) else None) for t in (monster.tags or [])]
+    cur = [c for c in cur if isinstance(c, str)]
+    has_prefix = any(c.startswith(("buf_", "deb_", "util_")) for c in cur)
+    if has_prefix:
+        return
+    suggested = suggest_tags_for_monster(monster)
+    new_prefix = sorted({c for c in suggested if c.startswith(("buf_", "deb_", "util_"))})
+    if not new_prefix:
+        return
+    preserved_non_prefix = [c for c in cur if not c.startswith(("buf_", "deb_", "util_"))]
+    monster.tags = upsert_tags(db, preserved_non_prefix + new_prefix)
 
-    if merge_tags:
-        existed_non_prefix = {
-            t.name for t in (monster.tags or [])
-            if getattr(t, "name", None) and not (
-                t.name.startswith("buf_") or t.name.startswith("deb_") or t.name.startswith("util_")
-            )
-        }
-        merged = sorted({*existed_non_prefix, *tags_suggest})
-        monster.tags = upsert_tags(db, merged)
-    else:
-        monster.tags = upsert_tags(db, sorted(set(tags_suggest)))
 
+# ============ 统一：派生 + 自动定位 + （可选）补标签 ============
 
 def recompute_and_autolabel(db: Session, monster: Monster) -> MonsterDerived:
-    apply_role_tags(db, monster, override_role_if_blank=True, merge_tags=True)
-    md = compute_and_persist(db, monster)
+    """
+    新流程：
+      1) 计算并写入派生五维（compute_and_persist）
+      2) 确保新前缀标签存在（缺则用正则补齐，不额外覆盖已有）
+      3) 基于 派生 + 标签 + 六维 做定位，写回 monster.role
+      4) 兼容：把建议定位挂到 md.role_suggested（仅返回时使用，非强制持久化列）
+    """
+    md = compute_and_persist(db, monster)          # 1) 派生
+    _ensure_prefix_tags(db, monster)               # 2) 缺则补标签
+
+    details = infer_role_details(monster)          # 3) 定位
+    monster.role = details["role"]
+
+    # 4) 兼容前端：把 role_suggested 附在派生对象上（动态属性，序列化端自行处理）
+    setattr(md, "role_suggested", details["role"])
+    setattr(md, "role_confidence", details.get("confidence"))
+    setattr(md, "role_reason", details.get("reason"))
     return md
 
 
@@ -339,7 +490,8 @@ __all__ = [
     "compute_derived",
     "compute_derived_out",
     "compute_and_persist",
-    "apply_role_tags",
+    "infer_role_for_monster",
+    "infer_role_details",
     "recompute_and_autolabel",
     "recompute_all",
 ]
