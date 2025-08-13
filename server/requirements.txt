@@ -5,3 +5,4 @@ pydantic-core==2.20.1
 SQLAlchemy==2.0.32
 python-multipart==0.0.9
 orjson==3.10.7
+DrissionPage
