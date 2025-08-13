@@ -135,7 +135,7 @@ export default function MonstersPage() {
     try {
       const payload: any = {}
       if (crawlLimit && /^\d+$/.test(crawlLimit)) payload.limit = parseInt(crawlLimit, 10)
-      const res = await api.post('/api/v1/crawl/4399/crawl_all', payload)
+      const res = await api.post('/api/v1/crawl/crawl_all', payload)
       const d = res?.data || {}
       // 适配新返回（seen/inserted/updated/skills_changed）
       alert(`完成：遍历 ${d.seen||0}，新增 ${d.inserted||0}，更新 ${d.updated||0}，技能变更 ${d.skills_changed||0}`)
