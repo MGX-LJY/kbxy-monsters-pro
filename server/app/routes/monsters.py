@@ -1,3 +1,4 @@
+# server/app/routes/monsters.py
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -6,7 +7,7 @@ from sqlalchemy import select
 
 from ..db import SessionLocal
 from ..models import Monster
-from ..schemas import MonsterIn, MonsterOut, MonsterList
+from ..schemas import MonsterIn, MonsterOut, MonsterList  # 假定已将 name_final 改为 name，并补充新字段
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
 from ..services.derive_service import (
@@ -44,7 +45,18 @@ class AutoMatchIdsIn(BaseModel):
 class SkillOut(BaseModel):
     id: int
     name: str
+    element: Optional[str] = None
+    kind: Optional[str] = None
+    power: Optional[int] = None
     description: Optional[str] = None
+
+class SkillIn(BaseModel):
+    name: str
+    element: Optional[str] = None
+    kind: Optional[str] = None
+    power: Optional[int] = None
+    description: Optional[str] = None
+    selected: Optional[bool] = None  # 若关联表支持，可写入；否则忽略
 
 # ---------- 列表 ----------
 @router.get("/monsters", response_model=MonsterList)
@@ -114,12 +126,18 @@ def list_api(
         result.append(
             MonsterOut(
                 id=m.id,
-                name_final=m.name_final,
+                name=m.name,
                 element=m.element,
                 role=m.role,
                 hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
+                possess=getattr(m, "possess", None),
+                new_type=getattr(m, "new_type", None),
+                type=getattr(m, "type", None),
+                method=getattr(m, "method", None),
                 tags=[t.name for t in (m.tags or [])],
                 explain_json=m.explain_json or {},
+                created_at=getattr(m, "created_at", None),
+                updated_at=getattr(m, "updated_at", None),
                 derived=d,
             )
         )
@@ -159,10 +177,16 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         db.commit()
 
     return MonsterOut(
-        id=m.id, name_final=m.name_final, element=m.element, role=m.role,
+        id=m.id, name=m.name, element=m.element, role=m.role,
         hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
+        possess=getattr(m, "possess", None),
+        new_type=getattr(m, "new_type", None),
+        type=getattr(m, "type", None),
+        method=getattr(m, "method", None),
         tags=[t.name for t in (m.tags or [])],
         explain_json=m.explain_json or {},
+        created_at=getattr(m, "created_at", None),
+        updated_at=getattr(m, "updated_at", None),
         derived={
             "offense": m.derived.offense,
             "survive": m.derived.survive,
@@ -182,10 +206,91 @@ def monster_skills(monster_id: int, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     if not m:
         raise HTTPException(status_code=404, detail="not found")
+
+    # 直接回传全局 Skill 字段（若需要关联描述/selected，可扩展 MonsterSkill 读取）
     return [
-        SkillOut(id=s.id, name=s.name, description=s.description or None)
+        SkillOut(
+            id=s.id,
+            name=s.name,
+            element=getattr(s, "element", None),
+            kind=getattr(s, "kind", None),
+            power=getattr(s, "power", None),
+            description=s.description or None
+        )
         for s in (m.skills or [])
     ]
+
+# ---------- 写入：覆盖（或更新）怪物的技能集合 ----------
+@router.put("/monsters/{monster_id}/skills")
+def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = Depends(get_db)):
+    """
+    用唯一键 (name, element, kind, power) upsert 技能并更新怪物关联。
+    - 若存在显式关联模型 MonsterSkill：逐条 upsert 关联（并可写 selected/关联描述等）
+    - 否则 fallback 用 m.skills 多对多集合维护
+    """
+    m = db.get(Monster, monster_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="not found")
+
+    # 1) upsert 全局技能
+    items = [
+        (it.name, (it.element or ""), (it.kind or ""), (it.power if it.power is not None else None), (it.description or ""))
+        for it in (payload or [])
+    ]
+    skills = upsert_skills(db, items)  # 返回 Skill 实体列表
+    db.flush()
+
+    # 2) 更新/替换关联
+    changed = False
+    if hasattr(m, "skills") and m.skills is not None:
+        # 清空再设（也可 diff 更新，这里简单处理）
+        m.skills.clear()
+        for s in skills:
+            m.skills.append(s)
+        changed = True
+
+    # 2.1 若存在 MonsterSkill 关联模型，确保二元唯一并可写 selected
+    if hasattr(__import__("server.app.models", fromlist=[""]), "MonsterSkill") or hasattr(m, "monster_skills"):
+        try:
+            from .. import models as M  # 延迟导入，避免循环
+            for s_in in payload:
+                # 找到 upsert_skills 返回的对应实体
+                sk = next((x for x in skills if x.name == s_in.name
+                           and getattr(x, "element", None) == (s_in.element or "")
+                           and getattr(x, "kind", None) == (s_in.kind or "")
+                           and getattr(x, "power", None) == s_in.power), None)
+                if not sk:
+                    continue
+                ms = (
+                    db.query(M.MonsterSkill)
+                    .filter(M.MonsterSkill.monster_id == m.id, M.MonsterSkill.skill_id == sk.id)
+                    .first()
+                )
+                if not ms:
+                    ms = M.MonsterSkill(monster_id=m.id, skill_id=sk.id)
+                    db.add(ms)
+                    changed = True
+                # 可选字段：selected
+                if hasattr(ms, "selected") and (s_in.selected is not None):
+                    if ms.selected != s_in.selected:
+                        ms.selected = s_in.selected
+                        changed = True
+        except Exception:
+            # 若导入失败，则忽略显式关联模型写入，以上 m.skills 已覆盖
+            pass
+
+    if changed:
+        db.flush()
+
+    # 3) 更新 explain_json 里技能名快照
+    ex = m.explain_json or {}
+    ex["skill_names"] = [s.name for s in (m.skills or [])]
+    m.explain_json = ex
+
+    # 4) 重新自动打 role/tags，并重算派生
+    recompute_and_autolabel(db, m)
+    db.commit()
+    return {"ok": True, "monster_id": m.id, "skills": [s.name for s in (m.skills or [])]}
 
 # ---------- 保存原始六维（列 + explain_json.raw_stats + 立刻重算派生） ----------
 @router.put("/monsters/{monster_id}/raw_stats")
@@ -268,15 +373,27 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
 @router.post("/monsters", response_model=MonsterOut)
 def create(payload: MonsterIn, db: Session = Depends(get_db)):
     m = Monster(
-        name_final=payload.name_final, element=payload.element, role=payload.role,
+        name=payload.name,
+        element=payload.element,
+        role=payload.role,
         hp=payload.hp, speed=payload.speed, attack=payload.attack,
         defense=payload.defense, magic=payload.magic, resist=payload.resist,
+        possess=getattr(payload, "possess", None),
+        new_type=getattr(payload, "new_type", None),
+        type=getattr(payload, "type", None),
+        method=getattr(payload, "method", None),
+        explain_json=getattr(payload, "explain_json", None),
     )
     m.tags = upsert_tags(db, payload.tags or [])
     db.add(m); db.flush()
 
-    if payload.skills:
-        skills = upsert_skills(db, [(s.name, s.description or "") for s in payload.skills])
+    # skills（可选）
+    if getattr(payload, "skills", None):
+        items = [
+            (s.name, (s.element or ""), (s.kind or ""), (s.power if s.power is not None else None), (s.description or ""))
+            for s in payload.skills
+        ]
+        skills = upsert_skills(db, items)
         m.skills = list(skills)
         ex = m.explain_json or {}
         ex["skill_names"] = [s.name for s in m.skills]
@@ -294,20 +411,29 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 写基础字段
-    for k in ["name_final", "element", "role", "hp", "speed", "attack", "defense", "magic", "resist"]:
-        setattr(m, k, getattr(payload, k))
+    # 写基础字段（按新模型）
+    for k in ["name", "element", "role", "hp", "speed", "attack", "defense", "magic", "resist",
+              "possess", "new_type", "type", "method"]:
+        if hasattr(payload, k):
+            setattr(m, k, getattr(payload, k))
+
+    # 写 explain_json（可选整体替换）
+    if hasattr(payload, "explain_json") and (payload.explain_json is not None):
+        m.explain_json = payload.explain_json
 
     # 写标签
     m.tags = upsert_tags(db, payload.tags or [])
 
-    # —— 关键修复：只有当请求体“显式包含 skills 字段”时才更新技能 —— #
+    # —— 关键：只有当请求体“显式包含 skills 字段”时才更新技能 —— #
     skills_field_provided = hasattr(payload, "model_fields_set") and ("skills" in payload.model_fields_set)
     if skills_field_provided:
-        # 允许传空数组表示“清空技能”；未传视为“保持不变”
         m.skills.clear()
-        if payload.skills:
-            skills = upsert_skills(db, [(s.name, s.description or "") for s in payload.skills])
+        if getattr(payload, "skills", None):
+            items = [
+                (s.name, (s.element or ""), (s.kind or ""), (s.power if s.power is not None else None), (s.description or ""))
+                for s in payload.skills
+            ]
+            skills = upsert_skills(db, items)
             m.skills = list(skills)
         ex = m.explain_json or {}
         ex["skill_names"] = [s.name for s in (m.skills or [])]
