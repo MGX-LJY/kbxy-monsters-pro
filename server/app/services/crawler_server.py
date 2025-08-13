@@ -12,18 +12,16 @@ from urllib.parse import urljoin, urlparse
 
 from DrissionPage import SessionPage
 
-# --- 尝试引入项目内的数据库会话 ---
+# --- 尝试引入项目内的数据库会话（可选缓存，不依赖业务库） ---
 try:
-    # 按你的工程结构：server/app/db.py 内一般会有 SessionLocal / Base / engine
     from ..db import SessionLocal, Base  # type: ignore
     _DB_AVAILABLE = True
 except Exception:
-    # 允许脚本独立运行（无数据库模式）
     SessionLocal = None  # type: ignore
     Base = None          # type: ignore
     _DB_AVAILABLE = False
 
-# 如果项目内没有 declarative_base，可在无 DB 模式降级为本地 Base
+# 若无项目 Base，则兜底一个本地 Base 以便声明 ORM
 if not _DB_AVAILABLE:
     try:
         from sqlalchemy.orm import declarative_base  # type: ignore
@@ -31,10 +29,10 @@ if not _DB_AVAILABLE:
     except Exception:
         Base = None  # type: ignore
 
-# --- 仅当可用 SQLAlchemy 时，声明 ORM ---
+# ORM 依赖
 try:
     from sqlalchemy import (
-        Column, Integer, String, Text, ForeignKey, UniqueConstraint
+        Column, Integer, String, Text, ForeignKey, UniqueConstraint, Boolean
     )
     from sqlalchemy.orm import relationship, Session
     _SA_AVAILABLE = True
@@ -53,7 +51,6 @@ class SkillRow:
     element: str
     kind: str         # 物理 / 法术 / 特殊
     power: Optional[int]
-    pp: Optional[int]
     description: str
 
 @dataclass
@@ -68,13 +65,18 @@ class MonsterRow:
     resist: int
     source_url: str
     img_url: Optional[str] = None
-    series_names: List[str] = field(default_factory=list)            # 同页多形态名字
-    skills: List[SkillRow] = field(default_factory=list)             # 全量技能
-    recommended_names: List[str] = field(default_factory=list)       # “推荐配招”解析出的技能名
-    selected_skills: List[Dict[str, str]] = field(default_factory=list)  # 依据推荐筛出的技能（仅 name/description）
+    # 获取渠道（新增）
+    type: Optional[str] = None          # 如：可捕捉宠物 / BOSS宠物 / 活动获取宠物 / 兑换 / 商店 / 任务 / 合成...
+    new_type: Optional[bool] = None     # 当前是否可获取（启发式）
+    method: Optional[str] = None        # 获取细节原文
+    # 其它
+    series_names: List[str] = field(default_factory=list)   # 同页多形态名字
+    skills: List[SkillRow] = field(default_factory=list)    # 全量技能
+    recommended_names: List[str] = field(default_factory=list)      # “推荐配招”解析出的技能名
+    selected_skills: List[SkillRow] = field(default_factory=list)   # 推荐命中或回退（完整字段）
 
 
-# ---------- ORM（存储侧） ----------
+# ---------- ORM（轻量缓存，可选） ----------
 if _SA_AVAILABLE and Base is not None:
     class Monster4399(Base):  # type: ignore
         __tablename__ = "monsters_4399"
@@ -89,7 +91,13 @@ if _SA_AVAILABLE and Base is not None:
         resist = Column(Integer, default=0)
         source_url = Column(String(512), nullable=False, unique=True, index=True)
         img_url = Column(String(512))
-        # 直接把推荐名和精选技能以 JSON 文本存储，读库时可直接还原
+
+        # 新增：获取渠道三件套
+        acquire_type = Column(String(64))        # 对应 MonsterRow.type
+        is_obtainable = Column(Boolean)          # 对应 MonsterRow.new_type
+        acquire_method = Column(Text)            # 对应 MonsterRow.method
+
+        # 推荐与精选（JSON 文本）
         recommended_names_json = Column(Text, default="[]")
         selected_skills_json = Column(Text, default="[]")
 
@@ -113,7 +121,6 @@ if _SA_AVAILABLE and Base is not None:
         element = Column(String(32))
         kind = Column(String(32))
         power = Column(Integer)
-        pp = Column(Integer)
         description = Column(Text, default="")
 
         monster = relationship("Monster4399", back_populates="skills")
@@ -150,7 +157,8 @@ class Kabu4399Crawler:
         1) “资料/种族值”表 => 可能多行（同页多形态），最终仅保留“最高形态”
         2) “技能表” => 解析为 SkillRow 列表
     - 额外：解析“推荐配招”（精选技能），并识别“妖怪系别 element”
-    - DB 缓存：优先读库（按 source_url），无则抓取并入库
+    - 新增：解析“获取渠道”（type/new_type/method）
+    - DB 缓存：可选（命中则不再抓取）
     """
     BASE = "https://news.4399.com"
     ROOT = "/kabuxiyou/yaoguaidaquan/"
@@ -179,6 +187,13 @@ class Kabu4399Crawler:
         # 技能里一般不会写“机械”，但留作兜底
         "机": "机械", "械": "机械",
     }
+
+    # —— 筛弱技能关键词（无推荐时使用） —— #
+    SPECIAL_KEYWORDS = re.compile(
+        r"(提高|降低|回复|恢复|免疫|护盾|屏障|减伤|回合|命中|几率|概率|状态|"
+        r"先手|多段|PP|耗PP|反击|反伤|穿透|无视防御|标记|易伤|封印|禁技|"
+        r"追加回合|再行动|行动条|推进|偷取|驱散|净化|吸血)"
+    )
 
     def __init__(
         self,
@@ -251,11 +266,9 @@ class Kabu4399Crawler:
 
     # ---- 系别识别 ----
     def _infer_element_from_url(self, page_url: str) -> Optional[str]:
-        """优先依据 URL 目录（/yaoguaidaquan/<slug>/...）推断系别。"""
         try:
             path = urlparse(page_url).path.strip("/")
             parts = path.split("/")
-            # 形如 kabuxiyou / yaoguaidaquan / <slug> / ...
             if len(parts) >= 3 and parts[1] == "yaoguaidaquan":
                 slug = parts[2]
                 return self.SLUG2ELEM.get(slug)
@@ -264,18 +277,15 @@ class Kabu4399Crawler:
         return None
 
     def _infer_element_from_breadcrumb(self) -> Optional[str]:
-        """从面包屑/导航里的链接文字中提取“XX系 / 机械”等。"""
         for a in self.sp.eles('t:div@@class=dq t:a'):
             txt = (_clean(a.text) or "").strip()
             if not txt:
                 continue
-            # 常见：风系 / 火系 / 机械
             if txt.endswith("系") or txt == "机械":
                 return txt
         return None
 
     def _infer_element_from_skills(self, skills: List[SkillRow]) -> Optional[str]:
-        """对技能表的“技能属性”做投票推断（忽略 无 / 特殊）。"""
         counter: Dict[str, int] = {}
         for s in skills or []:
             raw = (_clean(s.element) or "")
@@ -291,7 +301,6 @@ class Kabu4399Crawler:
         return max(counter.items(), key=lambda kv: kv[1])[0]
 
     def _infer_element(self, page_url: str, skills: List[SkillRow]) -> Optional[str]:
-        """综合 URL -> 面包屑 -> 技能属性 三层推断。"""
         return (
             self._infer_element_from_url(page_url)
             or self._infer_element_from_breadcrumb()
@@ -352,7 +361,7 @@ class Kabu4399Crawler:
                 continue
             m = MonsterRow(
                 name=_clean(name),
-                element=None,  # 先占位，稍后统一推断
+                element=None,
                 hp=_to_int(cols[0]) or 0,
                 speed=_to_int(cols[1]) or 0,
                 attack=_to_int(cols[2]) or 0,
@@ -403,10 +412,83 @@ class Kabu4399Crawler:
             element = vals[2]
             kind = vals[3]
             power = _to_int(vals[4])
-            pp = _to_int(vals[5])
+            # vals[5] 是 PP，已弃用
             desc = vals[6]
-            skills.append(SkillRow(name, level, element, kind, power, pp, desc))
+            skills.append(SkillRow(name, level, element, kind, power, desc))
         return skills
+
+    # ---- 获取渠道解析（启发式）----
+    def _parse_acquisition_info(self) -> Tuple[Optional[str], Optional[bool], Optional[str]]:
+        """
+        返回 (type, new_type, method)
+        - type：归类（可捕捉宠物 / BOSS宠物 / 活动获取宠物 / 兑换 / 商店 / 任务 / 合成 / 其它）
+        - new_type：当前是否可获取（True/False/None 不确定）
+        - method：页面原文（“获得方式/分布地/捕捉地点/活动”行或段落）
+        """
+        # 先拼出整页可读文本
+        page_texts: List[str] = []
+        for ele in self.sp.eles('t:table, t:p, t:div, t:li'):
+            txt = _clean(ele.text)
+            if txt:
+                page_texts.append(txt)
+        page_txt = "  ".join(page_texts)
+
+        # 在表格里优先找“获得/获取/分布地/捕捉”行
+        method = None
+        for tbl in self.sp.eles('t:table'):
+            for tr in tbl.eles('t:tr'):
+                cells = [_clean(td.text) for td in tr.eles('t:td')]
+                if not cells:
+                    continue
+                row_txt = " ".join(cells)
+                if re.search(r"(获得|获取|获得方式|获得途径|分布地|捕捉|抓捕|如何获得)", row_txt):
+                    # 取该行除标题的剩余文本
+                    if len(cells) >= 2:
+                        method = " ".join(cells[1:])
+                    else:
+                        method = row_txt
+                    break
+            if method:
+                break
+        # 若表格没找到，就退化到整页关键句
+        if not method:
+            m = re.search(r"(获得方式[:：].{0,80}|分布地[:：].{0,80}|捕捉.{0,80}|活动.{0,80})", page_txt)
+            if m:
+                method = _clean(m.group())
+
+        method = method or None
+
+        # 分类规则（粗粒度）
+        t = None
+        if method:
+            if re.search(r"(寻宝罗盘|野外|地图|出现|刷新|遇|捕)", method):
+                t = "可捕捉宠物"
+            elif re.search(r"(BOSS|副本|挑战|试炼|首领|战斗掉落)", method, re.I):
+                t = "BOSS宠物"
+            elif re.search(r"(活动|节日|限时|联动|抽取|扭蛋)", method):
+                t = "活动获取宠物"
+            elif re.search(r"(兑换|商店|购买|礼盒|礼包|拍卖)", method):
+                t = "兑换/商店"
+            elif re.search(r"(任务|剧情|主线|支线)", method):
+                t = "任务获取"
+            elif re.search(r"(合成|融合|进化|无双)", method):
+                t = "超进化"
+            else:
+                t = "其它"
+
+        # 是否当前可获得：明显“绝版/下架/已结束/未开放”等为 False；常驻/可捕捉类趋向 True；其余 None
+        new_flag: Optional[bool] = None
+        text_for_judge = (method or "") + "  " + page_txt
+        if re.search(r"(绝版|已绝版|停止(获取|产出)|下架|已结束|未开放|不可获取|无法获得)", text_for_judge):
+            new_flag = False
+        elif re.search(r"(可捕捉|野外|常驻|长期|周常|日常|兑换(长期)?开放|商店(长期)?开放|随时可|任意时段)", text_for_judge):
+            new_flag = True
+        elif t in {"可捕捉宠物", "兑换/商店", "任务获取"}:
+            new_flag = True
+        elif t == "活动获取宠物" and re.search(r"(进行中|长期活动|常驻活动)", text_for_judge):
+            new_flag = True
+
+        return t, new_flag, method
 
     # ---- 推荐配招：解析 + 精选 ----
     def _parse_recommended_names(self) -> List[str]:
@@ -430,44 +512,70 @@ class Kabu4399Crawler:
                     return names
         return []
 
-    def _select_skills_from_recommend(self, rec_names: List[str], skills: List[SkillRow]) -> List[Dict[str, str]]:
-        """按推荐名在已解析技能中匹配，返回 [{name, description}, ...]（不含 PP）。"""
+    def _select_skills_from_recommend(self, rec_names: List[str], skills: List[SkillRow]) -> List[SkillRow]:
+        """
+        按推荐名在已解析技能中匹配，返回完整 SkillRow；没命中时保留一个只有 name 的占位 SkillRow。
+        """
         def norm(s: str) -> str:
             return re.sub(r"\s+", "", s or "")
 
         skill_map = {norm(s.name): s for s in skills}
-        out: List[Dict[str, str]] = []
+        out: List[SkillRow] = []
         for rec in rec_names:
             key = norm(rec)
             s = skill_map.get(key)
             if not s:
+                # 宽松包含
                 for cand in skills:
                     n = norm(cand.name)
                     if key and (key in n or n in key):
                         s = cand
                         break
             if s:
-                out.append({"name": s.name, "description": s.description})
+                out.append(s)
             else:
-                out.append({"name": rec, "description": ""})
+                # 未匹配到时，也保留一个占位，方便后续人工核对
+                out.append(SkillRow(name=rec, level=None, element="", kind="", power=None, description=""))
         return out
 
     @staticmethod
     def _six_sum(m: MonsterRow) -> int:
         return int(m.hp + m.speed + m.attack + m.defense + m.magic + m.resist)
 
-    @staticmethod
-    def _all_skills_as_selected(skills: List[SkillRow]) -> List[Dict[str, str]]:
-        """把全量技能压缩成 selected_skills（仅 name/description），过滤空名与“无”"""
-        out = []
+    def _filter_weak(self, s: SkillRow, power_threshold: int = 70) -> bool:
+        """
+        无推荐时的“弱技能过滤”：
+        - 若 kind ∈ {物理, 法术} 且 power < 阈值 且 文案不含任何特殊关键词 => 过滤
+        - kind == 特殊 一律保留
+        """
+        if (s.kind or "").strip() == "特殊":
+            return True
+        p = s.power or 0
+        if p >= power_threshold:
+            return True
+        # 威力低，看描述是否有特殊效果
+        if s.description and self.SPECIAL_KEYWORDS.search(s.description):
+            return True
+        return False
+
+    def _all_skills_as_selected(self, skills: List[SkillRow], apply_filter: bool = True) -> List[SkillRow]:
+        out: List[SkillRow] = []
         for s in skills or []:
             n = (s.name or "").strip()
             if not n or n == "无":
                 continue
-            out.append({"name": n, "description": (s.description or "").strip()})
+            if (not apply_filter) or self._filter_weak(s):
+                out.append(s)
         return out
 
     # ---------- DB <-> 抓取模型 互转 ----------
+    @staticmethod
+    def _skill_to_dict(s: SkillRow) -> Dict[str, object]:
+        return {
+            "name": s.name, "level": s.level, "element": s.element, "kind": s.kind,
+            "power": s.power, "description": s.description
+        }
+
     def _to_db_model(self, m: MonsterRow) -> Dict[str, object]:
         return {
             "name": m.name,
@@ -480,15 +588,20 @@ class Kabu4399Crawler:
             "resist": m.resist,
             "source_url": m.source_url,
             "img_url": m.img_url,
+            # 获取渠道
+            "acquire_type": m.type,
+            "is_obtainable": m.new_type,
+            "acquire_method": m.method,
+            # 精选
             "recommended_names_json": json.dumps(m.recommended_names, ensure_ascii=False),
-            "selected_skills_json": json.dumps(m.selected_skills, ensure_ascii=False),
+            "selected_skills_json": json.dumps([self._skill_to_dict(s) for s in (m.selected_skills or [])], ensure_ascii=False),
         }
 
     def _from_db_model(self, db_m: "Monster4399") -> MonsterRow:  # type: ignore
         skills = [
             SkillRow(
                 name=s.name, level=s.level, element=s.element or "", kind=s.kind or "",
-                power=s.power, pp=s.pp, description=s.description or ""
+                power=s.power, description=s.description or ""
             )
             for s in getattr(db_m, "skills", []) or []
         ]
@@ -497,9 +610,21 @@ class Kabu4399Crawler:
         except Exception:
             rec_names = []
         try:
-            selected = json.loads(db_m.selected_skills_json or "[]")
+            selected_json = json.loads(db_m.selected_skills_json or "[]")
+            selected = [
+                SkillRow(
+                    name=(it.get("name") or ""), level=it.get("level"),
+                    element=(it.get("element") or ""), kind=(it.get("kind") or ""),
+                    power=it.get("power"),
+                    description=(it.get("description") or "")
+                )
+                for it in selected_json if isinstance(it, dict)
+            ]
         except Exception:
             selected = []
+
+        if not selected:
+            selected = self._all_skills_as_selected(skills, apply_filter=True)
 
         return MonsterRow(
             name=db_m.name,
@@ -508,10 +633,13 @@ class Kabu4399Crawler:
             magic=db_m.magic, resist=db_m.resist,
             source_url=db_m.source_url,
             img_url=db_m.img_url,
-            series_names=[],  # 页面信息，不入库
+            type=getattr(db_m, "acquire_type", None),
+            new_type=getattr(db_m, "is_obtainable", None),
+            method=getattr(db_m, "acquire_method", None),
+            series_names=[],
             skills=skills,
             recommended_names=rec_names,
-            selected_skills=selected or self._all_skills_as_selected(skills),  # 兜底
+            selected_skills=selected,
         )
 
     # ---------- DB 读写 ----------
@@ -537,50 +665,24 @@ class Kabu4399Crawler:
             for k, v in data.items():
                 setattr(db_m, k, v)
 
-        # 覆盖写技能
-        # 用 delete-orphan 级联，简单做法是清空再写入
+        # 覆盖写技能（缓存用，简单粗暴）
         db_m.skills[:] = []  # type: ignore
         for s in m.skills or []:
             db_s = MonsterSkill4399(  # type: ignore
                 name=s.name, level=s.level, element=s.element, kind=s.kind,
-                power=s.power, pp=s.pp, description=s.description
+                power=s.power, description=s.description
             )
             db_m.skills.append(db_s)  # type: ignore
         sess.commit()
-
-    # ---------- 对外：按 URL 读库或抓取 ----------
-    def get_or_fetch(self, url: str, sess: Optional["Session"] = None) -> Optional[MonsterRow]:  # type: ignore
-        """
-        优先读库，库里没有则抓取并入库，最后返回 MonsterRow。
-        若项目未配置数据库，则回退为直接抓取。
-        """
-        close_after = False
-        if _DB_AVAILABLE and _SA_AVAILABLE and Base is not None and sess is None and SessionLocal is not None:
-            sess = SessionLocal()  # type: ignore
-            close_after = True
-
-        try:
-            if sess is not None:
-                cached = self._db_load(sess, url)
-                if cached:
-                    return cached
-
-            fetched = self.fetch_detail(url)
-            if fetched and sess is not None:
-                self._db_upsert(sess, fetched)
-            return fetched
-        finally:
-            if close_after and sess is not None:
-                sess.close()
 
     # ---- 页面抓取（不触库，内部使用）----
     def fetch_detail(self, url: str) -> Optional[MonsterRow]:
         """
         仅抓取解析，不访问数据库；返回“最高形态” MonsterRow：
         - 以六维和的最大值为最高形态
-        - 解析推荐配招，并在技能表中筛选出对应技能（仅 name/description）
-        - 若没有“推荐配招”或匹配结果为空，则回退为“所有技能”列表
+        - 解析推荐配招，精选技能包含完整字段；推荐缺失时回退“全部技能精简+弱技过滤”
         - 识别妖怪“系别 element”
+        - 解析“获取渠道”三件套（type/new_type/method）
         """
         if not self._get(url):
             return None
@@ -591,11 +693,11 @@ class Kabu4399Crawler:
 
         skills = self._parse_skills_table()
         rec_names = self._parse_recommended_names()
-        selected = self._select_skills_from_recommend(rec_names, skills) if rec_names else []
+        selected: List[SkillRow] = self._select_skills_from_recommend(rec_names, skills) if rec_names else []
 
-        # ---- 回退策略：没有推荐配招（或匹配不上） => 使用全量技能 ----
+        # 若无推荐或推荐匹配为空：回退为“全部技能精简 + 弱技过滤”
         if not selected:
-            selected = self._all_skills_as_selected(skills)
+            selected = self._all_skills_as_selected(skills, apply_filter=True)
 
         # 仅保留最高形态
         best = max(monsters, key=self._six_sum)
@@ -603,6 +705,12 @@ class Kabu4399Crawler:
         # 系别识别（URL -> 面包屑 -> 技能表）
         elem = self._infer_element(url, skills)
         best.element = elem
+
+        # 获取渠道
+        acq_type, acq_now, acq_method = self._parse_acquisition_info()
+        best.type = acq_type
+        best.new_type = acq_now
+        best.method = acq_method
 
         best.skills = skills
         best.recommended_names = rec_names
@@ -620,7 +728,7 @@ class Kabu4399Crawler:
         遍历所有详情页：
         - use_db_cache=True 时，优先从库按 source_url 命中返回；
           未命中则抓取 → 入库 → 返回
-        - persist 回调仍然可用（例如打印日志）
+        - persist 回调仍然可用（例如打印或写你自己的业务库）
         """
         sess: Optional["Session"] = None  # type: ignore
         if use_db_cache and _DB_AVAILABLE and SessionLocal is not None:
@@ -640,7 +748,7 @@ class Kabu4399Crawler:
                         time.sleep(random.uniform(*self.throttle_range))
                         continue
 
-                # 抓取 + 入库
+                # 抓取 + 入库（仅缓存库）
                 m = self.fetch_detail(detail_url)
                 if not m:
                     continue
@@ -664,18 +772,30 @@ class Kabu4399Crawler:
 # ---------- 示例持久化（可接你自己的入库逻辑） ----------
 def example_persist(mon: MonsterRow) -> None:
     log.info(
-        "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d",
+        "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s new=%s",
         mon.name, mon.element or "-", mon.hp, mon.attack, mon.speed,
-        len(mon.recommended_names), len(mon.selected_skills), len(mon.skills)
+        len(mon.recommended_names), len(mon.selected_skills), len(mon.skills),
+        mon.type or "-", str(mon.new_type)
     )
 
 
-# ---------- 输出裁剪 ----------
+# ---------- 输出裁剪（对下游导入/调试友好） ----------
+def _skill_public(s: SkillRow) -> Dict[str, object]:
+    return {
+        "name": s.name,
+        "level": s.level,
+        "element": s.element,
+        "kind": s.kind,
+        "power": s.power,
+        "description": s.description,
+    }
+
 def _to_public_json(m: MonsterRow) -> Dict[str, object]:
     """
     仅保留：
       - 最高形态：name, element, hp, speed, attack, defense, magic, resist
-      - selected_skills: [{name, description}]
+      - 获取渠道：type, new_type, method
+      - selected_skills: 完整字段（便于后续按 (name, element, kind, power) 做唯一）
     """
     return {
         "name": m.name,
@@ -686,7 +806,10 @@ def _to_public_json(m: MonsterRow) -> Dict[str, object]:
         "defense": m.defense,
         "magic": m.magic,
         "resist": m.resist,
-        "selected_skills": m.selected_skills,
+        "type": m.type,
+        "new_type": m.new_type,
+        "method": m.method,
+        "selected_skills": [_skill_public(s) for s in (m.selected_skills or [])],
     }
 
 
@@ -699,14 +822,12 @@ if __name__ == "__main__":
     out: List[Dict[str, object]] = []
 
     if _DB_AVAILABLE and SessionLocal is not None:
-        # 有数据库：优先读库，无则抓取并入库
-        with SessionLocal() as sess:  # type: ignore
+        with SessionLocal() as _sess:  # type: ignore
             for item in crawler.crawl_all(persist=example_persist, use_db_cache=True):
                 out.append(_to_public_json(item))
                 if len(out) >= N:
                     break
     else:
-        # 无数据库环境：纯抓取（不入库）
         for item in crawler.crawl_all(persist=example_persist, use_db_cache=False):
             out.append(_to_public_json(item))
             if len(out) >= N:
