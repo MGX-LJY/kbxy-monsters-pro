@@ -314,9 +314,10 @@ def apply_role_tags(
 ) -> None:
     """
     用新规则自动产出的 role/tags 写回 Monster。
+    - merge_tags=True 也会做“前缀标签清洗”：保留非前缀（历史自定义）标签，丢弃旧的 buf_/deb_/util_，再写入新建议
     """
     role_suggest = infer_role_for_monster(monster)
-    tags_suggest = suggest_tags_for_monster(monster)
+    tags_suggest = suggest_tags_for_monster(monster)  # 只会产出 buf_/deb_/util_
 
     # role
     if override_role_if_blank:
@@ -327,12 +328,17 @@ def apply_role_tags(
 
     # tags
     if merge_tags:
-        existed = {t.name for t in (monster.tags or []) if getattr(t, "name", None)}
-        merged = sorted({*existed, *tags_suggest})
+        existed_non_prefix = {
+            t.name for t in (monster.tags or [])
+            if getattr(t, "name", None) and not (
+                t.name.startswith("buf_") or t.name.startswith("deb_") or t.name.startswith("util_")
+            )
+        }
+        merged = sorted({*existed_non_prefix, *tags_suggest})
         monster.tags = upsert_tags(db, merged)
     else:
-        monster.tags = upsert_tags(db, tags_suggest)
-
+        # 彻底替换（仅保留本次建议）
+        monster.tags = upsert_tags(db, sorted(set(tags_suggest)))
 
 def recompute_and_autolabel(db: Session, monster: Monster) -> MonsterDerived:
     """
