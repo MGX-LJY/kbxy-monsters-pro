@@ -1,6 +1,7 @@
 # server/app/services/derive_service.py
 from __future__ import annotations
 
+import bisect
 import re
 from typing import Dict, Tuple, List, Optional
 
@@ -8,14 +9,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from ..models import Monster, MonsterDerived
-from .tags_service import extract_signals, suggest_tags_for_monster  # 定位已迁出此模块
+from .tags_service import extract_signals, suggest_tags_for_monster  # 仅用于信号与“缺前缀时的补齐”
 from .monsters_service import upsert_tags
 
 
 # ============ 基础读取 ============
 
 def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float]:
-    """只读列（hp/speed/attack/defense/magic/resist），None 当 0。"""
     hp      = float(getattr(monster, "hp", 0) or 0)
     speed   = float(getattr(monster, "speed", 0) or 0)
     attack  = float(getattr(monster, "attack", 0) or 0)
@@ -26,11 +26,6 @@ def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float
 
 
 def _skills_text(monster: Monster) -> str:
-    """
-    汇总技能名与描述文本。兼容：
-      1) monster.skills 为 Skill 列表
-      2) monster.skills 为 MonsterSkill 列表，且 .skill 指向 Skill
-    """
     parts: List[str] = []
     for item in (getattr(monster, "skills", None) or []):
         skill = getattr(item, "skill", None) or item
@@ -44,7 +39,6 @@ def _skills_text(monster: Monster) -> str:
 
 
 def _skill_powers(monster: Monster) -> List[int]:
-    """收集技能威力（int，>0）。兼容 Skill 与 MonsterSkill。"""
     out: List[int] = []
     for item in (getattr(monster, "skills", None) or []):
         skill = getattr(item, "skill", None)
@@ -65,19 +59,13 @@ def _round_int_clip(v: float, hi: int = 120) -> int:
 
 
 def _tag_codes_from_monster(monster: Monster) -> List[str]:
-    """
-    读取已落库的新前缀标签（buf_/deb_/util_）。
-    若没有，则回退到正则建议（避免“空标签”影响派生/定位）。
-    """
     raw = []
     for t in (getattr(monster, "tags", None) or []):
         name = getattr(t, "name", None) or (t if isinstance(t, str) else None)
         if isinstance(name, str):
             raw.append(name)
-    # 只要 prefix 标签
     codes = [c for c in raw if c.startswith("buf_") or c.startswith("deb_") or c.startswith("util_")]
     if not codes:
-        # 回退：用正则建议的标签（同样只保留新前缀）
         tried = suggest_tags_for_monster(monster)
         codes = [c for c in tried if c.startswith("buf_") or c.startswith("deb_") or c.startswith("util_")]
     return codes
@@ -86,11 +74,7 @@ def _tag_codes_from_monster(monster: Monster) -> List[str]:
 # ============ v2 信号抽取（只依赖：新前缀标签 + 技能文本特征） ============
 
 def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
-    """
-    基于新三类标签（buf_/deb_/util_）+ 技能文本正则提取信号。
-    不再从 tags_service 里获取“定位”，仅做信号。
-    """
-    sig = extract_signals(monster)  # 基础统计：multi_hit / first_strike / speed_up / pp_hits 等
+    sig = extract_signals(monster)
     text = _skills_text(monster)
     codes = set(_tag_codes_from_monster(monster))
 
@@ -139,7 +123,6 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     mark_or_exp = marked
 
     return {
-        # offense
         "crit_up": float(crit_up),
         "ignore_def": float(ignore_def),
         "armor_break": float(armor_break),
@@ -147,7 +130,7 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
         "res_down": float(res_down),
         "mark": float(marked),
         "multi_hit": float(multi_hit),
-        # survive/support
+
         "heal": float(heal),
         "shield": float(shield),
         "dmg_reduce": float(dmg_reduce),
@@ -156,19 +139,19 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
         "life_steal": float(life_steal),
         "def_up": float(def_up),
         "res_up": float(res_up),
-        # control
+
         "hard_cc": float(hard_cc),
         "soft_cc": float(soft_cc),
         "acc_down": float(acc_down),
         "spd_down": float(spd_down),
         "atk_down": float(atk_down),
         "mag_down": float(mag_down),
-        # tempo
+
         "first_strike": float(first_strike),
         "extra_turn": float(extra_turn),
         "speed_up": float(speed_up),
         "action_bar": float(action_bar),
-        # pp pressure
+
         "pp_hits": float(pp_hits),
         "pp_any": float(pp_any),
         "dispel_enemy": float(dispel_enemy),
@@ -178,15 +161,9 @@ def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
     }
 
 
-# ============ v2 计算公式（降低技能威力影响度） ============
+# ============ v2 计算公式（派生五系：仍然产出 0~120，不做全局依赖） ============
 
 def _offense_power_bonus(powers: List[int]) -> float:
-    """
-    只有当 Top3 平均威力达到阈值时才给少量加分：
-      - avg_top3 >= 160 → +6
-      - avg_top3 >= 150 → +3
-      - 其它 → +0
-    """
     if not powers:
         return 0.0
     top3 = sorted(powers, reverse=True)[:3]
@@ -199,18 +176,10 @@ def _offense_power_bonus(powers: List[int]) -> float:
 
 
 def compute_derived(monster: Monster) -> Dict[str, float]:
-    """
-    使用 v2 规则计算派生五维（float 版本，未四舍五入）。
-    - 技能威力：分段、极低权重，仅 150/160 档触发。
-    - Offense 内部封顶 130，最终展示仍 clip 到 120。
-    """
     hp, speed, attack, defense, magic, resist = _raw_six(monster)
     s = _detect_v2_signals(monster)
-
-    # —— 技能威力参考（分段、温和）——
     offense_power = _offense_power_bonus(_skill_powers(monster))
 
-    # 1) 攻 offense
     atk_hi = max(attack, magic)
     atk_lo = min(attack, magic)
     offense_base = 0.55 * atk_hi + 0.15 * atk_lo + 0.20 * speed
@@ -226,7 +195,6 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
     offense_raw = offense_base + offense_sig + offense_power
     offense_capped = min(130.0, offense_raw)
 
-    # 2) 生 survive
     survive_base = 0.45 * hp + 0.30 * defense + 0.25 * resist
     survive_sig = (
         10.0 * s["heal"] +
@@ -240,7 +208,6 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
     )
     survive_raw = survive_base + survive_sig
 
-    # 3) 控 control（以信号为主）
     control_raw = (
         14.0 * s["hard_cc"] +
         8.0  * s["soft_cc"] +
@@ -251,7 +218,6 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
         0.10 * speed
     )
 
-    # 4) 速 tempo
     tempo_raw = (
         1.0  * speed +
         15.0 * s["first_strike"] +
@@ -260,7 +226,6 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
         6.0  * s["action_bar"]
     )
 
-    # 5) 压 pp_pressure
     pp_pressure_raw = (
         18.0 * s["pp_any"] +
         5.0  * s["pp_hits"] +
@@ -287,31 +252,73 @@ def compute_derived_out(monster: Monster) -> Dict[str, int]:
     return _to_ints(compute_derived(monster))
 
 
-# ============ 定位（迁入本模块，使用“派生 + 标签 + 六维”严谨判定） ============
+# ============ 标准化/分位上下文（基于 MonsterDerived 样本） ============
+
+def _percentile_rank(sorted_vals: List[int], v: float) -> float:
+    """
+    百分位（0~100）。对空样本/极端值做边界处理。
+    """
+    if not sorted_vals:
+        return (v / 120.0) * 100.0  # 兜底线性缩放
+    i = bisect.bisect_left(sorted_vals, v)
+    n = len(sorted_vals)
+    # 使用 (i-0.5)/n 的插值更平滑
+    pct = ((i - 0.5) / n) if n > 0 else 0.0
+    pct = max(0.0, min(1.0, pct))
+    return pct * 100.0
+
+
+def _build_norm_ctx(db: Optional[Session]) -> Dict[str, List[int]]:
+    """
+    从数据库汇总五系有序样本，用于计算分位。db 缺失时返回空上下文（走兜底线性缩放）。
+    """
+    if not isinstance(db, Session):
+        return {k: [] for k in ["offense", "survive", "control", "tempo", "pp_pressure"]}
+    vals = {k: [] for k in ["offense", "survive", "control", "tempo", "pp_pressure"]}
+    rows = db.execute(select(
+        MonsterDerived.offense,
+        MonsterDerived.survive,
+        MonsterDerived.control,
+        MonsterDerived.tempo,
+        MonsterDerived.pp_pressure,
+    )).all()
+    for off, sur, ctl, tmp, pp in rows:
+        if off is not None: vals["offense"].append(int(off))
+        if sur is not None: vals["survive"].append(int(sur))
+        if ctl is not None: vals["control"].append(int(ctl))
+        if tmp is not None: vals["tempo"].append(int(tmp))
+        if pp  is not None: vals["pp_pressure"].append(int(pp))
+    for k in vals:
+        vals[k].sort()
+    return vals
+
+
+def _normalize_derived(derived_int: Dict[str, int], norm_ctx: Dict[str, List[int]]) -> Dict[str, float]:
+    """
+    将 0~120 的派生整数映射到 0~100 的分位百分位。
+    """
+    out: Dict[str, float] = {}
+    for k, v in derived_int.items():
+        samples = norm_ctx.get(k, []) if norm_ctx else []
+        out[k] = round(_percentile_rank(samples, float(v)), 2)
+    return out
+
+
+# ============ 定位（用分位后的五系 + 信号 + 六维） ============
 
 def _category_scores(
     monster: Monster,
-    derived_int: Dict[str, int],
+    derived_pctl: Dict[str, float],   # 注意：这里使用分位后的 0~100
     sig: Dict[str, float],
 ) -> Dict[str, float]:
-    """
-    为各定位计算一个“鲜明度分数”，用于比较。
-    规则：
-      - 强控优先：hard_cc 明确、control 高 → 控制
-      - 强奶辅优先：治疗/护盾/净化/免疫 等 + survive 优 → 辅助
-      - 纯主攻：offense 高 + 穿盾/暴击/多段/破防 等 → 主攻
-      - 坦克：survive 高 + 高 HP/RES + 减伤/免疫/护盾 → 坦克
-      - 通用：分数都不够或差距小
-    """
-    hp, speed, attack, defense, magic, resist = _raw_six(monster)
+    hp, _speed, _attack, _defense, _magic, resist = _raw_six(monster)
 
-    offense  = float(derived_int.get("offense", 0))
-    survive  = float(derived_int.get("survive", 0))
-    control  = float(derived_int.get("control", 0))
-    tempo    = float(derived_int.get("tempo", 0))
-    pp_press = float(derived_int.get("pp_pressure", 0))
+    offense  = float(derived_pctl.get("offense", 0.0))
+    survive  = float(derived_pctl.get("survive", 0.0))
+    control  = float(derived_pctl.get("control", 0.0))
+    tempo    = float(derived_pctl.get("tempo", 0.0))
+    pp_press = float(derived_pctl.get("pp_pressure", 0.0))
 
-    # 信号简化聚合
     dps_sig   = (2*sig["crit_up"] + 2*sig["ignore_def"] + 1.5*sig["multi_hit"]
                  + 1.2*sig["def_down"] + 1.2*sig["res_down"] + 1.2*sig["armor_break"] + 1.0*sig["mark"])
     ctrl_sig  = (4*sig["hard_cc"] + 2.5*sig["soft_cc"] + 2*sig["spd_down"] + 2*sig["acc_down"]
@@ -319,13 +326,13 @@ def _category_scores(
     supp_sig  = (3.5*sig["heal"] + 3.5*sig["shield"] + 2.5*sig["cleanse_self"] + 2.5*sig["immunity"]
                  + 1.2*sig["def_up"] + 1.2*sig["res_up"] + 1.2*sig["dmg_reduce"])
 
-    # 各定位分
-    score_offense = 1.00*offense + 0.35*tempo + 8.0*dps_sig - 0.20*control - 0.15*supp_sig
-    score_control = 1.10*control + 0.20*tempo + 10.0*sig["hard_cc"] + 3.5*sig["soft_cc"] + 2.0*(sig["spd_down"]+sig["acc_down"]) - 0.15*offense
-    score_support = 0.90*survive + 0.25*tempo + 8.0*(sig["heal"]+sig["shield"]) + 5.0*(sig["cleanse_self"]+sig["immunity"]) + 1.5*(sig["def_up"]+sig["res_up"]) - 0.30*offense
-    score_tank    = 1.05*survive + 0.15*tempo + 5.0*(sig["shield"]+sig["dmg_reduce"]) + 2.0*sig["immunity"] \
-                    + (5.0 if hp >= 115 else 0.0) + (5.0 if resist >= 115 else 0.0) - 0.40*offense \
-                    + 0.5*pp_press  # 小幅拉开与“压制型辅助”的差异
+    # 在“分位空间”的综合得分
+    score_offense = 1.00*offense + 0.35*tempo + 8.0*dps_sig - 0.15*control - 0.10*supp_sig
+    score_control = 1.05*control + 0.20*tempo + 10.0*sig["hard_cc"] + 3.5*sig["soft_cc"] + 2.0*(sig["spd_down"]+sig["acc_down"]) - 0.10*offense
+    score_support = 0.95*survive + 0.20*tempo + 8.0*(sig["heal"]+sig["shield"]) + 5.0*(sig["cleanse_self"]+sig["immunity"]) + 1.5*(sig["def_up"]+sig["res_up"]) - 0.20*offense
+    score_tank    = 1.00*survive + 0.10*tempo + 5.0*(sig["shield"]+sig["dmg_reduce"]) + 2.0*sig["immunity"] \
+                    + (3.5 if hp >= 115 else 0.0) + (3.5 if resist >= 115 else 0.0) - 0.30*offense \
+                    + 0.4*pp_press
 
     return {
         "主攻": score_offense,
@@ -335,79 +342,76 @@ def _category_scores(
     }
 
 
-def _decide_role(scores: Dict[str, float], derived_int: Dict[str, int], sig: Dict[str, float]) -> Tuple[str, float, str]:
+def _decide_role(
+    scores: Dict[str, float],
+    derived_pctl: Dict[str, float],
+    sig: Dict[str, float]
+) -> Tuple[str, float, str]:
     """
-    根据分数 + 规则决策最终定位，返回 (role, confidence, reason)。
-    优先级：强控 > 强奶辅 > 主攻 > 坦克 > 通用。
+    在分位空间决策最终定位，返回 (role, confidence, reason)。
+    强规则（更鲜明） > 常规比较 > 小差距优先级。
     """
-    # 强规则优先（鲜明判定）
-    if sig["hard_cc"] >= 1 and derived_int.get("control", 0) >= 70:
-        top_role = "控制"
-        reason = "硬控存在且控制分高"
-        confidence = 0.9
-        return top_role, confidence, reason
+    # 强规则（分位阈值避免固定偏置）
+    if sig["hard_cc"] >= 1 and derived_pctl.get("control", 0.0) >= 75.0:
+        return "控制", 0.9, "硬控存在且控制分位≥P75"
 
-    support_trigger = (sig["heal"] + sig["shield"] + sig["cleanse_self"] + sig["immunity"]) >= 2 and derived_int.get("survive", 0) >= 70
+    support_trigger = (sig["heal"] + sig["shield"] + sig["cleanse_self"] + sig["immunity"]) >= 2 \
+                      and derived_pctl.get("survive", 0.0) >= 70.0
     if support_trigger:
-        # 如果同时 offense 很高且 dps 信号强，则稍降置信度但仍以“辅助”为主（满足“更鲜明”）
-        top_role = "辅助"
-        reason = "治疗/护盾/净化/免疫信号明显且生存分高"
-        confidence = 0.8 if derived_int.get("offense", 0) < 85 else 0.7
-        return top_role, confidence, reason
+        conf = 0.8 if derived_pctl.get("offense", 0.0) < 85.0 else 0.7
+        return "辅助", conf, "奶辅信号≥2 且生存分位≥P70"
 
-    # 常规：按分数比较 + 阈值/差距
+    # 常规比较
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    (r1, s1), (r2, s2) = ordered[0], ordered[1] if len(ordered) > 1 else (("通用", 0.0))
+    (r1, s1), (r2, s2) = ordered[0], (ordered[1] if len(ordered) > 1 else ("通用", 0.0))
     margin = s1 - s2
 
-    # 阈值：分数不够“鲜明”或差距太小 → 通用
+    # 分数太平、均衡 → 通用
     if s1 < 55 and margin < 10:
-        return "通用", 0.55, "各项分数均不突出"
+        return "通用", 0.55, "各项分位与信号均不够突出"
 
-    # 细化：当“主攻/坦克”相近时，用派生值与关键信号打破僵局
-    tie_break_order = ["控制", "辅助", "主攻", "坦克"]  # 规则中的优先级
+    # 小差距：按优先级打破（强控 > 强辅 > 主攻 > 坦克）
+    tie_break_order = ["控制", "辅助", "主攻", "坦克"]
     if margin < 6:
-        # 小差距时，按优先级靠前的类别倾斜（如果它在前两名中）
         for cat in tie_break_order:
             if cat in (r1, r2):
-                r1 = cat
-                break
-        reason = f"分差较小，按优先级判定为{r1}"
-        confidence = 0.62
-        return r1, confidence, reason
+                return cat, 0.62, f"分差小（{round(margin,2)}），按优先级判定为{cat}"
 
-    # 正常选择
-    confidence = max(0.6, min(0.95, margin / max(1.0, s1)))  # 简易置信度：差距/最高分，裁剪至 [0.6,0.95]
-    return r1, confidence, f"类别分对比：{r1}={round(s1,1)} 高于 {r2}={round(s2,1)}"
+    # 正常：差距越大，置信度越高（保守裁剪）
+    confidence = max(0.6, min(0.95, margin / max(1.0, abs(s1))))
+    return r1, confidence, f"类别分对比：{r1}={round(s1,1)} 高于 {r2}={round(s2,1)}（Δ={round(margin,1)}）"
 
 
-def infer_role_for_monster(monster: Monster) -> str:
+def infer_role_for_monster(monster: Monster, db: Optional[Session] = None) -> str:
     """
-    对外主函数：仅返回角色字符串（兼容老接口）。
-    实际决策使用“派生五维 + 标签信号 + 六维”综合打分。
+    对外主函数：仅返回角色字符串（兼容旧签名，可不传 db）。
+    若提供 db，则先基于 MonsterDerived 样本做分位标准化。
     """
-    # 使用 int 版派生（若未计算，compute_derived_out 会即时算）
     d_int = compute_derived_out(monster)
     sig = _detect_v2_signals(monster)
-    scores = _category_scores(monster, d_int, sig)
-    role, _conf, _reason = _decide_role(scores, d_int, sig)
+    norm = _build_norm_ctx(db)
+    d_p = _normalize_derived(d_int, norm)
+    scores = _category_scores(monster, d_p, sig)
+    role, _conf, _reason = _decide_role(scores, d_p, sig)
     return role
 
 
-def infer_role_details(monster: Monster) -> Dict[str, object]:
+def infer_role_details(monster: Monster, db: Optional[Session] = None) -> Dict[str, object]:
     """
-    扩展版：返回 role / confidence / reason / scores（便于派生接口回显）。
-    不强制持久化这些扩展字段。
+    扩展版：返回 role / confidence / reason / scores，并包含派生分位。
     """
     d_int = compute_derived_out(monster)
     sig = _detect_v2_signals(monster)
-    scores = _category_scores(monster, d_int, sig)
-    role, conf, reason = _decide_role(scores, d_int, sig)
+    norm = _build_norm_ctx(db)
+    d_p = _normalize_derived(d_int, norm)
+    scores = _category_scores(monster, d_p, sig)
+    role, conf, reason = _decide_role(scores, d_p, sig)
     return {
         "role": role,
         "confidence": round(float(conf), 3),
         "reason": reason,
         "scores": {k: round(float(v), 1) for k, v in scores.items()},
+        "derived_percentile": d_p,   # 0~100
     }
 
 
@@ -437,10 +441,6 @@ def compute_and_persist(db: Session, monster: Monster) -> MonsterDerived:
 
 
 def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
-    """
-    若 monster.tags 缺少新前缀标签（buf_/deb_/util_），用正则建议补齐并落库。
-    保持“已有的非新前缀标签”不丢失。
-    """
     cur = [getattr(t, "name", None) or (t if isinstance(t, str) else None) for t in (monster.tags or [])]
     cur = [c for c in cur if isinstance(c, str)]
     has_prefix = any(c.startswith(("buf_", "deb_", "util_")) for c in cur)
@@ -458,19 +458,17 @@ def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
 
 def recompute_and_autolabel(db: Session, monster: Monster) -> MonsterDerived:
     """
-    新流程：
-      1) 计算并写入派生五维（compute_and_persist）
-      2) 确保新前缀标签存在（缺则用正则补齐，不额外覆盖已有）
-      3) 基于 派生 + 标签 + 六维 做定位，写回 monster.role
-      4) 兼容：把建议定位挂到 md.role_suggested（仅返回时使用，非强制持久化列）
+    1) 计算派生 0~120（写 MonsterDerived）
+    2) 若缺新前缀标签，用正则补齐并写库（不覆盖已有非前缀）
+    3) 基于“分位后的五系 + 信号 + 六维”做定位，写回 monster.role
+    4) 将建议定位附到 md 的动态属性供前端读取（role_suggested / role_confidence / role_reason）
     """
-    md = compute_and_persist(db, monster)          # 1) 派生
-    _ensure_prefix_tags(db, monster)               # 2) 缺则补标签
+    md = compute_and_persist(db, monster)
+    _ensure_prefix_tags(db, monster)
 
-    details = infer_role_details(monster)          # 3) 定位
+    details = infer_role_details(monster, db=db)   # <—— 传入 db 以启用分位标准化
     monster.role = details["role"]
 
-    # 4) 兼容前端：把 role_suggested 附在派生对象上（动态属性，序列化端自行处理）
     setattr(md, "role_suggested", details["role"])
     setattr(md, "role_confidence", details.get("confidence"))
     setattr(md, "role_reason", details.get("reason"))
