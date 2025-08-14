@@ -93,14 +93,65 @@ def _iso_now() -> str:
     return datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
 def _backup_file(path: str) -> Optional[str]:
-    """在写入任何 JSON 前，做一份带时间戳的 .bak 备份"""
+    """
+    在写入任何 JSON 前做备份，并执行以下策略：
+    - 同目录下最多保留最近 10 份 .bak- 时间戳 备份（滚动删除更旧的，checkpoint 不计入）。
+    - 维护一个旁路计数文件 <file>.ver；每触发一次备份版本号 +1。
+    - 每 50 个版本，将一个“里程碑”快照保存到单独文件夹 <stem>_checkpoints/ 下，不做回收。
+    返回新备份文件路径（或 None 如果源文件不存在）。
+    """
     try:
         p = Path(path)
         if not p.exists():
             return None
+
+        # 版本号文件
+        ver_file = p.with_suffix(p.suffix + ".ver")
+        try:
+            ver = int((ver_file.read_text(encoding="utf-8").strip() or "0"))
+        except Exception:
+            ver = 0
+        ver += 1
+        try:
+            ver_file.write_text(str(ver), encoding="utf-8")
+        except Exception:
+            # 版本文件不影响主流程
+            pass
+
         ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        bak = p.with_suffix(p.suffix + f".bak-{ts}")
-        bak.write_bytes(p.read_bytes())
+
+        # 常规备份（同目录，滚动保留 10 份）
+        bak = p.with_suffix(p.suffix + f".bak-{ts}-v{ver:04d}")
+        try:
+            bak.write_bytes(p.read_bytes())
+        except Exception:
+            return None
+
+        # 清理超出 10 份的常规备份
+        try:
+            backups = sorted(
+                [x for x in p.parent.glob(p.name + ".bak-*") if x.is_file()],
+                key=lambda x: x.stat().st_mtime,
+                reverse=True,
+            )
+            for old in backups[10:]:
+                try:
+                    old.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 每 50 版本做一次 checkpoint 到单独目录
+        if ver % 50 == 0:
+            ckpt_dir = p.parent / f"{p.stem}_checkpoints"
+            try:
+                _ensure_dir(str(ckpt_dir))
+                ckpt_path = ckpt_dir / f"{p.stem}.v{ver:04d}-{ts}{p.suffix}"
+                ckpt_path.write_bytes(p.read_bytes())
+            except Exception:
+                pass
+
         return str(bak)
     except Exception:
         return None
@@ -587,13 +638,19 @@ NEW_TAG_MINER_SYSTEM_PROMPT = (
 
 def _build_ai_payload(text: str) -> Dict[str, Any]:
     load_catalog()
-    bc = ", ".join(_CACHE.categories.get("buff", []))
-    dc = ", ".join(_CACHE.categories.get("debuff", []))
-    sc = ", ".join(_CACHE.categories.get("special", []))
+    bc = ", ".join(_CACHE.categories.get("buff", []) or [])
+    dc = ", ".join(_CACHE.categories.get("debuff", []) or [])
+    sc = ", ".join(_CACHE.categories.get("special", []) or [])
     txt = (text or "").strip()
     if len(txt) > 8000:
         txt = txt[:8000]
-    system = AI_SYSTEM_PROMPT.format(buff_codes=bc, debuff_codes=dc, special_codes=sc)
+    # 用 replace 避免提示词中的 JSON 花括号被 str.format 误解析
+    system = (
+        AI_SYSTEM_PROMPT
+        .replace("{buff_codes}", bc)
+        .replace("{debuff_codes}", dc)
+        .replace("{special_codes}", sc)
+    )
     return {
         "url": DEEPSEEK_API_URL,
         "payload": {
