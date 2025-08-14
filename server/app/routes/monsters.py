@@ -1,6 +1,6 @@
 # server/app/routes/monsters.py
 from typing import Optional, List, Tuple, Dict
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
@@ -65,20 +65,92 @@ def list_api(
     q: Optional[str] = None,
     element: Optional[str] = None,
     role: Optional[str] = None,
+    # 旧：单标签
     tag: Optional[str] = None,
+    # 新：多标签筛选（向后兼容）
+    tags_all: Optional[List[str]] = Query(None, description="AND：必须同时包含的标签（可重复）"),
+    tags_any: Optional[List[str]] = Query(None, description="OR：任意包含的标签之一（可重复）"),
+    tag_mode: Optional[str] = None,  # 当仅提供 tags（数组）时的模式 and/or
+    # 预留分组（当前每组单选也兼容）
+    buf_tags_all: Optional[List[str]] = Query(None),
+    buf_tags_any: Optional[List[str]] = Query(None),
+    deb_tags_all: Optional[List[str]] = Query(None),
+    deb_tags_any: Optional[List[str]] = Query(None),
+    util_tags_all: Optional[List[str]] = Query(None),
+    util_tags_any: Optional[List[str]] = Query(None),
+    # 可选：如果前端以后直接传 tags=[]
+    tags: Optional[List[str]] = Query(None),
     sort: Optional[str] = "updated_at",
     order: Optional[str] = "desc",
     page: int = 1,
     page_size: int = 20,
     db: Session = Depends(get_db),
 ):
+    """
+    支持三种方式：
+    1) 旧参数：tag=xxx（单标签）
+    2) 新参数：tags_all=...（可重复，AND）/ tags_any=...（OR）
+    3) 组合/分组：buf_tags_* / deb_tags_* / util_tags_*；以及 tags[]=... + tag_mode=and|or
+    """
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
 
-    items, total = list_monsters(
-        db, q=q, element=element, role=role, tag=tag,
-        sort=sort, order=order, page=page, page_size=page_size
+    # —— 汇总多标签参数（兼容分组）—— #
+    resolved_tags_all: List[str] = []
+    resolved_tags_any: List[str] = []
+
+    for arr in (tags_all, buf_tags_all, deb_tags_all, util_tags_all):
+        if arr:
+            resolved_tags_all.extend([t for t in arr if isinstance(t, str) and t])
+
+    for arr in (tags_any, buf_tags_any, deb_tags_any, util_tags_any):
+        if arr:
+            resolved_tags_any.extend([t for t in arr if isinstance(t, str) and t])
+
+    # 若仅提供了 tags=[]，根据 tag_mode 落到 AND/OR
+    if tags and not (resolved_tags_all or resolved_tags_any):
+        if (tag_mode or "").lower() == "or":
+            resolved_tags_any.extend(tags)
+        else:
+            resolved_tags_all.extend(tags)
+
+    # —— 组装调用参数（尽量向后兼容旧的 list_monsters 签名）—— #
+    base_kwargs = dict(
+        db=db,
+        q=q,
+        element=element,
+        role=role,
+        sort=sort,
+        order=order,
+        page=page,
+        page_size=page_size,
     )
+
+    # 优先使用新多标签；否则回退到旧 tag
+    if resolved_tags_all:
+        base_kwargs["tags_all"] = resolved_tags_all
+    if resolved_tags_any:
+        base_kwargs["tags_any"] = resolved_tags_any
+    if (not resolved_tags_all and not resolved_tags_any) and tag:
+        base_kwargs["tag"] = tag
+
+    # —— 调用服务：若后端未升级签名，降级使用旧参数 —— #
+    try:
+        items, total = list_monsters(**base_kwargs)  # 新版服务应支持 tags_all/tags_any
+    except TypeError:
+        # 旧版回退：只能单标签；多标签时尽可能退化为首个标签
+        legacy_tag = None
+        if resolved_tags_all:
+            legacy_tag = resolved_tags_all[0]
+        elif resolved_tags_any:
+            legacy_tag = resolved_tags_any[0]
+        else:
+            legacy_tag = tag
+
+        items, total = list_monsters(
+            db, q=q, element=element, role=role, tag=legacy_tag,
+            sort=sort, order=order, page=page, page_size=page_size
+        )
 
     # 预加载集合（注意：不能对 association_proxy 做 loader）
     ids = [m.id for m in items]
@@ -418,7 +490,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
             # 关联级字段
             if s_in and hasattr(ms, "selected") and (s_in.selected is not None):
                 ms.selected = bool(s_in.selected)
-            if s_in and hasattr(ms, "description") and (s_in.description or "").strip():
+            if s_in and hasattr(ms, "description") and (s_in.description or "").trim():
                 ms.description = s_in.description.strip()
             db.add(ms)
 

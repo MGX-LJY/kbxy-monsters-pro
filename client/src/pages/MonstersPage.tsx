@@ -25,6 +25,7 @@ type WarehouseStatsDTO = { warehouse_total?: number; total?: number }
 type SortKey = 'updated_at' | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure'
 
 const BTN_FX = 'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
+const LIMIT_TAGS_PER_CELL = 3
 
 // 文本小工具
 const isMeaningfulDesc = (t?: string) => {
@@ -48,45 +49,30 @@ const bucketizeTags = (tags: string[] | undefined): TagBuckets => {
   }
   return b
 }
-
-// —— 标签 emoji（保持不变） —— //
 const tagEmoji = (code: string) =>
   code.startsWith('buf_') ? '🟢' : code.startsWith('deb_') ? '🔴' : code.startsWith('util_') ? '🟣' : ''
 
-
 // —— 完整元素映射（code -> 中文），以及选项数组 —— //
 const ELEMENTS: Record<string, string> = {
-  huoxi: '火系',
-  jinxi: '金系',
-  muxi: '木系',
-  shuixi: '水系',
-  tuxi: '土系',
-  yixi: '翼系',
-  guaixi: '怪系',
-  moxi: '魔系',
-  yaoxi: '妖系',
-  fengxi: '风系',
-  duxi: '毒系',
-  leixi: '雷系',
-  huanxi: '幻系',
-  bing: '冰系',
-  lingxi: '灵系',
-  jixie: '机械',
-  huofengxi: '火风系',
-  mulingxi: '木灵系',
-  tuhuanxi: '土幻系',
-  shuiyaoxi: '水妖系',
-  yinxi: '音系',
-  shengxi: '圣系',
+  huoxi: '火系', jinxi: '金系', muxi: '木系', shuixi: '水系', tuxi: '土系', yixi: '翼系',
+  guaixi: '怪系', moxi: '魔系', yaoxi: '妖系', fengxi: '风系', duxi: '毒系', leixi: '雷系',
+  huanxi: '幻系', bing: '冰系', lingxi: '灵系', jixie: '机械', huofengxi: '火风系',
+  mulingxi: '木灵系', tuhuanxi: '土幻系', shuiyaoxi: '水妖系', yinxi: '音系', shengxi: '圣系',
 }
-const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS))) // 去重后的中文选项
+const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
 
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
   const [element, setElement] = useState('')           // 元素筛选（中文）
   const [acqType, setAcqType] = useState('')           // 获取途径
-  const [tag, setTag] = useState('')                   // 单一 tag 筛选
+
+  // 三组标签（替代原单一 tag）
+  const [tagBuf, setTagBuf] = useState('')
+  const [tagDeb, setTagDeb] = useState('')
+  const [tagUtil, setTagUtil] = useState('')
+  const selectedTags = useMemo(() => [tagBuf, tagDeb, tagUtil].filter(Boolean) as string[], [tagBuf, tagDeb, tagUtil])
+
   const [role, setRole] = useState('')
   const [sort, setSort] = useState<SortKey>('updated_at')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
@@ -168,18 +154,15 @@ export default function MonstersPage() {
     }
   }
 
-  // ====== 新增：从后端加载标签 i18n（code -> 中文），无该接口时兜底空对象 ======
+  // ====== 标签 i18n（code -> 中文），无接口时兜底空对象 ======
   const tagI18n = useQuery({
     queryKey: ['tag_i18n'],
     queryFn: async () => {
       try {
-        // 推荐的轻量接口：仅返回 i18n 映射
         const r1 = await api.get('/tags/i18n')
-        // 允许后端返回 { i18n: {...} } 或直接返回 {code:label}
         return (r1.data?.i18n || r1.data || {}) as Record<string, string>
       } catch {
         try {
-          // 兜底：若只提供了 catalog，也尝试读取里面的 i18n
           const r2 = await api.get('/tags/catalog')
           return (r2.data?.i18n || {}) as Record<string, string>
         } catch {
@@ -195,32 +178,7 @@ export default function MonstersPage() {
       ? (tagI18n.data as any)[code]
       : code
 
-  // 列表 & 基础数据（修复“获取途径”筛选：后端参数冗余 + 前端兜底过滤）
-  const list = useQuery({
-    queryKey: ['monsters', { q, element, tag, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable }],
-    queryFn: async () => {
-      const endpoint = warehouseOnly ? '/warehouse' : '/monsters'
-      return (await api.get(endpoint, {
-        params: {
-          q: q || undefined,
-          element: element || undefined,
-          tag: tag || undefined,
-          role: role || undefined,
-          // 同时传递多种可能字段，提升兼容性
-          type: acqType || undefined,
-          acq_type: acqType || undefined,
-          acquire_type: acqType || undefined,
-          type_contains: acqType || undefined,
-          new_type: onlyGettable ? true : undefined,
-          sort,
-          order,
-          page,
-          page_size: pageSize
-        }
-      })).data as MonsterListResp
-    }
-  })
-
+  // 所有标签计数（来自后端；不可用时用当前页兜底）
   const tags = useQuery({
     queryKey: ['tags'],
     queryFn: async () => {
@@ -235,6 +193,59 @@ export default function MonstersPage() {
       }
     }
   })
+
+    const list = useQuery({
+    queryKey: ['monsters', {
+      q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable
+    }],
+    queryFn: async () => {
+      const endpoint = warehouseOnly ? '/warehouse' : '/monsters'
+      const params: any = {
+        q: q || undefined,
+        element: element || undefined,
+        role: role || undefined,
+        // 获取途径多口径
+        type: acqType || undefined,
+        acq_type: acqType || undefined,
+        acquire_type: acqType || undefined,
+        type_contains: acqType || undefined,
+        new_type: onlyGettable ? true : undefined,
+        sort, order, page, page_size: pageSize,
+      }
+      if (selectedTags.length >= 2) params.tags_all = selectedTags
+      else if (selectedTags.length === 1) params.tag = selectedTags[0]
+
+      return (await api.get(endpoint, { params })).data as MonsterListResp
+    }
+  })
+
+  // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
+  const localTagCounts: TagCount[] = useMemo(() => {
+    if (tags.data && tags.data.length > 0) return tags.data
+    const map = new Map<string, number>()
+    for (const m of (list.data?.items || [])) {
+      for (const t of ((m as any).tags || [])) {
+        if (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_')) {
+          map.set(t, (map.get(t) || 0) + 1)
+        }
+      }
+    }
+    return Array.from(map.entries()).map(([name, count]) => ({ name, count }))
+  }, [tags.data, list.data])
+
+  // 将计数拆成三组并排序（count desc + i18n asc）
+  const { bufCounts, debCounts, utilCounts } = useMemo(() => {
+    const source = (tags.data && tags.data.length > 0) ? tags.data : localTagCounts
+    const sortFn = (a: TagCount, b: TagCount) => {
+      if ((b.count || 0) !== (a.count || 0)) return (b.count || 0) - (a.count || 0)
+      const la = tagLabel(a.name), lb = tagLabel(b.name)
+      return String(la).localeCompare(String(lb), 'zh')
+    }
+    const buf = source.filter(t => t.name.startsWith('buf_')).sort(sortFn)
+    const deb = source.filter(t => t.name.startsWith('deb_')).sort(sortFn)
+    const util = source.filter(t => t.name.startsWith('util_')).sort(sortFn)
+    return { bufCounts: buf, debCounts: deb, utilCounts: util }
+  }, [tags.data, localTagCounts, tagI18n.data])
 
   const roles = useQuery({
     queryKey: ['roles'],
@@ -298,20 +309,6 @@ export default function MonstersPage() {
     load()
     return () => { stopped = true }
   }, [fixMode, list.data, page])
-
-  // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
-  const localTagCounts: TagCount[] = useMemo(() => {
-    if (tags.data && tags.data.length > 0) return tags.data
-    const map = new Map<string, number>()
-    for (const m of (list.data?.items || [])) {
-      for (const t of ((m as any).tags || [])) {
-        if (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_')) {
-          map.set(t, (map.get(t) || 0) + 1)
-        }
-      }
-    }
-    return Array.from(map.entries()).map(([name, count]) => ({ name, count }))
-  }, [tags.data, list.data])
 
   // —— 展示用六维 —— //
   const showStats = selected ? {
@@ -381,7 +378,6 @@ export default function MonstersPage() {
     const fd = new FormData()
     fd.append('file', f)
     try {
-      // 连续兜底，避免 404
       try {
         await api.post('/api/v1/import/monsters_csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
       } catch {
@@ -401,17 +397,15 @@ export default function MonstersPage() {
   }
 
   const exportCSV = async () => {
-    const res = await api.get('/export/monsters.csv', {
-      params: {
-        q: q || undefined, element: element || undefined, tag: tag || undefined, role: role || undefined,
-        // 获取途径筛选参数一并传递
-        type: acqType || undefined,
-        acq_type: acqType || undefined,
-        new_type: onlyGettable ? true : undefined,
-        sort, order
-      },
-      responseType: 'blob'
-    })
+    const params: any = {
+      q: q || undefined, element: element || undefined, role: role || undefined,
+      type: acqType || undefined, acq_type: acqType || undefined,
+      new_type: onlyGettable ? true : undefined, sort, order
+    }
+    if (selectedTags.length >= 2) params.tags_all = selectedTags
+    else if (selectedTags.length === 1) params.tag = selectedTags[0]
+
+    const res = await api.get('/export/monsters.csv', { params, responseType: 'blob' })
     const url = window.URL.createObjectURL(res.data)
     const a = document.createElement('a')
     a.href = url; a.download = `monsters_${Date.now()}.csv`; a.click()
@@ -582,19 +576,21 @@ export default function MonstersPage() {
     let total = 0
     const ids: number[] = []
     while (true) {
-      const resp = await api.get(endpoint, {
-        params: {
-          q: q || undefined,
-          element: element || undefined,
-          tag: tag || undefined,
-          role: role || undefined,
-          type: acqType || undefined,
-          new_type: onlyGettable ? true : undefined,
-          sort, order,
-          page: pageNo,
-          page_size: pageSizeFetch
-        }
-      })
+      const params: any = {
+        q: q || undefined,
+        element: element || undefined,
+        role: role || undefined,
+        type: acqType || undefined,
+        acq_type: acqType || undefined,
+        new_type: onlyGettable ? true : undefined,
+        sort, order,
+        page: pageNo,
+        page_size: pageSizeFetch
+      }
+      if (selectedTags.length >= 2) params.tags_all = selectedTags
+      else if (selectedTags.length === 1) params.tag = selectedTags[0]
+
+      const resp = await api.get(endpoint, { params })
       const data = resp.data as MonsterListResp
       const arr = (data.items as any[]) || []
       ids.push(...arr.map(x => x.id))
@@ -602,20 +598,16 @@ export default function MonstersPage() {
       if (arr.length === 0 || ids.length >= total) break
       pageNo += 1
     }
-    // 去重
     return Array.from(new Set(ids))
   }
 
   // —— 一键 AI 打标签（真实进度版） —— //
   const aiTagBatch = async () => {
-    // 1) 计算目标 ID 集
     let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
     if (!targetIds.length) return alert('当前没有可处理的记录')
 
-    // 2) 显示进度遮罩
     setOverlay({ show: true, title: 'AI 打标签进行中…', sub: '正在分析', total: targetIds.length, done: 0, ok: 0, fail: 0 })
 
-    // 3) 逐条调用（带兜底：retag_ai → retag）
     let okCount = 0
     let failCount = 0
     try {
@@ -634,7 +626,6 @@ export default function MonstersPage() {
         }
       }
 
-      // 刷新视图
       await list.refetch()
       if (selected) {
         const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
@@ -683,9 +674,7 @@ export default function MonstersPage() {
     }
   }
 
-  // 元素选项（改为完整）
   const elementOptions = elementOptionsFull
-  // 获取途径选项（与后端/爬虫归类一致）
   const acquireTypeOptions = ['可捕捉宠物','BOSS宠物','活动获取宠物','兑换/商店','任务获取','超进化','其它']
 
   // —— 批量加入/移出仓库 —— //
@@ -715,21 +704,26 @@ export default function MonstersPage() {
   // 计算进度百分比
   const progressPct = overlay.total ? Math.floor(((overlay.done || 0) / overlay.total) * 100) : null
 
-  // —— 列表前端兜底过滤（获取途径 + 修复妖怪） —— //
+  // —— 列表前端兜底过滤（获取途径 + 多标签 AND + 修复妖怪） —— //
   const filteredItems = useMemo(() => {
     let arr = (list.data?.items as any[]) || []
     if (acqType) {
       arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
     }
+    if (selectedTags.length > 0) {
+      arr = arr.filter(m => {
+        const set = new Set<string>((m.tags || []) as string[])
+        return selectedTags.every(t => set.has(t))
+      })
+    }
     if (fixMode) {
       arr = arr.filter(m => {
         const c = skillCountMap[m.id]
-        // 缺计数时暂不展示，等计数完成
         return typeof c === 'number' ? (c === 0 || c > 5) : false
       })
     }
     return arr
-  }, [list.data, acqType, fixMode, skillCountMap])
+  }, [list.data, acqType, selectedTags, fixMode, skillCountMap])
 
   return (
     <div className="container my-6 space-y-4">
@@ -800,10 +794,10 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 2 行：元素 + 获取途径 + 标签 + 定位 + 排序 */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {/* 2 行：元素 + 获取途径 + 三组标签 + 定位 + 排序 */}
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
-            <option value="">全部</option>
+            <option value="">全部元素</option>
             {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
 
@@ -812,23 +806,42 @@ export default function MonstersPage() {
             {acquireTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
 
-          <select className="select" value={tag} onChange={e => { setTag(e.target.value); setPage(1) }}>
-            <option value="">标签（全部）</option>
-            {(localTagCounts || []).map(t =>
+          {/* 三枚标签下拉 */}
+          <select className="select" value={tagBuf} onChange={e => { setTagBuf(e.target.value); setPage(1) }}>
+            <option value="">🟢 增强（全部）</option>
+            {bufCounts.map(t =>
               <option key={t.name} value={t.name}>
-                {`${tagEmoji(t.name)}${tagLabel(t.name)}（${t.count}）`}
+                {`🟢${tagLabel(t.name)}（${t.count}）`}
               </option>
             )}
           </select>
+          <select className="select" value={tagDeb} onChange={e => { setTagDeb(e.target.value); setPage(1) }}>
+            <option value="">🔴 削弱（全部）</option>
+            {debCounts.map(t =>
+              <option key={t.name} value={t.name}>
+                {`🔴${tagLabel(t.name)}（${t.count}）`}
+              </option>
+            )}
+          </select>
+          <select className="select" value={tagUtil} onChange={e => { setTagUtil(e.target.value); setPage(1) }}>
+            <option value="">🟣 特殊（全部）</option>
+            {utilCounts.map(t =>
+              <option key={t.name} value={t.name}>
+                {`🟣${tagLabel(t.name)}（${t.count}）`}
+              </option>
+            )}
+          </select>
+
           <select className="select" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
             <option value="">定位</option>
             {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
           </select>
-          <div className="grid grid-cols-2 gap-3">
+
+          <div className="grid grid-cols-2 gap-3 col-span-2">
             <select
-                className="select"
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortKey)}
+              className="select"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
             >
               <option value="updated_at">更新时间</option>
               <option value="offense">攻（派生）</option>
@@ -877,26 +890,19 @@ export default function MonstersPage() {
       {/* 列表 */}
       <div className="card">
         <div className="overflow-auto">
-          <table className="table">
+          <table className="table table-auto">
             <thead>
               <tr>
-                <th className="w-8 text-center">
-                  <input
-                    type="checkbox"
-                    aria-label="全选"
-                    checked={!!(list.data?.items as any[])?.length && (list.data!.items as any[]).every((i: any) => selectedIds.has(i.id))}
-                    onChange={toggleAllVisible}
-                  />
-                </th>
-                <th className="w-14 text-center">ID</th>
+                <th className="w-10 text-center" />
+                <th className="w-16 text-center">ID</th>
                 <th className="text-left">名称</th>
-                <th className="text-center">元素</th>
-                <th className="text-center">定位</th>
-                <th className="text-center">攻</th>
-                <th className="text-center">生</th>
-                <th className="text-center">控</th>
-                <th className="text-center">速</th>
-                <th className="text-center">压</th>
+                <th className="w-20 min-w-[64px] text-center">元素</th>
+                <th className="w-20 text-center">定位</th>
+                <th className="w-14 text-center">攻</th>
+                <th className="w-14 text-center">生</th>
+                <th className="w-14 text-center">控</th>
+                <th className="w-14 text-center">速</th>
+                <th className="w-14 text-center">压</th>
                 <th className="text-center">增强</th>
                 <th className="text-center">削弱</th>
                 <th className="text-center">特殊</th>
@@ -913,36 +919,47 @@ export default function MonstersPage() {
                 {!fixLoading && filteredItems.map((m: any) => {
                   const buckets = bucketizeTags(m.tags)
                   const chips = (arr: string[], prefixEmoji: string) =>
-                    arr.slice(0, 4).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
+                    arr.slice(0, LIMIT_TAGS_PER_CELL).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
                   return (
-                    <tr key={m.id}>
-                      <td className="text-center">
-                        <input type="checkbox" checked={selectedIds.has(m.id)} onChange={() => toggleOne(m.id)} />
+                    <tr key={m.id} className="align-middle">
+                      <td className="text-center align-middle py-2.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(m.id)}
+                          onChange={() => toggleOne(m.id)}
+                          aria-label={`选择 ${m.name || m.name_final}`}
+                        />
                       </td>
-                      <td className="text-center">{m.id}</td>
-                      <td className="text-left">
-                        <button className={`text-blue-600 hover:underline ${BTN_FX}`} onClick={() => openDetail(m)}>
+                      <td className="text-center align-middle py-2.5">{m.id}</td>
+                      <td className="text-left align-middle py-2.5">
+                        <button
+                          className={`text-blue-600 hover:underline ${BTN_FX} truncate max-w-[240px]`}
+                          title={m.name || m.name_final}
+                          onClick={() => openDetail(m)}
+                        >
                           {m.name || m.name_final}
                         </button>
                       </td>
-                      <td className="text-center">{m.element}</td>
-                      <td className="text-center">{m.role || (m as any).derived?.role_suggested || ''}</td>
-                      <td className="text-center">{m.derived?.offense ?? 0}</td>
-                      <td className="text-center">{m.derived?.survive ?? 0}</td>
-                      <td className="text-center">{m.derived?.control ?? 0}</td>
-                      <td className="text-center">{m.derived?.tempo ?? 0}</td>
-                      <td className="text-center">{(m.derived as any)?.pp_pressure ?? 0}</td>
-                      <td className="text-center">
+                      <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
+                        {m.element}
+                      </td>
+                      <td className="text-center align-middle py-2.5">{m.role || (m as any).derived?.role_suggested || ''}</td>
+                      <td className="text-center align-middle py-2.5">{m.derived?.offense ?? 0}</td>
+                      <td className="text-center align-middle py-2.5">{m.derived?.survive ?? 0}</td>
+                      <td className="text-center align-middle py-2.5">{m.derived?.control ?? 0}</td>
+                      <td className="text-center align-middle py-2.5">{m.derived?.tempo ?? 0}</td>
+                      <td className="text-center align-middle py-2.5">{(m.derived as any)?.pp_pressure ?? 0}</td>
+                      <td className="text-center align-middle py-2.5">
                         <div className="inline-flex flex-wrap gap-1 justify-center">
                           {chips(buckets.buf, '🟢')}
                         </div>
                       </td>
-                      <td className="text-center">
+                      <td className="text-center align-middle py-2.5">
                         <div className="inline-flex flex-wrap gap-1 justify-center">
                           {chips(buckets.deb, '🔴')}
                         </div>
                       </td>
-                      <td className="text-center">
+                      <td className="text-center align-middle py-2.5">
                         <div className="inline-flex flex-wrap gap-1 justify-center">
                           {chips(buckets.util, '🟣')}
                         </div>
@@ -1224,21 +1241,19 @@ export default function MonstersPage() {
       {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 */}
       {overlay.show && (
         <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
-          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
+          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text中心 space-y-3">
             <div className="text-2xl">🐱</div>
             <div className="text-lg font-semibold">{overlay.title || '处理中…'}</div>
             <div className="text-sm text-gray-600">{overlay.sub || '请稍候~'}</div>
 
-            {/* 进度条 */}
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               {typeof progressPct === 'number' ? (
                 <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
               ) : (
-                <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
+                <div className="h-2 w-1/2 animate-pulse bg紫色-300 rounded-full" />
               )}
             </div>
 
-            {/* 进度文字 */}
             {typeof progressPct === 'number' && (
               <div className="text-xs text-gray-500">
                 {overlay.done}/{overlay.total}（成功 {overlay.ok}，失败 {overlay.fail}） — {progressPct}%

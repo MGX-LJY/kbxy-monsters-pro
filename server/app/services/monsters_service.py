@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import List, Tuple, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, asc, desc, outerjoin
+from sqlalchemy import (
+    select, func, asc, desc, outerjoin, case, distinct
+)
 
 from ..models import Monster, Tag, MonsterDerived
 
@@ -34,7 +36,58 @@ def _get_sort_target(sort: str):
     return m.updated_at, False
 
 
-# ---- 列表查询：可按标签/元素/定位/获取途径/是否可获取 过滤；按派生或更新时间排序 ----
+# ---- 构造“多标签（AND/OR）”子查询：返回满足条件的 Monster.id 集合 ----
+
+def _subq_ids_for_multi_tags(
+    tags_all: Optional[List[str]],
+    tags_any: Optional[List[str]],
+) -> Optional[Any]:
+    """
+    返回一个子查询（仅含一列 id），包含满足：
+      - AND：必须同时包含 tags_all 里所有标签（distinct）
+      - OR ：至少包含 tags_any 里的任意一个
+    的 Monster.id。
+    若两者皆空，返回 None。
+    """
+    names_all = [t for t in (tags_all or []) if isinstance(t, str) and t.strip()]
+    names_any = [t for t in (tags_any or []) if isinstance(t, str) and t.strip()]
+    if not names_all and not names_any:
+        return None
+
+    # 统一在“标签域”内聚合，然后 HAVING 条件判断
+    stmt = (
+        select(Monster.id)
+        .select_from(Monster)
+        .join(Monster.tags)  # -> Tag
+        .group_by(Monster.id)
+    )
+
+    if names_all:
+        cnt_all = func.count(
+            distinct(
+                case(
+                    (Tag.name.in_(list(set(names_all))), Tag.name),
+                    else_=None
+                )
+            )
+        )
+        stmt = stmt.having(cnt_all == len(set(names_all)))
+
+    if names_any:
+        cnt_any = func.count(
+            distinct(
+                case(
+                    (Tag.name.in_(list(set(names_any))), Tag.name),
+                    else_=None
+                )
+            )
+        )
+        stmt = stmt.having(cnt_any >= 1)
+
+    return stmt.subquery()
+
+
+# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取 过滤；按派生或更新时间排序 ----
 
 def list_monsters(
     db: Session,
@@ -42,9 +95,14 @@ def list_monsters(
     q: Optional[str] = None,
     element: Optional[str] = None,
     role: Optional[str] = None,
+    # 旧：单标签
     tag: Optional[str] = None,
-    acq_type: Optional[str] = None,      # ← 获取途径：Monster.type
-    new_type: Optional[bool] = None,     # ← 是否当前可获取：Monster.new_type
+    # 新：多标签（优先于 tag）
+    tags_all: Optional[List[str]] = None,
+    tags_any: Optional[List[str]] = None,
+    # 获取途径 / 是否当前可获取
+    acq_type: Optional[str] = None,      # Monster.type
+    new_type: Optional[bool] = None,     # Monster.new_type
     sort: Optional[str] = None,
     order: Optional[str] = None,
     page: int = 1,
@@ -52,17 +110,26 @@ def list_monsters(
 ) -> Tuple[List[Monster], int]:
     """
     说明：
-      - 若需“按技能文本过滤”，建议在路由层构造子查询，避免计数笛卡尔积。
-      - 这里统一支持 type/new_type 过滤，以契合前端“获取途径/可获取”的 UI。
+      - 多标签（全库级）：
+          AND：tags_all=...&tags_all=...
+          OR ：tags_any=...&tags_any=...
+          同时给出时表示“必须同时满足 AND 且满足 OR”。
+      - 若提供了 tags_all/any，则忽略旧参数 tag（向后兼容）。
+      - 排序字段支持派生五维；分页/计数在过滤后执行。
     """
+    page = max(1, page)
+    page_size = min(max(1, page_size), 200)
+
+    use_multi = bool((tags_all and len(tags_all) > 0) or (tags_any and len(tags_any) > 0))
+    multi_subq = _subq_ids_for_multi_tags(tags_all, tags_any) if use_multi else None
+
     # 计数子查询（避免 JOIN 计数膨胀）
     base_stmt = select(Monster.id)
-    if tag:
-        base_stmt = base_stmt.join(Monster.tags).where(Tag.name == tag)
+
+    # 文本/基础条件
     if q:
         like = f"%{q}%"
         base_stmt = base_stmt.where(Monster.name.like(like))
-
     if element:
         base_stmt = base_stmt.where(Monster.element == element)
     if role:
@@ -72,6 +139,13 @@ def list_monsters(
     if isinstance(new_type, bool):
         base_stmt = base_stmt.where(Monster.new_type == new_type)
 
+    # 标签条件
+    if use_multi and multi_subq is not None:
+        base_stmt = base_stmt.where(Monster.id.in_(select(multi_subq.c.id)))
+    elif tag:
+        base_stmt = base_stmt.join(Monster.tags).where(Tag.name == tag)
+
+    # 排序依赖（仅影响 SELECT FROM 的 JOIN，计数不需要 order_by）
     sort_col, need_join = _get_sort_target(sort or "updated_at")
     if need_join:
         base_stmt = base_stmt.select_from(
@@ -83,12 +157,11 @@ def list_monsters(
 
     # 取行
     rows_stmt = select(Monster)
-    if tag:
-        rows_stmt = rows_stmt.join(Monster.tags).where(Tag.name == tag)
+
+    # 文本/基础条件
     if q:
         like = f"%{q}%"
         rows_stmt = rows_stmt.where(Monster.name.like(like))
-
     if element:
         rows_stmt = rows_stmt.where(Monster.element == element)
     if role:
@@ -98,6 +171,13 @@ def list_monsters(
     if isinstance(new_type, bool):
         rows_stmt = rows_stmt.where(Monster.new_type == new_type)
 
+    # 标签条件
+    if use_multi and multi_subq is not None:
+        rows_stmt = rows_stmt.where(Monster.id.in_(select(multi_subq.c.id)))
+    elif tag:
+        rows_stmt = rows_stmt.join(Monster.tags).where(Tag.name == tag)
+
+    # 排序（派生排序需要 OUTER JOIN）
     if need_join:
         rows_stmt = rows_stmt.select_from(
             outerjoin(Monster, MonsterDerived, MonsterDerived.monster_id == Monster.id)
