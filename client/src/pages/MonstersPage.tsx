@@ -24,6 +24,9 @@ type WarehouseStatsDTO = { warehouse_total?: number; total?: number }
 
 type SortKey = 'updated_at' | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure'
 
+const BTN_FX = 'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
+
+// 文本小工具
 const isMeaningfulDesc = (t?: string) => {
   if (!t) return false
   const s = t.trim()
@@ -89,6 +92,11 @@ export default function MonstersPage() {
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库
   const [onlyGettable, setOnlyGettable] = useState(false)   // 仅显示可获得妖怪（new_type=true）
+
+  // “修复妖怪”筛选（当前页：技能数为 0 或 >5）
+  const [fixMode, setFixMode] = useState(false)
+  const [fixLoading, setFixLoading] = useState(false)
+  const [skillCountMap, setSkillCountMap] = useState<Record<number, number>>({})
 
   // 分页
   const [page, setPage] = useState(1)
@@ -187,7 +195,7 @@ export default function MonstersPage() {
       ? (tagI18n.data as any)[code]
       : code
 
-  // 列表 & 基础数据
+  // 列表 & 基础数据（修复“获取途径”筛选：后端参数冗余 + 前端兜底过滤）
   const list = useQuery({
     queryKey: ['monsters', { q, element, tag, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable }],
     queryFn: async () => {
@@ -198,7 +206,11 @@ export default function MonstersPage() {
           element: element || undefined,
           tag: tag || undefined,
           role: role || undefined,
+          // 同时传递多种可能字段，提升兼容性
           type: acqType || undefined,
+          acq_type: acqType || undefined,
+          acquire_type: acqType || undefined,
+          type_contains: acqType || undefined,
           new_type: onlyGettable ? true : undefined,
           sort,
           order,
@@ -255,7 +267,39 @@ export default function MonstersPage() {
     queryFn: async () => (await api.get(`/monsters/${(selected as any)!.id}/skills`)).data as SkillDTO[]
   })
 
-  // 当 /tags 不可用时，用当前页 items 的 tags 做临时计数
+  // —— 当前页“修复妖怪”需要的技能计数 —— //
+  useEffect(() => {
+    let stopped = false
+    const load = async () => {
+      if (!fixMode) return
+      const items = (list.data?.items as any[]) || []
+      if (!items.length) { setSkillCountMap({}); return }
+      setFixLoading(true)
+      try {
+        const pairs = await Promise.all(
+          items.map(async (m: any) => {
+            try {
+              const r = await api.get(`/monsters/${m.id}/skills`)
+              const cnt = ((r.data as SkillDTO[]) || []).filter(s => isValidSkillName(s.name)).length
+              return [m.id, cnt] as [number, number]
+            } catch {
+              return [m.id, 0] as [number, number]
+            }
+          })
+        )
+        if (stopped) return
+        const map: Record<number, number> = {}
+        pairs.forEach(([id, c]) => { map[id] = c })
+        setSkillCountMap(map)
+      } finally {
+        if (!stopped) setFixLoading(false)
+      }
+    }
+    load()
+    return () => { stopped = true }
+  }, [fixMode, list.data, page])
+
+  // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
     if (tags.data && tags.data.length > 0) return tags.data
     const map = new Map<string, number>()
@@ -360,7 +404,9 @@ export default function MonstersPage() {
     const res = await api.get('/export/monsters.csv', {
       params: {
         q: q || undefined, element: element || undefined, tag: tag || undefined, role: role || undefined,
+        // 获取途径筛选参数一并传递
         type: acqType || undefined,
+        acq_type: acqType || undefined,
         new_type: onlyGettable ? true : undefined,
         sort, order
       },
@@ -669,6 +715,22 @@ export default function MonstersPage() {
   // 计算进度百分比
   const progressPct = overlay.total ? Math.floor(((overlay.done || 0) / overlay.total) * 100) : null
 
+  // —— 列表前端兜底过滤（获取途径 + 修复妖怪） —— //
+  const filteredItems = useMemo(() => {
+    let arr = (list.data?.items as any[]) || []
+    if (acqType) {
+      arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
+    }
+    if (fixMode) {
+      arr = arr.filter(m => {
+        const c = skillCountMap[m.id]
+        // 缺计数时暂不展示，等计数完成
+        return typeof c === 'number' ? (c === 0 || c > 5) : false
+      })
+    }
+    return arr
+  }, [list.data, acqType, fixMode, skillCountMap])
+
   return (
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
@@ -676,27 +738,44 @@ export default function MonstersPage() {
         {/* 0 行：导入/导出/备份/恢复（放最上方，紧邻“导入 CSV”一组） */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <button className="btn" onClick={openImportCSV}>导入 CSV</button>
-            <button className="btn" onClick={exportCSV}>导出 CSV</button>
-            <button className="btn" onClick={exportBackup}>备份 JSON</button>
-            <button className="btn" onClick={openRestore}>恢复 JSON</button>
+            <button className={`btn ${BTN_FX}`} onClick={openImportCSV}>导入 CSV</button>
+            <button className={`btn ${BTN_FX}`} onClick={exportCSV}>导出 CSV</button>
+            <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
+            <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
             <input ref={importCSVInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onImportCSVFile} />
             <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button className="btn" onClick={aiTagBatch}>一键 AI 打标签</button>
-            <button className="btn btn-primary" onClick={deriveBatch}>一键全部派生</button>
-            <button className={`btn btn-lg ${warehouseOnly ? 'btn-primary' : ''}`}
-                    onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
-                    title="只显示仓库已有的宠物 / 再次点击还原">
+            {/* 新增：修复妖怪（放在“一键 AI 打标签”左边） */}
+            <button
+              className={`btn ${BTN_FX} ${fixMode ? 'btn-primary' : ''}`}
+              title="筛选出当前页中没有技能或技能数量大于 5 的妖怪"
+              aria-pressed={fixMode}
+              onClick={() => setFixMode(v => !v)}
+              disabled={list.isLoading}
+            >
+              {fixMode ? (fixLoading ? '修复妖怪（筛选中…）' : '修复妖怪（已开启）') : '修复妖怪'}
+            </button>
+
+            <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>一键 AI 打标签</button>
+            {/* 要求：一键全部派生按钮设为白色 */}
+            <button className={`btn ${BTN_FX}`} onClick={deriveBatch}>一键全部派生</button>
+
+            <button
+              className={`btn btn-lg ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
+              onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
+              title="只显示仓库已有的宠物 / 再次点击还原"
+            >
               仓库管理
             </button>
-            <button className={`btn ${onlyGettable ? 'btn-primary' : ''}`}
-                    onClick={() => { setOnlyGettable(v => !v); setPage(1) }}
-                    title="只显示当前可获得妖怪">
+            <button
+              className={`btn ${onlyGettable ? 'btn-primary' : ''} ${BTN_FX}`}
+              onClick={() => { setOnlyGettable(v => !v); setPage(1) }}
+              title="只显示当前可获得妖怪"
+            >
               仅显示可获得妖怪
             </button>
-            <button className="btn" onClick={startCrawl} disabled={crawling}>
+            <button className={`btn ${BTN_FX}`} onClick={startCrawl} disabled={crawling}>
               {crawling ? '爬取中…' : '一键爬取图鉴'}
             </button>
           </div>
@@ -746,7 +825,11 @@ export default function MonstersPage() {
             {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
           </select>
           <div className="grid grid-cols-2 gap-3">
-            <select className="select" value={sort} onChange={e => setSort(e.target.value as SortKey)}>
+            <select
+                className="select"
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortKey)}
+            >
               <option value="updated_at">更新时间</option>
               <option value="offense">攻（派生）</option>
               <option value="survive">生（派生）</option>
@@ -783,10 +866,10 @@ export default function MonstersPage() {
         <div className="card p-3 flex items-center justify-between">
           <div className="text-sm text-gray-600">已选 {selectedIds.size} 项</div>
           <div className="flex items-center gap-2">
-            <button className="btn" onClick={() => setSelectedIds(new Set())}>清除选择</button>
-            <button className="btn" onClick={() => bulkSetWarehouse(true)}>加入仓库</button>
-            <button className="btn" onClick={() => bulkSetWarehouse(false)}>移出仓库</button>
-            <button className="btn btn-primary" onClick={bulkDelete}>批量删除</button>
+            <button className={`btn ${BTN_FX}`} onClick={() => setSelectedIds(new Set())}>清除选择</button>
+            <button className={`btn ${BTN_FX}`} onClick={() => bulkSetWarehouse(true)}>加入仓库</button>
+            <button className={`btn ${BTN_FX}`} onClick={() => bulkSetWarehouse(false)}>移出仓库</button>
+            <button className={`btn btn-primary ${BTN_FX}`} onClick={bulkDelete}>批量删除</button>
           </div>
         </div>
       )}
@@ -822,7 +905,12 @@ export default function MonstersPage() {
             {list.isLoading && <SkeletonRows rows={8} cols={13} />}
             {!list.isLoading && (
               <tbody>
-                {(list.data?.items as any[])?.map((m: any) => {
+                {fixMode && fixLoading && (
+                  <tr>
+                    <td colSpan={13} className="text-center text-gray-500 py-4">正在根据技能数量筛选中…</td>
+                  </tr>
+                )}
+                {!fixLoading && filteredItems.map((m: any) => {
                   const buckets = bucketizeTags(m.tags)
                   const chips = (arr: string[], prefixEmoji: string) =>
                     arr.slice(0, 4).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
@@ -833,7 +921,7 @@ export default function MonstersPage() {
                       </td>
                       <td className="text-center">{m.id}</td>
                       <td className="text-left">
-                        <button className="text-blue-600 hover:underline" onClick={() => openDetail(m)}>
+                        <button className={`text-blue-600 hover:underline ${BTN_FX}`} onClick={() => openDetail(m)}>
                           {m.name || m.name_final}
                         </button>
                       </td>
@@ -862,7 +950,7 @@ export default function MonstersPage() {
                     </tr>
                   )
                 })}
-                {(list.data?.items as any[])?.length === 0 && (
+                {!fixLoading && filteredItems.length === 0 && (
                   <tr>
                     <td colSpan={13} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON/CSV。</td>
                   </tr>
@@ -871,9 +959,12 @@ export default function MonstersPage() {
             )}
           </table>
         </div>
-        <div className="mt-3 flex items-center justify-between">
+        <div className="mt-3 flex items-center justify-between gap-2">
           <div className="text-sm text-gray-500">ETag: {list.data?.etag}</div>
-          <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
+          <div className="flex items-center gap-2">
+            <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
+            <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
+          </div>
         </div>
       </div>
 
@@ -889,15 +980,15 @@ export default function MonstersPage() {
                     {(selected as any)?.new_type === false && <span className="badge badge-warning mr-2">暂不可</span>}
                     {(selected as any)?.possess && <span className="badge badge-info">已拥有</span>}
                   </span>
-                  <button className="btn" onClick={async () => {
+                  <button className={`btn ${BTN_FX}`} onClick={async () => {
                     try { await api.get(`/monsters/${(selected as any).id}/derived`) } catch {}
                     enterEdit()
                   }}>编辑</button>
-                  <button className="btn" onClick={() => deleteOne((selected as any).id)}>删除</button>
+                  <button className={`btn ${BTN_FX}`} onClick={() => deleteOne((selected as any).id)}>删除</button>
                 </>
               ) : (
                 <>
-                  <button className="btn" onClick={async () => {
+                  <button className={`btn ${BTN_FX}`} onClick={async () => {
                     // 抽屉内“填充”使用派生建议
                     const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
                       role_suggested?: string, tags?: string[]
@@ -908,8 +999,8 @@ export default function MonstersPage() {
                       setEditTags(filtered.join(' '))
                     }
                   }}>一键匹配（填充）</button>
-                  <button className="btn" onClick={cancelEdit}>取消</button>
-                  <button className="btn btn-primary" onClick={saveEdit} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
+                  <button className={`btn ${BTN_FX}`} onClick={cancelEdit}>取消</button>
+                  <button className={`btn btn-primary ${BTN_FX}`} onClick={saveEdit} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
                 </>
               )}
             </div>
@@ -1074,7 +1165,7 @@ export default function MonstersPage() {
                 <div className="card p-3 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="font-semibold">技能</h4>
-                    <button className="btn" onClick={addSkill}>+ 新增技能</button>
+                    <button className={`btn ${BTN_FX}`} onClick={addSkill}>+ 新增技能</button>
                   </div>
                   <ul className="space-y-3">
                     {editSkills.map((s, idx) => (
@@ -1114,7 +1205,7 @@ export default function MonstersPage() {
                             <div className="text-[11px] text-gray-500 leading-5">
                               {[s.element || '—', s.kind || '—', (s.power ?? '—')].join(' / ')}
                             </div>
-                            <button className="btn mt-2" onClick={() => removeSkill(idx)}>删除</button>
+                            <button className={`btn mt-2 ${BTN_FX}`} onClick={() => removeSkill(idx)}>删除</button>
                           </div>
                         </div>
                       </li>
@@ -1133,7 +1224,7 @@ export default function MonstersPage() {
       {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 */}
       {overlay.show && (
         <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
-          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text中心 space-y-3">
+          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
             <div className="text-2xl">🐱</div>
             <div className="text-lg font-semibold">{overlay.title || '处理中…'}</div>
             <div className="text-sm text-gray-600">{overlay.sub || '请稍候~'}</div>
