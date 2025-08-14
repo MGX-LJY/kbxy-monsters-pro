@@ -1,4 +1,4 @@
-// 基本类型与后端保持一致
+// client/src/types.ts
 
 export interface Derived {
   offense: number
@@ -43,4 +43,25 @@ export interface StatsDTO {
   total: number
   with_skills: number
   tags_total: number
+}
+
+/** ===== Import Wizard ===== */
+
+export type ImportPreviewRow = Record<
+  string,
+  string | number | boolean | null | undefined
+>
+
+export interface ImportPreviewResp {
+  columns: string[]
+  total_rows: number
+  hints?: string[]
+  sample: ImportPreviewRow[]
+}
+
+export interface ImportCommitResp {
+  inserted: number
+  updated: number
+  skipped: number
+  errors?: Array<Record<string, unknown>>
 }

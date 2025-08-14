@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react'
+import React, { useState } from 'react'
 import api from '../api'
-import { ImportPreviewResp, ImportCommitResp } from '../types'
+import type { ImportPreviewResp, ImportCommitResp, ImportPreviewRow } from '../types'
 
 export default function ImportWizard(){
   const [file, setFile] = useState<File | null>(null)
@@ -16,7 +16,7 @@ export default function ImportWizard(){
     try {
       const fd = new FormData()
       fd.append('file', file)
-      const res = await api.post('/import/preview', fd)
+      const res = await api.post<ImportPreviewResp>('/import/preview', fd)
       setPreview(res.data)
       setStep(2)
     } catch (e: any) {
@@ -31,8 +31,8 @@ export default function ImportWizard(){
     try {
       const fd = new FormData()
       fd.append('file', file)
-      const res = await api.post('/import/commit', fd, {
-        headers: { 'Idempotency-Key': crypto.randomUUID() }
+      const res = await api.post<ImportCommitResp>('/import/commit', fd, {
+        headers: { 'Idempotency-Key': (crypto as any)?.randomUUID?.() ?? String(Date.now()) }
       })
       setResult(res.data)
       setStep(3)
@@ -56,8 +56,14 @@ export default function ImportWizard(){
 
       {step === 1 && (
         <div className="space-y-3">
-          <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} />
-          <div className="text-xs text-gray-500">支持 CSV/TSV；编码 UTF-8；表头示例：name_final,element,role,base_offense,base_survive,base_control,base_tempo,base_pp,tags</div>
+          <input
+            type="file"
+            accept=".csv,.tsv,text/csv,text/tab-separated-values"
+            onChange={e => setFile(e.target.files?.[0] ?? null)}
+          />
+          <div className="text-xs text-gray-500">
+            支持 CSV/TSV；编码 UTF-8；表头示例：name_final,element,role,base_offense,base_survive,base_control,base_tempo,base_pp,tags
+          </div>
           <button className="btn btn-primary" disabled={!file || loading} onClick={submitPreview}>预览</button>
         </div>
       )}
@@ -66,14 +72,18 @@ export default function ImportWizard(){
         <div className="space-y-3">
           <div className="text-sm text-gray-600">列：{preview.columns.join(', ')}</div>
           <div className="text-sm text-gray-600">总行数：{preview.total_rows}</div>
-          {preview.hints?.length > 0 && <div className="text-sm text-red-600">提示：{preview.hints.join('；')}</div>}
+          {preview.hints?.length ? <div className="text-sm text-red-600">提示：{preview.hints.join('；')}</div> : null}
           <div className="overflow-auto border rounded-xl">
             <table className="table">
-              <thead><tr>{preview.columns.map(c => <th key={c}>{c}</th>)}</tr></thead>
+              <thead>
+                <tr>
+                  {preview.columns.map((c: string) => <th key={c}>{c}</th>)}
+                </tr>
+              </thead>
               <tbody>
-                {preview.sample.map((row, i) => (
+                {preview.sample.map((row: ImportPreviewRow, i: number) => (
                   <tr key={i}>
-                    {preview.columns.map(c => <td key={c}>{row[c]}</td>)}
+                    {preview.columns.map((c2: string) => <td key={c2}>{row[c2] as any}</td>)}
                   </tr>
                 ))}
               </tbody>
@@ -88,8 +98,12 @@ export default function ImportWizard(){
 
       {step === 3 && result && (
         <div className="space-y-2">
-          <div className="text-sm">插入：<b>{result.inserted}</b> · 更新：<b>{result.updated}</b> · 跳过：<b>{result.skipped}</b></div>
-          {result.errors?.length > 0 && <pre className="bg-gray-50 p-2 rounded text-xs overflow-auto">{JSON.stringify(result.errors, null, 2)}</pre>}
+          <div className="text-sm">
+            插入：<b>{result.inserted}</b> · 更新：<b>{result.updated}</b> · 跳过：<b>{result.skipped}</b>
+          </div>
+          {result.errors?.length
+            ? <pre className="bg-gray-50 p-2 rounded text-xs overflow-auto">{JSON.stringify(result.errors, null, 2)}</pre>
+            : null}
           <button className="btn" onClick={()=>setStep(1)}>继续导入</button>
         </div>
       )}
