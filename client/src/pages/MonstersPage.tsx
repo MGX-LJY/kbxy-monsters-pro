@@ -61,6 +61,13 @@ const ELEMENTS: Record<string, string> = {
 }
 const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
 
+// —— 元素简称（技能属性）到中文元素映射 —— //
+const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
+  火: '火系', 水: '水系', 风: '风系', 雷: '雷系', 冰: '冰系', 木: '木系',
+  土: '土系', 金: '金系', 圣: '圣系', 毒: '毒系', 幻: '幻系', 灵: '灵系',
+  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械', 特殊: '' // “特殊”不当作元素
+}
+
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
@@ -116,6 +123,11 @@ export default function MonstersPage() {
 
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
+
+  // —— 新增模式 & 识别粘贴框 —— //
+  const [isCreating, setIsCreating] = useState<boolean>(false)
+  const [rawText, setRawText] = useState<string>('')
+  const [createPreferredName, setCreatePreferredName] = useState<string>('')
 
   // 全屏模糊等待弹框 + 真实进度
   const [overlay, setOverlay] = useState<{
@@ -194,7 +206,7 @@ export default function MonstersPage() {
     }
   })
 
-    const list = useQuery({
+  const list = useQuery({
     queryKey: ['monsters', {
       q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable
     }],
@@ -477,32 +489,67 @@ export default function MonstersPage() {
 
     setIsEditing(true)
   }
-  const cancelEdit = () => setIsEditing(false)
-
-  // —— 技能保存（带 element/kind/power）优先 /skills/set —— //
-  const saveSkills = async (monsterId: number, body: SkillDTO[]) => {
-    const payload = {
-      monster_id: monsterId,
-      skills: body.map(s => ({
-        name: s.name?.trim(),
-        element: (s.element || '') || null,
-        kind: (s.kind || '') || null,
-        power: (typeof s.power === 'number' ? s.power : (s.power ? Number(s.power) : null)),
-        description: (s.description || '') || null,
-      })).filter(x => isValidSkillName(x.name))
+  const cancelEdit = () => {
+    if (isCreating) {
+      setIsCreating(false)
+      setSelected(null)
+      setIsEditing(false)
+      setRawText('')
+      return
     }
+    setIsEditing(false)
+  }
+
+  // —— 技能保存（裸数组优先 + 清洗去重） —— //
+  const saveSkills = async (monsterId: number, body: SkillDTO[]) => {
+    // 1) 规范化 + 去空名 + 去重（按 name）
+    const seen = new Set<string>()
+    const skills = body
+      .map(s => {
+        const power =
+          (typeof s.power === 'number' && Number.isFinite(s.power)) ? s.power : undefined
+        return {
+          name: (s.name || '').trim(),
+          element: (s.element || '').trim() || undefined,
+          kind: (s.kind || '').trim() || undefined,
+          power, // ← 不再和 '' 比较
+          description: (s.description || '').trim(),
+        }
+      })
+  .filter(s => isValidSkillName(s.name))
+      .filter(s => isValidSkillName(s.name))
+      .filter(s => {
+        if (seen.has(s.name)) return false
+        seen.add(s.name)
+        return true
+      })
+      .map(s => {
+        const o: any = { name: s.name }
+        if (s.element) o.element = s.element
+        if (s.kind) o.kind = s.kind
+        if (Number.isFinite(s.power as number)) o.power = Number(s.power)
+        if (isMeaningfulDesc(s.description)) o.description = s.description
+        return o
+      })
+
+    // 2) 新接口：PUT + 裸数组（你的后端签名就是 List[SkillIn]）
     try {
-      return await api.post('/skills/set', payload)
-    } catch {
+      return await api.put(`/monsters/${monsterId}/skills`, skills, {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    } catch (e1: any) {
+      // 3) 老接口兜底（尽量不走，会引发老逻辑的重复名问题）
       try {
-        return await api.put(`/monsters/${monsterId}/skills`, { skills: payload.skills })
-      } catch {
-        return await api.post(`/monsters/${monsterId}/skills`, { skills: payload.skills })
+        return await api.post('/skills/set', { monster_id: monsterId, skills })
+      } catch (e2: any) {
+        const msg = e1?.response?.data?.detail || e2?.response?.data?.detail ||
+                    e1?.message || e2?.message || '保存技能失败'
+        throw new Error(msg)
       }
     }
   }
 
-  // —— 保存整体 —— //
+  // —— 保存整体（编辑已有） —— //
   const saveEdit = async () => {
     if (!selected) return
     if (!editName.trim()) { alert('请填写名称'); return }
@@ -531,6 +578,62 @@ export default function MonstersPage() {
       setIsEditing(false)
     } catch (e: any) {
       alert(e?.response?.data?.detail || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // —— 保存整体（创建新建） —— //
+  const saveCreate = async () => {
+    if (!editName.trim()) { alert('请填写名称'); return }
+    setSaving(true)
+    try {
+      const body: any = {
+        name: editName.trim(),
+        element: editElement || null,
+        role: editRole || null,
+        possess: !!editPossess,
+        new_type: !!editGettable,
+        type: editType || null,
+        method: editMethod || null,
+        hp, speed, attack, defense, magic, resist,
+        tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(t => t && (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))),
+      }
+
+      let res
+      try {
+        res = await api.post('/monsters', body)
+      } catch (e1) {
+        try {
+          res = await api.post('/api/v1/monsters', body)
+        } catch (e2) {
+          alert('当前后端未开放创建接口，请改用 CSV/JSON 导入或开启 /monsters 创建 API。')
+          return
+        }
+      }
+
+      const newId = res?.data?.id ?? res?.data?.monster?.id ?? res?.data?.data?.id
+      if (!newId) {
+        alert('创建成功但未返回 ID，无法写入技能。')
+      } else {
+        await saveSkills(newId, editSkills)
+      }
+
+      await list.refetch()
+      await stats.refetch()
+      await wstats.refetch()
+
+      if (newId) {
+        const fresh = (await api.get(`/monsters/${newId}`)).data as Monster
+        setSelected(fresh)
+      }
+
+      setIsCreating(false)
+      setIsEditing(false)
+      setRawText('')
+      alert('创建完成')
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || '创建失败')
     } finally {
       setSaving(false)
     }
@@ -725,6 +828,175 @@ export default function MonstersPage() {
     return arr
   }, [list.data, acqType, selectedTags, fixMode, skillCountMap])
 
+  // —— 新建：初始化清空并打开编辑抽屉 —— //
+  const startCreate = () => {
+    setIsCreating(true)
+    setSelected({ id: 0 })
+    setRawText('')
+    setCreatePreferredName('')
+    setEditName('')
+    setEditElement('')
+    setEditRole('')
+    setEditTags('')
+    setEditPossess(false)
+    setEditGettable(false)
+    setEditType('')
+    setEditMethod('')
+    setHp(100); setSpeed(100); setAttack(100); setDefense(100); setMagic(100); setResist(100)
+    setEditSkills([{ name: '', element: '', kind: '', power: null, description: '' }])
+    setIsEditing(true)
+  }
+
+  // —— 识别：清洗与解析 —— //
+  const normalizeText = (raw: string) => {
+    return raw
+      .replace(/\r/g, '\n')
+      .replace(/[　\t]+/g, ' ')
+      .replace(/[，]/g, '，')
+      .replace(/[。]/g, '。')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  }
+
+  const parseAndPrefillFromText = (raw: string) => {
+    const text = normalizeText(raw)
+    if (!text) { alert('请先粘贴文本'); return }
+
+    // 拆行（移除空行）
+    const allLines = text.split('\n').map(s => s.trim()).filter(Boolean)
+
+    // 1) 名称 + 六维（扫描形如：名字 6个数字）
+    type StatRow = { name: string, nums: number[] }
+    const statRows: StatRow[] = []
+    const statRegex = /^([\u4e00-\u9fa5A-Za-z]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/
+    for (const ln of allLines) {
+      const m = ln.match(statRegex)
+      if (m) {
+        const name = m[1]
+        const nums = m.slice(2).map(x => parseInt(x, 10))
+        if (nums.length === 6 && nums.every(n => Number.isFinite(n))) {
+          statRows.push({ name, nums })
+        }
+      }
+    }
+    // 选名：默认第二个（高阶），否则第一个
+    const chosen = statRows[1] || statRows[0]
+    if (chosen) {
+      setEditName(chosen.name)
+      setCreatePreferredName(chosen.name)
+      setHp(chosen.nums[0]); setSpeed(chosen.nums[1]); setAttack(chosen.nums[2]); setDefense(chosen.nums[3]); setMagic(chosen.nums[4]); setResist(chosen.nums[5])
+    }
+
+    // 2) 获得方式 / 渠道
+    const idxAcquire = allLines.findIndex(l => l.includes('获得方式'))
+    if (idxAcquire >= 0) {
+      let method = allLines[idxAcquire].replace(/.*?获得方式/, '').trim()
+      if (!method) method = allLines[idxAcquire + 1] || ''
+      setEditMethod(method || '')
+      // 渠道枚举匹配
+      let typeGuess = ''
+      const s = method
+      if (/捕捉|可捕捉/.test(s)) typeGuess = '可捕捉宠物'
+      else if (/BOSS/.test(s)) typeGuess = 'BOSS宠物'
+      else if (/活动|VIP|年费|礼包|节日/.test(s)) typeGuess = '活动获取宠物'
+      else if (/兑换|商店/.test(s)) typeGuess = '兑换/商店'
+      else if (/任务/.test(s)) typeGuess = '任务获取'
+      else if (/超进化/.test(s)) typeGuess = '超进化'
+      else typeGuess = '其它'
+      if (acquireTypeOptions.includes(typeGuess)) setEditType(typeGuess)
+      if (/可获得|可捕捉|VIP可获得|年费/.test(s)) setEditGettable(true)
+    }
+
+    // 3) 技能表解析
+    const idxTab = allLines.findIndex(l => l.includes('技能表'))
+    let skillLines: string[] = []
+    if (idxTab >= 0) {
+      // 从“技能表”后开始，直到文本结束（或遇到明显的下一个模块关键词停止，这里简单取到结尾）
+      const after = allLines.slice(idxTab + 1)
+      // 跳过表头（包含“技能名称/等级/技能属性/类型/威力/PP/技能描述”）
+      let start = 0
+      for (let i = 0; i < after.length; i++) {
+        if (!/技能名称|等级|技能属性|类型|威力|PP|技能描述/.test(after[i])) { start = i; break }
+      }
+      skillLines = after.slice(start)
+    }
+
+    // 将“断行的威力+PP+描述”合并到上一行（例如：... 特殊 法术 | 下一行：0 20 描述）
+    const merged: string[] = []
+    const partialRe = /^(\S+)\s+(\d+)\s+(圣|火|水|风|雷|冰|木|土|金|毒|幻|灵|妖|魔|音|机械|特殊)\s+(法术|物理|特殊)(?:\s+(\d+))?/
+    for (let i = 0; i < skillLines.length; i++) {
+      let ln = skillLines[i]
+      const m = ln.match(partialRe)
+      if (m && !/\s\d+\s+\d+\s+/.test(ln) && i + 1 < skillLines.length) {
+        ln = (ln + ' ' + skillLines[i + 1]).trim()
+        i += 1
+      }
+      merged.push(ln)
+    }
+
+    const rowRe = /^(\S+)\s+(\d+)\s+(圣|火|水|风|雷|冰|木|土|金|毒|幻|灵|妖|魔|音|机械|特殊)\s+(法术|物理|特殊)\s*(\d+)?\s*(\d+)?\s*(.*)$/
+    const parsedSkills: SkillDTO[] = []
+    for (const ln of merged) {
+      const m = ln.match(rowRe)
+      if (!m) continue
+      const name = m[1]
+      const attr = m[3]
+      const kind = m[4]
+      const powerStr = m[5]
+      const desc = m[7] || ''
+      if (!isValidSkillName(name)) continue
+      const elementLabel = SHORT_ELEMENT_TO_LABEL[attr] ?? ''
+      const pow = powerStr ? Number(powerStr) : NaN
+      parsedSkills.push({
+        name,
+        element: elementLabel || '',
+        kind,
+        power: Number.isFinite(pow) ? (pow === 0 ? null : pow) : null,
+        description: desc.trim()
+      })
+    }
+
+    // 4) 满级配招 → 置顶
+    const idxCombo = allLines.findIndex(l => l.includes('满级配招'))
+    let recNames: string[] = []
+    if (idxCombo >= 0) {
+      const line = allLines[idxCombo].replace(/.*?满级配招/, '').trim()
+      const next = allLines[idxCombo + 1] || ''
+      const comboText = (line || next || '').replace(/[（）]/g, (m) => (m === '（' ? '(' : m === '）' ? ')' : m))
+      const inside = (comboText.match(/\(([^)]*)\)/)?.[1] || '').split(/、|,|，|\s+/).map(s => s.trim()).filter(Boolean)
+      const outside = comboText.replace(/\([^)]*\)/g, '').split(/、|,|，|\s+/).map(s => s.trim()).filter(Boolean)
+      recNames = Array.from(new Set([...outside, ...inside])).filter(isValidSkillName)
+    }
+
+    // 将推荐配招排最前；没在表里的，用占位补上
+    const byName = new Map<string, SkillDTO>()
+    parsedSkills.forEach(s => byName.set(s.name, s))
+    const prioritized: SkillDTO[] = []
+    for (const nm of recNames) {
+      if (byName.has(nm)) {
+        prioritized.push(byName.get(nm)!)
+        byName.delete(nm)
+      } else {
+        prioritized.push({ name: nm, element: '', kind: '', power: null, description: '' })
+      }
+    }
+    const finalSkills = [...prioritized, ...Array.from(byName.values())]
+    setEditSkills(finalSkills.length ? finalSkills : [{ name: '', element: '', kind: '', power: null, description: '' }])
+
+    // 5) 通过技能主属性简单推断元素（若未填）
+    if (!editElement) {
+      const counts: Record<string, number> = {}
+      for (const s of parsedSkills) {
+        if (!s.element) continue
+        counts[s.element] = (counts[s.element] || 0) + 1
+      }
+      const guess = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0]
+      if (guess) setEditElement(guess)
+    }
+
+    alert('已识别并填充，可继续手动调整。')
+  }
+
   return (
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
@@ -772,6 +1044,9 @@ export default function MonstersPage() {
             <button className={`btn ${BTN_FX}`} onClick={startCrawl} disabled={crawling}>
               {crawling ? '爬取中…' : '一键爬取图鉴'}
             </button>
+
+            {/* 新增：新增妖怪 */}
+            <button className={`btn btn-primary ${BTN_FX}`} onClick={startCreate}>新增妖怪</button>
           </div>
         </div>
 
@@ -986,7 +1261,7 @@ export default function MonstersPage() {
       </div>
 
       {/* 详情抽屉 */}
-      <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false) }} title={(selected as any)?.name || (selected as any)?.name_final}>
+      <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false); setIsCreating(false); setRawText('') }} title={isCreating ? '新增妖怪' : ((selected as any)?.name || (selected as any)?.name_final)}>
         {selected && (
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1005,101 +1280,44 @@ export default function MonstersPage() {
                 </>
               ) : (
                 <>
-                  <button className={`btn ${BTN_FX}`} onClick={async () => {
-                    // 抽屉内“填充”使用派生建议
-                    const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
-                      role_suggested?: string, tags?: string[]
-                    }
-                    if (typeof d?.role_suggested === 'string') setEditRole(d.role_suggested)
-                    if (Array.isArray(d?.tags)) {
-                      const filtered = d.tags.filter(t => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
-                      setEditTags(filtered.join(' '))
-                    }
-                  }}>一键匹配（填充）</button>
+                  {!isCreating && (
+                    <button className={`btn ${BTN_FX}`} onClick={async () => {
+                      // 抽屉内“填充”使用派生建议（仅编辑已有时）
+                      const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
+                        role_suggested?: string, tags?: string[]
+                      }
+                      if (typeof d?.role_suggested === 'string') setEditRole(d.role_suggested)
+                      if (Array.isArray(d?.tags)) {
+                        const filtered = d.tags.filter(t => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
+                        setEditTags(filtered.join(' '))
+                      }
+                    }}>一键匹配（填充）</button>
+                  )}
                   <button className={`btn ${BTN_FX}`} onClick={cancelEdit}>取消</button>
-                  <button className={`btn btn-primary ${BTN_FX}`} onClick={saveEdit} disabled={saving}>{saving ? '保存中…' : '保存'}</button>
+                  <button className={`btn btn-primary ${BTN_FX}`} onClick={isCreating ? saveCreate : saveEdit} disabled={saving}>
+                    {saving ? '保存中…' : '保存'}
+                  </button>
                 </>
               )}
             </div>
 
-            {!isEditing ? (
+            {isEditing ? (
               <>
-                {/* 获取方式/渠道展示 */}
+                {/* 识别粘贴框（仅编辑态显示；新增和编辑都可用） */}
                 <div className="card p-3 space-y-2">
-                  <div className="text-sm text-gray-600">获取渠道：{(selected as any)?.type || '—'}</div>
-                  <div className="text-sm text-gray-600">获取方式：</div>
-                  <div className="text-sm whitespace-pre-wrap">{(selected as any)?.method || '—'}</div>
-                  <div className="text-xs text-gray-400">
-                    创建：{(selected as any)?.created_at || '—'}，更新：{(selected as any)?.updated_at || '—'}
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-semibold">识别粘贴框</h4>
+                    <button className={`btn ${BTN_FX}`} onClick={() => parseAndPrefillFromText(rawText)}>识别并填充</button>
                   </div>
+                  <textarea
+                    className="input h-32"
+                    placeholder="将网页复制的资料直接粘贴到这里，例如包含：满级配招 / 获得方式 / 种族值 / 技能表 等。"
+                    value={rawText}
+                    onChange={e => setRawText(e.target.value)}
+                  />
+                  {createPreferredName && <div className="text-xs text-gray-500">已选择形态：{createPreferredName}</div>}
                 </div>
 
-                <div>
-                  <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div className="p-2 bg-gray-50 rounded text-center">体力：<b>{showStats.hp}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">速度：<b>{showStats.speed}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">攻击：<b>{showStats.attack}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">防御：<b>{showStats.defense}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">法术：<b>{showStats.magic}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
-                    <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{(showStats as any).sum}</b></div>
-                  </div>
-                </div>
-
-                <div>
-                  <h4 className="font-semibold mb-2">技能</h4>
-                  {skills.isLoading && <div className="text-sm text-gray-500">加载中...</div>}
-                  {!skills.data?.length && !skills.isLoading && <div className="text-sm text-gray-500">暂无技能数据</div>}
-                  <ul className="space-y-2">
-                    {skills.data?.filter(s => isValidSkillName(s.name)).map(s => (
-                      <li key={`${s.id || s.name}`} className="p-3 bg-gray-50 rounded">
-                        <div className="flex items-center justify-between">
-                          <div className="font-medium">{s.name}</div>
-                          <div className="text-xs text-gray-500">
-                            {[s.element, s.kind, (s.power ?? '')].filter(Boolean).join(' / ') || '—'}
-                          </div>
-                        </div>
-                        {isMeaningfulDesc(s.description) && (
-                          <div className="text-sm text-gray-600 whitespace-pre-wrap mt-1">{s.description}</div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                {/* 标签分三类展示 */}
-                <div>
-                  <h4 className="font-semibold mb-2">标签</h4>
-                  {(() => {
-                    const b = bucketizeTags((selected as any).tags)
-                    return (
-                      <div className="space-y-2">
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">增强类</div>
-                          <div className="flex flex-wrap gap-1">
-                            {b.buf.length ? b.buf.map(t => <span key={t} className="badge">🟢{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">削弱类</div>
-                          <div className="flex flex-wrap gap-1">
-                            {b.deb.length ? b.deb.map(t => <span key={t} className="badge">🔴{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">特殊类</div>
-                          <div className="flex flex-wrap gap-1">
-                            {b.util.length ? b.util.map(t => <span key={t} className="badge">🟣{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })()}
-                </div>
-              </>
-            ) : (
-              <>
                 {/* 基础信息编辑 */}
                 <div className="card p-3 space-y-3">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1231,6 +1449,82 @@ export default function MonstersPage() {
                   <div className="text-xs text-gray-500">
                     保存时会逐条写入；留空或无效的技能名将被忽略。
                   </div>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* 获取方式/渠道展示 */}
+                <div className="card p-3 space-y-2">
+                  <div className="text-sm text-gray-600">获取渠道：{(selected as any)?.type || '—'}</div>
+                  <div className="text-sm text-gray-600">获取方式：</div>
+                  <div className="text-sm whitespace-pre-wrap">{(selected as any)?.method || '—'}</div>
+                  <div className="text-xs text-gray-400">
+                    创建：{(selected as any)?.created_at || '—'}，更新：{(selected as any)?.updated_at || '—'}
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="p-2 bg-gray-50 rounded text-center">体力：<b>{showStats.hp}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">速度：<b>{showStats.speed}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">攻击：<b>{showStats.attack}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">防御：<b>{showStats.defense}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">法术：<b>{showStats.magic}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
+                    <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{(showStats as any).sum}</b></div>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 className="font-semibold mb-2">技能</h4>
+                  {skills.isLoading && <div className="text-sm text-gray-500">加载中...</div>}
+                  {!skills.data?.length && !skills.isLoading && <div className="text-sm text-gray-500">暂无技能数据</div>}
+                  <ul className="space-y-2">
+                    {skills.data?.filter(s => isValidSkillName(s.name)).map(s => (
+                      <li key={`${s.id || s.name}`} className="p-3 bg-gray-50 rounded">
+                        <div className="flex items-center justify-between">
+                          <div className="font-medium">{s.name}</div>
+                          <div className="text-xs text-gray-500">
+                            {[s.element, s.kind, (s.power ?? '')].filter(Boolean).join(' / ') || '—'}
+                          </div>
+                        </div>
+                        {isMeaningfulDesc(s.description) && (
+                          <div className="text-sm text-gray-600 whitespace-pre-wrap mt-1">{s.description}</div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                {/* 标签分三类展示 */}
+                <div>
+                  <h4 className="font-semibold mb-2">标签</h4>
+                  {(() => {
+                    const b = bucketizeTags((selected as any).tags)
+                    return (
+                      <div className="space-y-2">
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">增强类</div>
+                          <div className="flex flex-wrap gap-1">
+                            {b.buf.length ? b.buf.map(t => <span key={t} className="badge">🟢{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">削弱类</div>
+                          <div className="flex flex-wrap gap-1">
+                            {b.deb.length ? b.deb.map(t => <span key={t} className="badge">🔴{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500 mb-1">特殊类</div>
+                          <div className="flex flex-wrap gap-1">
+                            {b.util.length ? b.util.map(t => <span key={t} className="badge">🟣{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
                 </div>
               </>
             )}
