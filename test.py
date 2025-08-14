@@ -1,4 +1,3 @@
-# server/app/services/crawler_server.py
 # -*- coding: utf-8 -*-
 """
 仅抓取“获取渠道”测试版（强化修复版）
@@ -11,8 +10,6 @@
 运行示例：
 python server/app/services/crawler_server.py -n 100 -o out_acq_100.json
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -169,7 +166,7 @@ def pick_main_container(soup: BeautifulSoup) -> Tag:
             return node
     return soup.body or soup
 
-# ------- 详情页解析 & 链接收集 -------
+# ------- 详情页解析 & 链接收集（注意：collect_detail_links 在此处，位于 main 之前） -------
 
 def collect_detail_links(limit: int) -> List[str]:
     links: List[str] = []
@@ -466,7 +463,7 @@ def extract_acq_only(url: str) -> Dict[str, Any]:
 def main():
     log_setup()
     ap = argparse.ArgumentParser()
-    ap.add_argument("-n", "--limit", type=int, default=500, help="只抓前 N 条详情链接（默认500）")
+    ap.add_argument("-n", "--limit", type=int, default=500, help="只抓前 N 条详情链接（默认100）")
     ap.add_argument("-o", "--out", type=str, default="", help="输出文件路径（JSON）")
     args = ap.parse_args()
 
