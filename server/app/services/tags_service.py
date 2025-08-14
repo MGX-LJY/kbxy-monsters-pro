@@ -217,9 +217,68 @@ SPECIAL_PATTERNS: Dict[str, List[str]] = {
     "util_penetrate":    [r"无视防御|破防|穿透(护盾|防御)"],
 }
 
+# ================
+# 审计/修复配置
+# ================
+
+TAG_AUDIT_ENABLE: bool = os.getenv("TAG_AUDIT_ENABLE", "1") not in {"0", "false", "False"}
+TAG_AUDIT_DIR: str = os.getenv("TAG_AUDIT_DIR", "storage/tag_audit").strip()
+# 写库策略：ai | regex | repair_union
+TAG_WRITE_STRATEGY: str = os.getenv("TAG_WRITE_STRATEGY", "ai").strip().lower()
+# repair_union 是否做关键词二次验证（降低误合并）
+TAG_AI_REPAIR_VERIFY: bool = os.getenv("TAG_AI_REPAIR_VERIFY", "1") not in {"0", "false", "False"}
+# 是否额外请求自由候选新标签短语
+TAG_FREEFORM_ENABLE: bool = os.getenv("TAG_FREEFORM_ENABLE", "1") not in {"0", "false", "False"}
+
+# 关键词库（用于验证 AI-only 标签是否在文本中有明显线索；可逐步补齐）
+KEYWORDS_FOR_CODE: Dict[str, List[str]] = {
+    "buf_atk_up": ["攻击 提升", "攻击 上升", "攻击 增加"],
+    "buf_mag_up": ["法术 提升", "魔法 提升", "法术 上升", "魔法 上升"],
+    "buf_spd_up": ["加速", "速度 提升", "迅捷", "敏捷"],
+    "buf_def_up": ["防御 提升", "护甲", "硬化", "铁壁"],
+    "buf_res_up": ["抗性 提升", "易伤 降低", "抗性 增加"],
+    "buf_acc_up": ["命中率 提升", "命中 提升"],
+    "buf_crit_up": ["必定暴击", "暴击率 提升", "会心"],
+    "buf_heal": ["治疗", "回复", "恢复"],
+    "buf_shield": ["护盾", "结界", "减伤", "庇护", "保护"],
+    "buf_purify": ["净化", "清除 负面", "解除 异常"],
+    "buf_immunity": ["免疫 异常", "免疫 控制"],
+
+    "deb_atk_down": ["攻击 降低"],
+    "deb_mag_down": ["法术 降低", "魔法 降低"],
+    "deb_def_down": ["防御 降低"],
+    "deb_res_down": ["抗性 降低"],
+    "deb_spd_down": ["减速", "速度 降低"],
+    "deb_acc_down": ["命中率 降低", "命中 降低"],
+    "deb_stun": ["眩晕", "昏迷"],
+    "deb_bind": ["束缚", "禁锢"],
+    "deb_sleep": ["睡眠"],
+    "deb_freeze": ["冰冻"],
+    "deb_confuse_seal": ["封印", "禁技", "无法使用技能", "禁止使用技能"],
+    "deb_suffocate": ["窒息"],
+    "deb_dot": ["流血", "中毒", "灼烧", "燃烧", "腐蚀", "灼伤"],
+    "deb_dispel": ["驱散 对方", "消除 对方 增益"],
+
+    "util_first": ["先手", "先制"],
+    "util_multi": ["多段", "连击", "二连", "三连", "四连"],
+    "util_pp_drain": ["扣 PP", "减少 技能 使用 次数", "降 技能 次数"],
+    "util_reflect": ["反击", "反伤", "反弹", "反射 伤害"],
+    "util_charge_next": ["伤害 加倍", "威力 加倍", "下一回合 加倍", "蓄力 加倍"],
+    "util_penetrate": ["无视 防御", "穿透 防御", "穿透 护盾", "破防"],
+}
+
 # ======================
 # 工具
 # ======================
+
+def _ensure_dir(path: str) -> None:
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+
+def _today_str() -> str:
+    return datetime.utcnow().strftime("%Y%m%d")
 
 def _text_of_skills(monster: Monster) -> str:
     parts: List[str] = []
@@ -252,8 +311,38 @@ def _detect(pattern_map: Dict[str, List[str]], text: str) -> List[str]:
             out.append(code)
     return out
 
+def _flatten_grouped(g: Dict[str, List[str]]) -> List[str]:
+    flat: List[str] = []
+    for cat in ("buff", "debuff", "special"):
+        flat.extend(g.get(cat, []))
+    seen: Set[str] = set()
+    out: List[str] = []
+    for t in flat:
+        if t in ALL_CODES and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+def _find_keyword_snippet(code: str, text: str) -> Tuple[bool, Optional[str]]:
+    """
+    在技能文本里按 KEYWORDS_FOR_CODE 做一次宽松验证；
+    命中则返回（True, 片段），否则（False, None）
+    """
+    kws = KEYWORDS_FOR_CODE.get(code, [])
+    if not text or not kws:
+        return False, None
+    for kw in kws:
+        # 允许“词+空白若干+词”的松匹配
+        pattern = re.escape(kw).replace("\\ ", r"\s*")
+        m = re.search(pattern, text)
+        if m:
+            i = max(0, m.start() - 18)
+            j = min(len(text), m.end() + 18)
+            return True, text[i:j]
+    return False, None
+
 # ======================
-# 内置 AI 识别（OpenAI 兼容 DeepSeek）—— 独立接口
+# 内置 AI 识别（OpenAI 兼容 DeepSeek）—— 固定标签集合
 # ======================
 
 AI_SYSTEM_PROMPT = (
@@ -269,6 +358,12 @@ AI_SYSTEM_PROMPT = (
     "3) 若没有则留空数组；\n"
     "4) 仅输出形如 {{\"buff\":[],\"debuff\":[],\"special\":[]}} 的 JSON；不要任何额外解释；\n"
     "5) 输入可能含中文描述与技能名。"
+)
+
+FREEFORM_SYSTEM_PROMPT = (
+    "你是一个效果名抽取器。阅读输入的技能文本，"
+    "如果你认为“固定标签集合”不够表达关键机制，请给出最多5个短语建议作为未来可能的新标签候选。"
+    "输出严格 JSON：{\"candidates\": [\"短语1\", \"短语2\", ...]}；短语必须 <= 8 个汉字。"
 )
 
 def _build_ai_payload(text: str) -> Dict[str, Any]:
@@ -294,6 +389,23 @@ def _build_ai_payload(text: str) -> Dict[str, Any]:
     }
     return {"url": base_url, "payload": payload}
 
+def _build_freeform_payload(text: str) -> Dict[str, Any]:
+    base_url = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions").strip()
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip() or "deepseek-chat"
+    txt = (text or "").strip()
+    if len(txt) > 8000:
+        txt = txt[:8000]
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": FREEFORM_SYSTEM_PROMPT},
+            {"role": "user", "content": f"技能文本：\n{txt}\n\n请只输出 JSON。"},
+        ],
+    }
+    return {"url": base_url, "payload": payload}
+
 def _validate_ai_result(obj: Any) -> Dict[str, List[str]]:
     def _pick(arr: Any, allowed: Set[str]) -> List[str]:
         if not isinstance(arr, list):
@@ -310,6 +422,23 @@ def _validate_ai_result(obj: Any) -> Dict[str, List[str]]:
     debuff = _pick(obj.get("debuff", []), ALL_DEBUFF_CODES) if isinstance(obj, dict) else []
     special = _pick(obj.get("special", []), ALL_SPECIAL_CODES) if isinstance(obj, dict) else []
     return {"buff": buff, "debuff": debuff, "special": special}
+
+def _validate_freeform(obj: Any) -> List[str]:
+    if not isinstance(obj, dict):
+        return []
+    arr = obj.get("candidates", [])
+    out: List[str] = []
+    seen: Set[str] = set()
+    if isinstance(arr, list):
+        for x in arr:
+            if isinstance(x, str):
+                s = x.strip()
+                if not s or len(s) > 16:  # 稍放宽
+                    continue
+                if s not in seen:
+                    seen.add(s)
+                    out.append(s)
+    return out[:5]
 
 @lru_cache(maxsize=8192)
 def _ai_classify_cached(text: str) -> Dict[str, List[str]]:
@@ -333,16 +462,39 @@ def _ai_classify_cached(text: str) -> Dict[str, List[str]]:
         "Content-Type": "application/json",
     }
 
+    with httpx.Client(timeout=20) as client:
+        resp = client.post(url, headers=headers, json=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    obj = json.loads(content) if isinstance(content, str) and content.strip().startswith("{") else {}
+    return _validate_ai_result(obj)
+
+def _ai_freeform_candidates(text: str) -> List[str]:
+    """
+    可选的自由候选新标签短语（用于完善词表/正则），失败静默返回空。
+    """
+    if not TAG_FREEFORM_ENABLE:
+        return []
     try:
+        if not _HAS_HTTPX:
+            return []
+        key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if not key:
+            return []
+        conf = _build_freeform_payload(text)
+        url: str = conf["url"]
+        payload: Dict[str, Any] = conf["payload"]
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         with httpx.Client(timeout=20) as client:
             resp = client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         obj = json.loads(content) if isinstance(content, str) and content.strip().startswith("{") else {}
-        return _validate_ai_result(obj)
-    except Exception as e:
-        raise RuntimeError(f"AI 标签识别调用失败：{e}")
+        return _validate_freeform(obj)
+    except Exception:
+        return []
 
 def ai_classify_text(text: str) -> Dict[str, List[str]]:
     """
@@ -362,22 +514,125 @@ def ai_suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
     text = _text_of_skills(monster)
     return ai_classify_text(text)
 
+# ======================
+# 审计 / 修复（核心）
+# ======================
+
+def _build_diff(ai_g: Dict[str, List[str]], re_g: Dict[str, List[str]]) -> Dict[str, Any]:
+    diff: Dict[str, Any] = {"by_cat": {}, "overall": {}}
+    total_ai, total_re = set(), set()
+    for cat in ("buff", "debuff", "special"):
+        ai_set = set(ai_g.get(cat, []))
+        re_set = set(re_g.get(cat, []))
+        total_ai |= ai_set
+        total_re |= re_set
+        diff["by_cat"][cat] = {
+            "ai_only": sorted(list(ai_set - re_set)),
+            "regex_only": sorted(list(re_set - ai_set)),
+            "both": sorted(list(ai_set & re_set)),
+        }
+    diff["overall"] = {
+        "ai_only": sorted(list(total_ai - total_re)),
+        "regex_only": sorted(list(total_re - total_ai)),
+        "both": sorted(list(total_ai & total_re)),
+        "ai_flat": sorted(list(total_ai)),
+        "regex_flat": sorted(list(total_re)),
+    }
+    return diff
+
+def _repair_union(text: str, re_flat: List[str], ai_flat: List[str]) -> Tuple[List[str], Dict[str, Any]]:
+    """
+    以 regex 结果为基，合并“通过验证的 AI-only 标签”。
+    返回 (merged_tags, verify_report)
+    """
+    base = list(re_flat)
+    ai_only = [t for t in ai_flat if t not in base]
+    verified: Dict[str, Any] = {}
+    for code in ai_only:
+        ok, snip = (True, None)
+        if TAG_AI_REPAIR_VERIFY:
+            ok, snip = _find_keyword_snippet(code, text)
+        verified[code] = {"accepted": bool(ok), "snippet": snip}
+        if ok:
+            base.append(code)
+    return sorted(base), verified
+
+def _write_audit(monster: Monster, text: str,
+                 ai_g: Dict[str, List[str]], re_g: Dict[str, List[str]],
+                 chosen: List[str], strategy: str,
+                 repair_verify: Optional[Dict[str, Any]] = None,
+                 freeform_candidates: Optional[List[str]] = None) -> None:
+    if not TAG_AUDIT_ENABLE:
+        return
+    try:
+        _ensure_dir(TAG_AUDIT_DIR)
+        ts = datetime.utcnow().isoformat()
+        diff = _build_diff(ai_g, re_g)
+        record = {
+            "timestamp": ts,
+            "monster": {"id": getattr(monster, "id", None), "name": getattr(monster, "name", None)},
+            "strategy": strategy,
+            "skills_text_len": len(text or ""),
+            "ai_grouped": ai_g,
+            "regex_grouped": re_g,
+            "diff": diff,
+            "chosen_flat": chosen,
+            "repair_verify": repair_verify or {},
+            "freeform_candidates": freeform_candidates or [],
+        }
+        # 1) 按日汇总 JSONL
+        dayfile = os.path.join(TAG_AUDIT_DIR, f"audit_{_today_str()}.jsonl")
+        with open(dayfile, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        # 2) 每怪物快照
+        monfile = os.path.join(TAG_AUDIT_DIR, f"mon_{getattr(monster,'id','unknown')}_latest.json")
+        with open(monfile, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+    except Exception:
+        # 审计失败不影响主流程
+        pass
+
+# ======================
+# AI 建议（拍平）—— 已融入审计/修复/策略
+# ======================
+
 def ai_suggest_tags_for_monster(monster: Monster) -> List[str]:
     """
-    AI 版拍平结果。
+    AI 版拍平结果（兼容原接口）：
+      - 先 AI 分类
+      - 与正则分组对比，写入审计 JSON
+      - 根据 TAG_WRITE_STRATEGY 选择最终返回的一维标签
+        * ai（默认）：仅 AI
+        * regex：仅正则
+        * repair_union：regex ∪（验证通过的 AI-only）
+      - 可选 freeform 候选短语（不影响返回）
     """
-    g = ai_suggest_tags_grouped(monster)
-    flat: List[str] = []
-    for cat in ("buff", "debuff", "special"):
-        flat.extend(g.get(cat, []))
-    # 去重保持顺序（且必须在固定 code 集）
-    seen: Set[str] = set()
-    out: List[str] = []
-    for t in flat:
-        if t in ALL_CODES and t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+    text = _text_of_skills(monster)
+    # 1) 结果获取
+    ai_g = ai_classify_text(text)
+    re_g = suggest_tags_grouped(monster)
+    ai_flat = _flatten_grouped(ai_g)
+    re_flat = _flatten_grouped(re_g)
+
+    # 2) 策略
+    strategy = TAG_WRITE_STRATEGY if TAG_WRITE_STRATEGY in {"ai", "regex", "repair_union"} else "ai"
+    repair_verify = {}
+    if strategy == "ai":
+        chosen = ai_flat
+    elif strategy == "regex":
+        chosen = re_flat
+    else:
+        chosen, repair_verify = _repair_union(text, re_flat, ai_flat)
+
+    # 3) 可选自由候选短语（完善词表/正则）
+    freeform_candidates = _ai_freeform_candidates(text) if TAG_FREEFORM_ENABLE else []
+
+    # 4) 审计落盘
+    _write_audit(
+        monster, text, ai_g, re_g, chosen, strategy,
+        repair_verify=repair_verify, freeform_candidates=freeform_candidates
+    )
+    return chosen
 
 # ======================
 # 批量 AI 打标签：进度注册表（内存）
@@ -487,6 +742,7 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
     """
     启动后台线程，按顺序对给定 monster id 列表进行 AI 打标签并落库。
     - 返回 job_id，前端可轮询 /tags/ai_batch/{job_id} 获取进度。
+    - 内部已自动做审计与（可选）修复合并（取决于 TAG_WRITE_STRATEGY）。
     """
     ids = [int(x) for x in (ids or []) if isinstance(x, (int, str)) and str(x).isdigit()]
     ids = list(dict.fromkeys(ids))  # 去重保序
@@ -513,6 +769,7 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
                             _registry.update(_job_id, failed_inc=1, error={"id": mid, "error": "monster not found"})
                             continue
 
+                        # 关键：此处调用已具备审计/修复策略的 AI 接口
                         tags = ai_suggest_tags_for_monster(m)  # 失败抛出，外层捕获
                         m.tags = upsert_tags(session, tags)
                         session.commit()
@@ -553,16 +810,7 @@ def suggest_tags_for_monster(monster: Monster) -> List[str]:
     默认：正则版拍平（用于 Monster.tags 存库）。
     """
     g = suggest_tags_grouped(monster)
-    flat: List[str] = []
-    for cat in ("buff", "debuff", "special"):
-        flat.extend(g.get(cat, []))
-    seen: Set[str] = set()
-    out: List[str] = []
-    for t in flat:
-        if t in ALL_CODES and t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+    return _flatten_grouped(g)
 
 def extract_signals(monster: Monster) -> Dict[str, object]:
     """
