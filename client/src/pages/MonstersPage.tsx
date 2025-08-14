@@ -46,48 +46,10 @@ const bucketizeTags = (tags: string[] | undefined): TagBuckets => {
   return b
 }
 
-// —— 统一 code -> 中文（补齐所有后端 code，避免英文直出） —— //
-const TAG_LABELS: Record<string, string> = {
-  // 增强类（buff）
-  'buf_atk_up': '攻↑',
-  'buf_mag_up': '法↑',
-  'buf_spd_up': '速↑',
-  'buf_def_up': '防↑',
-  'buf_res_up': '抗↑',
-  'buf_acc_up': '命中↑',
-  'buf_crit_up': '暴击↑',
-  'buf_heal': '治疗',
-  'buf_shield': '护盾/减伤',
-  'buf_purify': '净化己减益',
-  'buf_immunity': '免疫异常',
-
-  // 削弱类（debuff）
-  'deb_atk_down': '攻↓',
-  'deb_mag_down': '法术↓',
-  'deb_def_down': '防↓',
-  'deb_res_down': '抗↓',
-  'deb_spd_down': '速↓',
-  'deb_acc_down': '命中↓',
-  'deb_stun': '眩晕/昏迷',
-  'deb_bind': '束缚/禁锢',
-  'deb_sleep': '睡眠',
-  'deb_freeze': '冰冻',
-  'deb_confuse_seal': '混乱/封印',
-  'deb_suffocate': '窒息',
-  'deb_dot': '持续伤害',
-  'deb_dispel': '驱散敌增益',
-
-  // 特殊类（utility）
-  'util_first': '先手',
-  'util_multi': '多段',
-  'util_pp_drain': 'PP压制',
-  'util_reflect': '反击/反伤',
-  'util_charge_next': '加倍/下一击强',
-  'util_penetrate': '穿透/破盾',
-}
-const tagLabel = (code: string) => TAG_LABELS[code] || code
+// —— 标签 emoji（保持不变） —— //
 const tagEmoji = (code: string) =>
   code.startsWith('buf_') ? '🟢' : code.startsWith('deb_') ? '🔴' : code.startsWith('util_') ? '🟣' : ''
+
 
 // —— 完整元素映射（code -> 中文），以及选项数组 —— //
 const ELEMENTS: Record<string, string> = {
@@ -184,7 +146,6 @@ export default function MonstersPage() {
       if (crawlLimit && /^\d+$/.test(crawlLimit)) payload.limit = parseInt(crawlLimit, 10)
       const res = await api.post('/api/v1/crawl/crawl_all', payload)
       const d = res?.data || {}
-      // 兼容后端字段名
       const fetched = d.fetched ?? d.seen ?? 0
       alert(`完成：遍历 ${fetched}，新增 ${d.inserted||0}，更新 ${d.updated||0}，技能变更 ${d.skills_changed||0}`)
       await Promise.all([list.refetch(), stats.refetch(), wstats.refetch()])
@@ -198,6 +159,33 @@ export default function MonstersPage() {
       setCrawling(false)
     }
   }
+
+  // ====== 新增：从后端加载标签 i18n（code -> 中文），无该接口时兜底空对象 ======
+  const tagI18n = useQuery({
+    queryKey: ['tag_i18n'],
+    queryFn: async () => {
+      try {
+        // 推荐的轻量接口：仅返回 i18n 映射
+        const r1 = await api.get('/tags/i18n')
+        // 允许后端返回 { i18n: {...} } 或直接返回 {code:label}
+        return (r1.data?.i18n || r1.data || {}) as Record<string, string>
+      } catch {
+        try {
+          // 兜底：若只提供了 catalog，也尝试读取里面的 i18n
+          const r2 = await api.get('/tags/catalog')
+          return (r2.data?.i18n || {}) as Record<string, string>
+        } catch {
+          return {} as Record<string, string>
+        }
+      }
+    },
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const tagLabel = (code: string) =>
+    (tagI18n.data && typeof (tagI18n.data as any)[code] === 'string')
+      ? (tagI18n.data as any)[code]
+      : code
 
   // 列表 & 基础数据
   const list = useQuery({
@@ -1145,7 +1133,7 @@ export default function MonstersPage() {
       {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 */}
       {overlay.show && (
         <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
-          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
+          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text中心 space-y-3">
             <div className="text-2xl">🐱</div>
             <div className="text-lg font-semibold">{overlay.title || '处理中…'}</div>
             <div className="text-sm text-gray-600">{overlay.sub || '请稍候~'}</div>

@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "version": "2025-08-14",
+  "updated_at": "2025-08-14T00:00:00Z",
+
+  "i18n": {
+    "zh": {
+      "buf_atk_up": "攻↑",
+      "buf_mag_up": "法↑",
+      "buf_spd_up": "速↑",
+      "buf_def_up": "防↑",
+      "buf_res_up": "抗↑",
+      "buf_acc_up": "命中↑",
+      "buf_crit_up": "暴击↑",
+      "buf_heal": "治疗",
+      "buf_shield": "护盾/减伤",
+      "buf_purify": "净化己减益",
+      "buf_immunity": "免疫异常",
+
+      "deb_atk_down": "攻↓",
+      "deb_mag_down": "法术↓",
+      "deb_def_down": "防↓",
+      "deb_res_down": "抗↓",
+      "deb_spd_down": "速↓",
+      "deb_acc_down": "命中↓",
+      "deb_stun": "眩晕/昏迷",
+      "deb_bind": "束缚/禁锢",
+      "deb_sleep": "睡眠",
+      "deb_freeze": "冰冻",
+      "deb_confuse_seal": "混乱/封印",
+      "deb_suffocate": "窒息",
+      "deb_dot": "持续伤害",
+      "deb_dispel": "驱散敌增益",
+
+      "util_first": "先手",
+      "util_multi": "多段",
+      "util_pp_drain": "PP压制",
+      "util_reflect": "反击/反伤",
+      "util_charge_next": "加倍/下一击强",
+      "util_penetrate": "穿透/破盾"
+    },
+    "en": {
+      "buf_atk_up": "ATK Up",
+      "buf_mag_up": "MAG Up",
+      "buf_spd_up": "SPD Up",
+      "buf_def_up": "DEF Up",
+      "buf_res_up": "RES Up",
+      "buf_acc_up": "ACC Up",
+      "buf_crit_up": "Crit Rate Up",
+      "buf_heal": "Heal",
+      "buf_shield": "Shield / Damage Cut",
+      "buf_purify": "Cleanse (Self)",
+      "buf_immunity": "Status Immunity",
+
+      "deb_atk_down": "ATK Down",
+      "deb_mag_down": "MAG Down",
+      "deb_def_down": "DEF Down",
+      "deb_res_down": "RES Down",
+      "deb_spd_down": "SPD Down",
+      "deb_acc_down": "ACC Down",
+      "deb_stun": "Stun",
+      "deb_bind": "Bind/Root",
+      "deb_sleep": "Sleep",
+      "deb_freeze": "Freeze",
+      "deb_confuse_seal": "Confuse/Seal",
+      "deb_suffocate": "Suffocate",
+      "deb_dot": "Damage over Time",
+      "deb_dispel": "Dispel Enemy Buffs",
+
+      "util_first": "First Strike",
+      "util_multi": "Multi-hit",
+      "util_pp_drain": "PP Drain",
+      "util_reflect": "Counter/Reflect",
+      "util_charge_next": "Charge Next / Double",
+      "util_penetrate": "Penetrate/Shield Break"
+    }
+  },
+
+  "categories": {
+    "buff": [
+      "buf_atk_up", "buf_mag_up", "buf_spd_up", "buf_def_up", "buf_res_up",
+      "buf_acc_up", "buf_crit_up", "buf_heal", "buf_shield", "buf_purify", "buf_immunity"
+    ],
+    "debuff": [
+      "deb_atk_down", "deb_mag_down", "deb_def_down", "deb_res_down", "deb_spd_down",
+      "deb_acc_down", "deb_stun", "deb_bind", "deb_sleep", "deb_freeze",
+      "deb_confuse_seal", "deb_suffocate", "deb_dot", "deb_dispel"
+    ],
+    "special": [
+      "util_first", "util_multi", "util_pp_drain", "util_reflect", "util_charge_next", "util_penetrate"
+    ]
+  },
+
+  "patterns": {
+    "global_macros": {
+      "CN_NUM": "[一二两三四五六七八九十百千]+",
+      "SELF": "(?:自身|自我|自己|本方|我方)",
+      "ENEMY": "(?:对方|对手|敌(?:人|方))",
+      "UP": "(?:提升|提高|上升|增强|增加|加成|升高|强化)",
+      "DOWN": "(?:下降|降低|减少|衰减|减弱)",
+      "LEVEL": "(?:\\s*(?:{CN_NUM}|\\d+)\\s*级)?",
+      "ONE_OR_TWO": "(?:一|1|两|2|一或两|1或2|1-2|1～2|1~2)",
+      "SEP": "(?:\\s*[、，,/和与及]+\\s*)"
+    },
+    "by_code": {
+      "buf_atk_up": [
+        "{SELF}.*?攻击.*?{UP}",
+        "{UP}.*?{SELF}.*?攻击",
+        "攻击(?:{SEP}(?:法术|魔法|防御|速度|抗性|命中率|暴击率))*?各{UP}{LEVEL}",
+        "有\\d+%?机会.*?{UP}.*?{SELF}.*?攻击"
+      ],
+      "buf_mag_up": [
+        "{SELF}.*?(法术|魔法).*?{UP}",
+        "{UP}.*?{SELF}.*?(法术|魔法)",
+        "(法术|魔法)(?:{SEP}(?:攻击|防御|速度|抗性|命中率|暴击率))*?各{UP}{LEVEL}",
+        "有\\d+%?机会.*?{UP}.*?{SELF}.*?(法术|魔法)"
+      ],
+      "buf_spd_up": [
+        "{SELF}.*?速度.*?{UP}|{SELF}.*?(加速|迅捷|敏捷提升|加快速度)",
+        "{UP}.*?{SELF}.*?速度",
+        "速度(?:{SEP}(?:攻击|防御|法术|魔法|抗性))*?各{UP}{LEVEL}"
+      ],
+      "buf_def_up": [
+        "{SELF}.*?(防御|防御力).*?{UP}|{SELF}.*?(护甲|硬化|铁壁)",
+        "{UP}.*?{SELF}.*?(防御|防御力)",
+        "(防御|防御力)(?:{SEP}(?:攻击|法术|魔法|速度|抗性))*?各{UP}{LEVEL}"
+      ],
+      "buf_res_up": [
+        "{SELF}.*?(抗性|抗性值).*?{UP}|{SELF}.*?抗性增强|{SELF}.*?减易伤",
+        "{UP}.*?{SELF}.*?(抗性|抗性值)",
+        "(抗性|抗性值)(?:{SEP}(?:攻击|防御|速度|法术|魔法))*?各{UP}{LEVEL}"
+      ],
+      "buf_acc_up": [
+        "{SELF}.*?命中率.*?{UP}",
+        "{UP}.*?{SELF}.*?命中率",
+        "命中率(?:{SEP}(?:暴击率|攻击|防御|速度|抗性|法术|魔法))*?各{UP}{LEVEL}"
+      ],
+      "buf_crit_up": [
+        "{SELF}.*?(暴击|暴击率|会心).*?{UP}",
+        "(必定暴击|命中时必定暴击)",
+        "{UP}.*?{SELF}.*?(暴击|暴击率|会心)",
+        "暴击率(?:{SEP}(?:命中率|攻击|防御|速度|抗性|法术|魔法))*?各{UP}{LEVEL}"
+      ],
+      "buf_heal": [
+        "(回复|治疗|恢复).*?({SELF}|自身体力|自身HP|自身生命|自身最大血量)",
+        "给对手造成伤害的\\s*1/2\\s*回复",
+        "(?:[一二三四五六七八九十]|\\d+)\\s*回合内.*?每回合.*?(回复|恢复)"
+      ],
+      "buf_shield": [
+        "护盾|护体|结界",
+        "(所受|受到).*(法术|物理)?伤害.*(减少|降低|减半|减免|降低\\d+%|减少\\d+%|减)(?!.*敌方)",
+        "伤害(减少|降低|减半|减免|降低\\d+%|减少\\d+%)",
+        "减伤(?!.*敌方)|庇护|保护"
+      ],
+      "buf_purify": [
+        "净化",
+        "(清除|消除|解除|去除|移除).*?{SELF}.*?(负面|异常|减益|不良|状态)",
+        "(将|把).*?{SELF}.*?(负面|异常|减益).*?(转移|移交).*?{ENEMY}"
+      ],
+      "buf_immunity": [
+        "免疫(异常|控制|不良)状态?",
+        "([一二三四五六七八九十]+|\\d+)\\s*回合.*?免疫.*?(异常|控制|不良)"
+      ],
+
+      "deb_atk_down": [
+        "(?:{ENEMY}.*?)?攻击{DOWN}{LEVEL}",
+        "{DOWN}.*?{ENEMY}.*?攻击{LEVEL}",
+        "攻击(?:{SEP}(?:防御|速度|法术|魔法|抗性|命中率))*?各{DOWN}{LEVEL}"
+      ],
+      "deb_mag_down": [
+        "(?:{ENEMY}.*?)?(法术|魔法){DOWN}{LEVEL}",
+        "{DOWN}.*?{ENEMY}.*?(法术|魔法){LEVEL}",
+        "(法术|魔法)(?:{SEP}(?:攻击|防御|速度|抗性|命中率))*?各{DOWN}{LEVEL}"
+      ],
+      "deb_def_down": [
+        "(?:{ENEMY}.*?)?(防御|防御力){DOWN}{LEVEL}",
+        "{DOWN}.*?{ENEMY}.*?(防御|防御力){LEVEL}",
+        "(防御|防御力)(?:{SEP}(?:攻击|法术|魔法|速度|抗性|命中率))*?各{DOWN}{LEVEL}"
+      ],
+      "deb_res_down": [
+        "(?:{ENEMY}.*?)?(抗性|抗性值){DOWN}{LEVEL}",
+        "{DOWN}.*?{ENEMY}.*?(抗性|抗性值){LEVEL}",
+        "(抗性|抗性值)(?:{SEP}(?:攻击|防御|速度|法术|魔法|命中率))*?各{DOWN}{LEVEL}"
+      ],
+      "deb_spd_down": [
+        "(?:{ENEMY}.*?)?速度{DOWN}{LEVEL}|减速",
+        "{DOWN}.*?{ENEMY}.*?速度{LEVEL}",
+        "速度(?:{SEP}(?:攻击|防御|法术|魔法|抗性|命中率))*?各{DOWN}{LEVEL}"
+      ],
+      "deb_acc_down": [
+        "(?:{ENEMY}.*?)?命中率{DOWN}{LEVEL}",
+        "{DOWN}.*?{ENEMY}.*?命中率{LEVEL}",
+        "命中率(?:{SEP}(?:攻击|防御|速度|法术|魔法|抗性))*?各{DOWN}{LEVEL}"
+      ],
+      "deb_stun": [
+        "眩晕|昏迷"
+      ],
+      "deb_bind": [
+        "束缚|禁锢"
+      ],
+      "deb_sleep": [
+        "睡眠"
+      ],
+      "deb_freeze": [
+        "冰冻"
+      ],
+      "deb_confuse_seal": [
+        "混乱|封印|禁技|无法使用技能|禁止使用技能|不能使用物理攻击|禁用物理攻击"
+      ],
+      "deb_suffocate": [
+        "窒息"
+      ],
+      "deb_dot": [
+        "流血|中毒|灼烧|燃烧|腐蚀|灼伤"
+      ],
+      "deb_dispel": [
+        "(消除|驱散|清除).*?{ENEMY}.*?(增益|强化|状态)",
+        "(消除|清除).*?{ENEMY}.*?(加|提升).*?(攻|攻击|法术|魔法|防御|速度).*(状态|效果)",
+        "消除对方所有增益效果"
+      ],
+
+      "util_first": [
+        "先手|先制"
+      ],
+      "util_multi": [
+        "多段|连击|(\\d+)[-~–](\\d+)次|[二两三四五六七八九十]+连"
+      ],
+      "util_pp_drain": [
+        "扣\\s*PP",
+        "(随机)?减少.*?{ENEMY}.*?(所有)?技能.*?(使用)?次数{ONE_OR_TWO}?次",
+        "(技能|使用)次数.*?减少",
+        "使用次数.*?减少",
+        "降(低)?技能次数"
+      ],
+      "util_reflect": [
+        "反击|反伤|反弹|反馈给对手|反射伤害"
+      ],
+      "util_charge_next": [
+        "伤害加倍|威力加倍|威力倍增|下一回合.*?(伤害|威力).*?加倍|下回合.*?必定暴击|命中时必定暴击|蓄力.*?(强力|加倍|倍增)"
+      ],
+      "util_penetrate": [
+        "无视防御|破防|穿透(护盾|防御)"
+      ]
+    }
+  },
+
+  "keywords": {
+    "buf_atk_up": ["攻击 提升", "攻击 上升", "攻击 增加"],
+    "buf_mag_up": ["法术 提升", "魔法 提升", "法术 上升", "魔法 上升"],
+    "buf_spd_up": ["加速", "速度 提升", "迅捷", "敏捷"],
+    "buf_def_up": ["防御 提升", "护甲", "硬化", "铁壁"],
+    "buf_res_up": ["抗性 提升", "易伤 降低", "抗性 增加"],
+    "buf_acc_up": ["命中率 提升", "命中 提升"],
+    "buf_crit_up": ["必定暴击", "暴击率 提升", "会心"],
+    "buf_heal": ["治疗", "回复", "恢复"],
+    "buf_shield": ["护盾", "结界", "减伤", "庇护", "保护"],
+    "buf_purify": ["净化", "清除 负面", "解除 异常"],
+    "buf_immunity": ["免疫 异常", "免疫 控制"],
+
+    "deb_atk_down": ["攻击 降低"],
+    "deb_mag_down": ["法术 降低", "魔法 降低"],
+    "deb_def_down": ["防御 降低"],
+    "deb_res_down": ["抗性 降低"],
+    "deb_spd_down": ["减速", "速度 降低"],
+    "deb_acc_down": ["命中率 降低", "命中 降低"],
+    "deb_stun": ["眩晕", "昏迷"],
+    "deb_bind": ["束缚", "禁锢"],
+    "deb_sleep": ["睡眠"],
+    "deb_freeze": ["冰冻"],
+    "deb_confuse_seal": ["封印", "禁技", "无法使用技能", "禁止使用技能"],
+    "deb_suffocate": ["窒息"],
+    "deb_dot": ["流血", "中毒", "灼烧", "燃烧", "腐蚀", "灼伤"],
+    "deb_dispel": ["驱散 对方", "消除 对方 增益"],
+
+    "util_first": ["先手", "先制"],
+    "util_multi": ["多段", "连击", "二连", "三连", "四连"],
+    "util_pp_drain": ["扣 PP", "减少 技能 使用 次数", "降 技能 次数"],
+    "util_reflect": ["反击", "反伤", "反弹", "反射 伤害"],
+    "util_charge_next": ["伤害 加倍", "威力 加倍", "下一回合 加倍", "蓄力 加倍"],
+    "util_penetrate": ["无视 防御", "穿透 防御", "穿透 护盾", "破防"]
+  },
+
+  "freeform_candidates": []
+}
