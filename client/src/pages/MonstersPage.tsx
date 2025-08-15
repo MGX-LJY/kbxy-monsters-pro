@@ -637,62 +637,57 @@ export default function MonstersPage() {
 
   // —— 一键 AI 打标签（真实进度版 + 可取消） —— //
   const aiTagBatch = async () => {
-    let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
-    if (!targetIds.length) return alert('当前没有可处理的记录')
+  let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
+  if (!targetIds.length) return alert('当前没有可处理的记录')
 
-    // 开始前重置取消标记，并打开允许取消的弹框
-    cancelAITagRef.current = false
-    setOverlay({
-      show: true,
-      title: 'AI 打标签进行中…',
-      sub: '正在分析',
-      total: targetIds.length,
-      done: 0,
-      ok: 0,
-      fail: 0,
-      cancelable: true
-    })
+  // 开始前重置取消标记，并打开允许取消的弹框
+  cancelAITagRef.current = false
+  setOverlay({
+    show: true,
+    title: 'AI 打标签进行中…',
+    sub: '正在分析',
+    total: targetIds.length,
+    done: 0,
+    ok: 0,
+    fail: 0,
+    cancelable: true
+  })
 
-    let okCount = 0
-    let failCount = 0
-    try {
-      for (const id of targetIds) {
-        if (cancelAITagRef.current) break
+  let okCount = 0
+  let failCount = 0
+  try {
+    for (const id of targetIds) {
+      if (cancelAITagRef.current) break
+      try {
         try {
-          try {
-            await api.post(`/tags/monsters/${id}/retag_ai`)
-          } catch {
-            await api.post(`/tags/monsters/${id}/retag`)
-          }
-          okCount += 1
-          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, ok: (prev.ok || 0) + 1 }))
+          await api.post(`/tags/monsters/${id}/retag_ai`)
         } catch {
-          failCount += 1
-          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, fail: (prev.fail || 0) + 1 }))
+          await api.post(`/tags/monsters/${id}/retag`)
         }
+        okCount += 1
+        setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, ok: (prev.ok || 0) + 1 }))
+      } catch {
+        failCount += 1
+        setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, fail: (prev.fail || 0) + 1 }))
       }
-
-      await list.refetch()
-      if (selected) {
-        const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
-        setSelected(fresh)
-      }
-
-      if (cancelAITagRef.current) {
-        const processed = okCount + failCount
-        alert(`已取消：已处理 ${processed} 条（成功 ${okCount}，失败 ${failCount}）`)
-      } else {
-        alert(`AI 打标签完成：共 ${targetIds.length} 条，成功 ${okCount}，失败 ${failCount}`)
-      }
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || 'AI 打标签失败')
-    } finally {
-      setOverlay({ show: false })
-      cancelAITagRef.current = false
     }
-  }
 
-  // —— 一键全部分析（未勾选 → 全部；无需进度） —— //
+    // 完成后只刷新数据，静默不弹窗
+    await list.refetch()
+    if (selected) {
+      const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
+      setSelected(fresh)
+    }
+  } catch (e: any) {
+    // 仅失败时提示
+    alert(e?.response?.data?.detail || 'AI 打标签失败')
+  } finally {
+    setOverlay({ show: false })
+    cancelAITagRef.current = false
+  }
+}
+
+  // —— 一键全部分析（成功静默） —— //
   const deriveBatch = async () => {
     const items = (list.data?.items as any[]) || []
     const ids = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
@@ -713,19 +708,20 @@ export default function MonstersPage() {
           }
         }
       }
+
+      // 成功后静默，仅刷新数据
       await list.refetch()
       if (selected) {
         const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
         setSelected(fresh)
       }
-      alert('分析完成')
     } catch (e:any) {
+      // 仅失败时提示
       alert(e?.response?.data?.detail || '分析失败')
     } finally {
       if (showOverlay) setOverlay({ show: false })
     }
   }
-
   const elementOptions = elementOptionsFull
   const acquireTypeOptions = ['可捕捉宠物','BOSS宠物','活动获取宠物','兑换/商店','任务获取','超进化','其它']
 
