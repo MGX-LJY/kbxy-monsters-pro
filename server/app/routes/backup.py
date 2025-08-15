@@ -1,21 +1,27 @@
 # server/app/routes/backup.py
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
+from typing import Optional, List, Any, Dict
+from pydantic import BaseModel, Field
+from datetime import datetime
+import io, csv, json, re
 
 from ..db import SessionLocal
-from ..models import Monster, Tag, MonsterSkill  # 注意：引入 MonsterSkill 用于统计
+from ..models import (
+    Monster,
+    Tag,
+    MonsterSkill,   # 关系表
+    Skill,          # 技能主表：用于五元组唯一
+)
 from ..services.monsters_service import list_monsters
-
-from typing import Optional, List
-from pydantic import BaseModel, Field
-import io, csv, json
 
 router = APIRouter()
 
+# ---------- DB 依赖 ----------
 def get_db():
     db = SessionLocal()
     try:
@@ -23,6 +29,39 @@ def get_db():
     finally:
         db.close()
 
+# ---------- 小工具 ----------
+_ZERO_WIDTH_RE = re.compile(r"[\u200B-\u200D\u2060\uFEFF]")
+def clean_text(s: Optional[str]) -> Optional[str]:
+    if s is None:
+        return None
+    return _ZERO_WIDTH_RE.sub("", str(s)).strip()
+
+def to_int_or_none(v: Any) -> Optional[int]:
+    if v is None or v == "":
+        return None
+    try:
+        return int(v)
+    except Exception:
+        try:
+            return int(float(v))  # “145.0”这类
+        except Exception:
+            return None
+
+def parse_dt_or_none(s: Any) -> Optional[datetime]:
+    if not s:
+        return None
+    try:
+        # 允许 ISO8601 字符串
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def valid_tag(code: str) -> bool:
+    return isinstance(code, str) and (
+        code.startswith("buf_") or code.startswith("deb_") or code.startswith("util_")
+    )
+
+# ---------- 统计 ----------
 @router.get("/stats")
 def stats(db: Session = Depends(get_db)):
     """
@@ -32,10 +71,8 @@ def stats(db: Session = Depends(get_db)):
     - tags_total：标签总数
     """
     total = db.scalar(select(func.count(Monster.id))) or 0
-    # 新模型：通过 Monster.monster_skills 统计（而非旧的 Monster.skills secondary）
     with_skills = db.scalar(
-        select(func.count(func.distinct(Monster.id)))
-        .join(Monster.monster_skills)
+        select(func.count(func.distinct(Monster.id))).join(Monster.monster_skills)
     ) or 0
     tags_total = db.scalar(select(func.count(Tag.id))) or 0
     return {
@@ -44,6 +81,7 @@ def stats(db: Session = Depends(get_db)):
         "tags_total": int(tags_total),
     }
 
+# ---------- 导出 CSV ----------
 @router.get("/export/monsters.csv")
 def export_csv(
     q: Optional[str] = None,
@@ -91,18 +129,18 @@ def export_csv(
         headers={"Content-Disposition": "attachment; filename=monsters.csv"}
     )
 
+# ---------- 备份 JSON ----------
 @router.get("/backup/export_json")
 def backup_json(db: Session = Depends(get_db)):
     """
     备份 JSON（适配新库结构）
-    - 怪物字段：id/name/element/role/possess/new_type/type/method/原始六维/explain_json.raw_stats
+    - 怪物字段：id/name/element/role/possess/new_type/type/method/六维/explain_json.raw_stats
     - 技能字段：按新唯一键导出 name/element/kind/power/description
     - 不导出派生表；如有需要可在客户端或恢复后重算
     """
     monsters = db.execute(
         select(Monster).options(
             selectinload(Monster.tags),
-            # 预加载 MonsterSkill 以及 Skill，避免 N+1
             selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
         )
     ).scalars().all()
@@ -111,7 +149,6 @@ def backup_json(db: Session = Depends(get_db)):
     for m in monsters:
         raw = (m.explain_json or {}).get("raw_stats") or {}
         skills_out = []
-        # 通过 MonsterSkill 取到 Skill，并携带技能四元组字段
         for ms in (m.monster_skills or []):
             s = ms.skill
             if not s:
@@ -122,10 +159,6 @@ def backup_json(db: Session = Depends(get_db)):
                 "kind": s.kind,
                 "power": s.power,
                 "description": s.description or "",
-                # 如需把关系级数据也备份，可按需解注：
-                # "selected": bool(ms.selected),
-                # "level": ms.level,
-                # "rel_description": ms.description or "",
             })
 
         payload.append({
@@ -137,18 +170,15 @@ def backup_json(db: Session = Depends(get_db)):
             "new_type": getattr(m, "new_type", None),
             "type": getattr(m, "type", None),
             "method": getattr(m, "method", None),
-            # 原始六维
             "hp": float(m.hp or 0),
             "speed": float(m.speed or 0),
             "attack": float(m.attack or 0),
             "defense": float(m.defense or 0),
             "magic": float(m.magic or 0),
             "resist": float(m.resist or 0),
-            # 额外信息
             "raw_stats": raw,
             "tags": [t.name for t in (m.tags or [])],
             "skills": skills_out,
-            # 有时恢复或审计需要：
             "created_at": getattr(m, "created_at", None).isoformat() if getattr(m, "created_at", None) else None,
             "updated_at": getattr(m, "updated_at", None).isoformat() if getattr(m, "updated_at", None) else None,
         })
@@ -160,14 +190,12 @@ def backup_json(db: Session = Depends(get_db)):
         headers={"Content-Disposition": "attachment; filename=backup.json"}
     )
 
+# ---------- 批量删除 ----------
 class BulkDeleteIn(BaseModel):
     ids: List[int] = Field(default_factory=list)
 
 @router.delete("/monsters/bulk_delete")
 def bulk_delete_delete(payload: BulkDeleteIn = Body(...), db: Session = Depends(get_db)):
-    """
-    批量删除（保持接口不变）
-    """
     ids = list(set(payload.ids or []))
     if not ids:
         return {"deleted": 0}
@@ -183,3 +211,206 @@ def bulk_delete_delete(payload: BulkDeleteIn = Body(...), db: Session = Depends(
 @router.post("/monsters/bulk_delete")
 def bulk_delete_post(payload: BulkDeleteIn = Body(...), db: Session = Depends(get_db)):
     return bulk_delete_delete(payload, db)
+
+# ---------- 恢复 / 导入 JSON ----------
+@router.post("/backup/restore_json")
+def restore_json(
+    payload: Any = Body(..., description="支持 {\"monsters\": [...]} 或直接 [...]."),
+    replace_links: bool = True,  # True：替换原有 tags/skills 关联；False：追加合并
+    db: Session = Depends(get_db)
+):
+    """
+    从备份 JSON 恢复（兼容你的示例结构）：
+    - id 存在则按 id upsert；否则按 (name, element) 兜底匹配
+    - 仅接受 buf_/deb_/util_ 标签；其余忽略
+    - 技能按 (name, element, kind, power, description) 五元组去重，自动建 Skill，并用 MonsterSkill 关联
+    - 默认**替换**原有关联（replace_links=True）
+    - 返回导入汇总
+    """
+    # 解析 monsters 数组
+    monsters_list: List[Dict[str, Any]]
+    if isinstance(payload, dict) and "monsters" in payload and isinstance(payload["monsters"], list):
+        monsters_list = payload["monsters"]
+    elif isinstance(payload, list):
+        monsters_list = payload
+    else:
+        raise HTTPException(status_code=400, detail="载荷格式错误：应为 {\"monsters\": [...]} 或直接数组。")
+
+    created_cnt = 0
+    updated_cnt = 0
+    linked_skills = 0
+    linked_tags = 0
+
+    with db.begin():
+        for raw_m in monsters_list:
+            if not isinstance(raw_m, dict):
+                continue
+
+            # --- 基础字段清洗 ---
+            mid = raw_m.get("id")
+            name = clean_text(raw_m.get("name"))
+            element = clean_text(raw_m.get("element"))
+            role = clean_text(raw_m.get("role"))
+            type_ = clean_text(raw_m.get("type"))
+            method = clean_text(raw_m.get("method"))
+
+            hp = to_int_or_none(raw_m.get("hp")) or 0
+            speed = to_int_or_none(raw_m.get("speed")) or 0
+            attack = to_int_or_none(raw_m.get("attack")) or 0
+            defense = to_int_or_none(raw_m.get("defense")) or 0
+            magic = to_int_or_none(raw_m.get("magic")) or 0
+            resist = to_int_or_none(raw_m.get("resist")) or 0
+
+            possess = bool(raw_m.get("possess") or False)
+            new_type = raw_m.get("new_type")  # 可能为 True/False/None
+
+            created_at = parse_dt_or_none(raw_m.get("created_at"))
+            updated_at = parse_dt_or_none(raw_m.get("updated_at"))
+
+            # --- upsert 怪物 ---
+            m: Optional[Monster] = None
+            if mid:
+                m = db.get(Monster, int(mid))
+
+            if not m and name:
+                # 兜底：按 (name, element) 尝试找到同名同元素
+                q = select(Monster).where(Monster.name == name)
+                if element:
+                    q = q.where(Monster.element == element)
+                m = db.scalar(q)
+
+            is_create = False
+            if not m:
+                m = Monster()
+                # 如果传了 id，尽量沿用（SQLite/PG 都允许显式插入主键；若冲突会抛错）
+                if mid:
+                    try:
+                        m.id = int(mid)
+                    except Exception:
+                        pass
+                is_create = True
+                db.add(m)
+
+            # 写基础字段
+            m.name = name or m.name
+            m.element = element
+            m.role = role
+            m.type = type_
+            m.method = method
+            m.possess = possess
+            m.new_type = new_type if new_type in (True, False, None) else None
+
+            m.hp = hp
+            m.speed = speed
+            m.attack = attack
+            m.defense = defense
+            m.magic = magic
+            m.resist = resist
+
+            # 额外信息：raw_stats 放入 explain_json.raw_stats
+            raw_stats = raw_m.get("raw_stats") or {}
+            if isinstance(raw_stats, dict):
+                ej = dict(m.explain_json or {})
+                ej["raw_stats"] = raw_stats
+                m.explain_json = ej
+
+            # 时间戳（如果提供了）
+            if created_at:
+                m.created_at = created_at
+            if updated_at:
+                m.updated_at = updated_at
+
+            db.flush()  # 确保 m.id 可用
+
+            # --- tags 关联 ---
+            tags_in = raw_m.get("tags") or []
+            tag_models: List[Tag] = []
+            for t in tags_in:
+                t = clean_text(t)
+                if not t or not valid_tag(t):
+                    continue
+                existed = db.scalar(select(Tag).where(Tag.name == t))
+                if not existed:
+                    existed = Tag(name=t)
+                    db.add(existed)
+                    db.flush()
+                tag_models.append(existed)
+
+            if replace_links:
+                # 替换关联
+                m.tags = tag_models
+            else:
+                # 追加合并
+                have = {tt.name for tt in (m.tags or [])}
+                for tm in tag_models:
+                    if tm.name not in have:
+                        m.tags.append(tm)
+                        have.add(tm.name)
+
+            linked_tags += len(tag_models)
+
+            # --- 技能关联（五元组唯一） ---
+            skills_in = raw_m.get("skills") or []
+            # 替换策略：先清空原 MonsterSkill
+            if replace_links:
+                db.execute(delete(MonsterSkill).where(MonsterSkill.monster_id == m.id))
+                db.flush()
+
+            for s in skills_in:
+                if not isinstance(s, dict):
+                    continue
+                s_name = clean_text(s.get("name"))
+                if not s_name:
+                    continue
+                s_element = clean_text(s.get("element"))
+                s_kind = clean_text(s.get("kind"))
+                s_power = to_int_or_none(s.get("power"))
+                s_desc = clean_text(s.get("description")) or ""
+
+                # 五元组查找/创建 Skill
+                sk = db.scalar(
+                    select(Skill).where(
+                        Skill.name == s_name,
+                        Skill.element.is_(s_element) if s_element is None else (Skill.element == s_element),
+                        Skill.kind.is_(s_kind) if s_kind is None else (Skill.kind == s_kind),
+                        Skill.power.is_(s_power) if s_power is None else (Skill.power == s_power),
+                        Skill.description == s_desc,
+                    )
+                )
+                if not sk:
+                    sk = Skill(
+                        name=s_name,
+                        element=s_element,
+                        kind=s_kind,
+                        power=s_power,
+                        description=s_desc,
+                    )
+                    db.add(sk)
+                    db.flush()
+
+                # 建 MonsterSkill 关联（避免重复）
+                exists_rel = db.scalar(
+                    select(MonsterSkill).where(
+                        MonsterSkill.monster_id == m.id,
+                        MonsterSkill.skill_id == sk.id,
+                    )
+                )
+                if not exists_rel:
+                    rel = MonsterSkill(monster_id=m.id, skill_id=sk.id)
+                    db.add(rel)
+                    linked_skills += 1
+
+            if is_create:
+                created_cnt += 1
+            else:
+                updated_cnt += 1
+
+    return {
+        "ok": True,
+        "received": len(monsters_list),
+        "created": created_cnt,
+        "updated": updated_cnt,
+        "linked_tags": linked_tags,
+        "linked_skills": linked_skills,
+        "note": "按 id 优先 upsert；未提供 id 时按 (name, element) 匹配；tags 仅导入 buf_/deb_/util_*；技能用五元组唯一。",
+    }
