@@ -6,6 +6,7 @@ import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
 import SideDrawer from '../components/SideDrawer'
+import { useSettings } from '../context/SettingsContext'
 
 type RoleCount = { name: string, count: number }
 
@@ -91,8 +92,7 @@ export default function MonstersPage() {
 
   // 分页
   const [page, setPage] = useState(1)
-  const pageSize = 20
-
+  const { pageSize, crawlLimit } = useSettings() // ← 去掉 setCrawlLimit
   // 勾选/批量
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
@@ -140,7 +140,6 @@ export default function MonstersPage() {
 
   // —— 一键爬取 —— //
   const [crawling, setCrawling] = useState(false)
-  const [crawlLimit, setCrawlLimit] = useState<string>('')
 
   const startCrawl = async () => {
     if (!window.confirm(`将触发后端“全站爬取图鉴”。${crawlLimit ? `最多抓取 ${crawlLimit} 条。` : '将尽可能多地抓取。'}是否继续？`)) return
@@ -903,21 +902,15 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 1 行：搜索与上限 —— 2 列等宽 */}
+        {/* 1 行：搜索（已移除“抓取上限”输入框） */}
         <div className="mb-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 min-w-0">
+          <div className="grid grid-cols-1 gap-3 min-w-0">
             <input
               className="input w-full min-w-0"
               placeholder="搜索名称 / 技能关键词…"
               value={q}
               onChange={e => { setQ(e.target.value); setPage(1) }}
               aria-label="搜索"
-            />
-            <input
-              className="input w-full min-w-0"
-              placeholder="抓取上限(可选)"
-              value={crawlLimit}
-              onChange={e => setCrawlLimit(e.target.value.replace(/[^\d]/g, ''))}
             />
           </div>
         </div>
@@ -1056,7 +1049,7 @@ export default function MonstersPage() {
                       key={m.id}
                       className="align-middle cursor-pointer hover:bg-gray-50"
                       onClick={() => openDetail(m)}
-                      title="点击查看详情"
+                      title=""
                     >
                       <td className="text-center align-middle py-2.5" onClick={(e) => e.stopPropagation()}>
                         <input

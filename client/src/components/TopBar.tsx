@@ -1,9 +1,9 @@
 import React from 'react'
 import { Github, RefreshCw } from 'lucide-react'
+import SettingsButton from './SettingsButton'
 
 export default function TopBar({
   onRefresh,
-  // 兼容旧调用方：若父组件还传入 onOpenImport，不会报错，但不再使用
   onOpenImport,
 }: {
   onRefresh: () => void
@@ -25,7 +25,6 @@ export default function TopBar({
 
         {/* 右侧：操作 */}
         <div className="flex items-center gap-2">
-          {/* 刷新（带快捷键提示） */}
           <button
             className="btn h-9 px-3 hover:bg-gray-100 transition"
             onClick={onRefresh}
@@ -37,7 +36,9 @@ export default function TopBar({
             <kbd className="ml-2 hidden sm:inline rounded border bg-white px-1.5 py-0.5 text-[10px] leading-none text-gray-600">C</kbd>
           </button>
 
-          {/* GitHub */}
+          {/* 新增：设置 */}
+          <SettingsButton />
+
           <a
             className="btn h-9 px-3 hover:bg-gray-100 transition"
             href="https://github.com"

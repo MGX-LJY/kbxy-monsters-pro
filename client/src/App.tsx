@@ -1,11 +1,11 @@
-// client/src/App.tsx
-import React from 'react'
+import React, { useState } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import TopBar from './components/TopBar'
 import { ToastProvider } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import MonstersPage from './pages/MonstersPage'
+import { SettingsProvider } from './context/SettingsContext'
 
 export default function App() {
   const qc = useQueryClient()
@@ -19,10 +19,12 @@ export default function App() {
   return (
     <ToastProvider>
       <ErrorBoundary>
-        <TopBar onRefresh={onRefresh} />
-        <Routes>
-          <Route path="/" element={<MonstersPage />} />
-        </Routes>
+        <SettingsProvider>
+          <TopBar onRefresh={onRefresh} />
+          <Routes>
+            <Route path="/" element={<MonstersPage />} />
+          </Routes>
+        </SettingsProvider>
       </ErrorBoundary>
     </ToastProvider>
   )
