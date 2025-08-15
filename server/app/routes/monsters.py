@@ -80,6 +80,10 @@ def list_api(
     util_tags_any: Optional[List[str]] = Query(None),
     # 可选：如果前端以后直接传 tags=[]
     tags: Optional[List[str]] = Query(None),
+    # 获取途径 / 是否当前可获取
+    acq_type: Optional[str] = Query(None, description="获取途径（包含匹配）"),
+    type_: Optional[str] = Query(None, alias="type", description="获取途径别名（与 acq_type 等价）"),
+    new_type: Optional[bool] = Query(None, description="是否当前可获取"),
     sort: Optional[str] = "updated_at",
     order: Optional[str] = "desc",
     page: int = 1,
@@ -94,6 +98,8 @@ def list_api(
     2) 新参数：tags_all=...（可重复，AND）/ tags_any=...（OR）
     3) 组合/分组：buf_tags_* / deb_tags_* / util_tags_*；以及 tags[]=... + tag_mode=and|or
     另外：
+    - 获取途径支持 acq_type 或 type（等价，包含匹配）
+    - new_type=true/false 过滤“当前可获取”
     - need_fix=true 时筛选“技能数为 0 或 >5”的怪物（只统计名字非空技能）
     """
     page = max(1, page)
@@ -118,6 +124,9 @@ def list_api(
         else:
             resolved_tags_all.extend(tags)
 
+    # 统一获取途径
+    acq = (acq_type or type_ or "").strip() or None
+
     # —— 组装调用参数（尽量向后兼容旧的 list_monsters 签名）—— #
     base_kwargs = dict(
         db=db,
@@ -135,16 +144,18 @@ def list_api(
         base_kwargs["tags_any"] = resolved_tags_any
     if (not resolved_tags_all and not resolved_tags_any) and tag:
         base_kwargs["tag"] = tag
-    # ✅ 新增：若服务层已支持 need_fix，则透传
+    if acq is not None:
+        base_kwargs["acq_type"] = acq  # service 侧使用 acq_type/type_ 任一
+    if new_type is not None:
+        base_kwargs["new_type"] = new_type
     if need_fix is not None:
         base_kwargs["need_fix"] = need_fix
 
-    # —— 优先调用服务层；若不支持 need_fix 或签名较旧，则回退到本地实现 —— #
+    # —— 优先调用服务层；若签名较旧则回退到本地实现 —— #
     try:
-        items, total = list_monsters(**base_kwargs)  # 新版服务应支持 tags_all/tags_any/need_fix
+        items, total = list_monsters(**base_kwargs)
     except TypeError:
-        # 服务层签名较旧：自己实现 need_fix（或普通列表）的查询
-        # 当 need_fix=True 时，按“技能数为 0 或 >5（技能名非空才计数）”筛选
+        # 服务层较旧：本地实现（含获取途径 / new_type / need_fix）
         query = db.query(Monster)
 
         # 基础筛选
@@ -155,6 +166,10 @@ def list_api(
             query = query.filter(Monster.element == element)
         if role:
             query = query.filter(Monster.role == role)
+        if acq:
+            query = query.filter(Monster.type.ilike(f"%{acq}%"))
+        if isinstance(new_type, bool):
+            query = query.filter(Monster.new_type == new_type)
 
         # 标签筛选（与服务层保持语义一致）
         if resolved_tags_all:

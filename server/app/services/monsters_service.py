@@ -5,14 +5,13 @@ from typing import List, Tuple, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 from sqlalchemy import (
-    select, func, asc, desc, outerjoin, case, distinct
+    select, func, asc, desc, outerjoin, case, distinct, or_
 )
 
-from ..models import Monster, Tag, MonsterDerived
+from ..models import Monster, Tag, MonsterDerived, MonsterSkill, Skill
 
 
 # ---- 排序字段解析：支持派生五维（pp / pp_pressure 都支持） ----
-
 def _get_sort_target(sort: str):
     s = (sort or "updated_at").lower()
     md = MonsterDerived
@@ -37,7 +36,6 @@ def _get_sort_target(sort: str):
 
 
 # ---- 构造“多标签（AND/OR）”子查询：返回满足条件的 Monster.id 集合 ----
-
 def _subq_ids_for_multi_tags(
     tags_all: Optional[List[str]],
     tags_any: Optional[List[str]],
@@ -87,8 +85,21 @@ def _subq_ids_for_multi_tags(
     return stmt.subquery()
 
 
-# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取 过滤；按派生或更新时间排序 ----
+# ---- “需要修复”子查询：统计名字非空技能数量 ----
+def _subq_skill_count_nonempty():
+    return (
+        select(
+            MonsterSkill.monster_id.label("mid"),
+            func.count(Skill.id).label("cnt"),
+        )
+        .join(Skill, Skill.id == MonsterSkill.skill_id)
+        .where(func.trim(func.coalesce(Skill.name, "")) != "")
+        .group_by(MonsterSkill.monster_id)
+        .subquery()
+    )
 
+
+# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取/是否需修复 过滤；按派生或更新时间排序 ----
 def list_monsters(
     db: Session,
     *,
@@ -101,8 +112,11 @@ def list_monsters(
     tags_all: Optional[List[str]] = None,
     tags_any: Optional[List[str]] = None,
     # 获取途径 / 是否当前可获取
-    acq_type: Optional[str] = None,      # Monster.type
+    acq_type: Optional[str] = None,      # Monster.type（包含匹配）
+    type_: Optional[str] = None,         # 路由层 alias 透传
     new_type: Optional[bool] = None,     # Monster.new_type
+    # 修复筛选（技能名非空的技能数为 0 或 >5）
+    need_fix: Optional[bool] = None,
     sort: Optional[str] = None,
     order: Optional[str] = None,
     page: int = 1,
@@ -115,6 +129,8 @@ def list_monsters(
           OR ：tags_any=...&tags_any=...
           同时给出时表示“必须同时满足 AND 且满足 OR”。
       - 若提供了 tags_all/any，则忽略旧参数 tag（向后兼容）。
+      - 获取途径（acq_type/type_）为包含匹配（ILIKE），更宽松。
+      - need_fix=True：筛选出“技能名非空的技能数为 0 或 >5”的怪。
       - 排序字段支持派生五维；分页/计数在过滤后执行。
     """
     page = max(1, page)
@@ -122,20 +138,24 @@ def list_monsters(
 
     use_multi = bool((tags_all and len(tags_all) > 0) or (tags_any and len(tags_any) > 0))
     multi_subq = _subq_ids_for_multi_tags(tags_all, tags_any) if use_multi else None
+    acq = (acq_type or type_ or "").strip()  # 统一获取途径
 
-    # 计数子查询（避免 JOIN 计数膨胀）
+    # 预备 need_fix 的技能计数子查询
+    skills_cnt_subq = _subq_skill_count_nonempty() if need_fix else None
+
+    # ---------- 计数 ----------
     base_stmt = select(Monster.id)
 
     # 文本/基础条件
     if q:
         like = f"%{q}%"
-        base_stmt = base_stmt.where(Monster.name.like(like))
+        base_stmt = base_stmt.where(Monster.name.ilike(like))
     if element:
         base_stmt = base_stmt.where(Monster.element == element)
     if role:
         base_stmt = base_stmt.where(Monster.role == role)
-    if acq_type:
-        base_stmt = base_stmt.where(Monster.type == acq_type)
+    if acq:
+        base_stmt = base_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
     if isinstance(new_type, bool):
         base_stmt = base_stmt.where(Monster.new_type == new_type)
 
@@ -144,6 +164,20 @@ def list_monsters(
         base_stmt = base_stmt.where(Monster.id.in_(select(multi_subq.c.id)))
     elif tag:
         base_stmt = base_stmt.join(Monster.tags).where(Tag.name == tag)
+
+    # need_fix 条件
+    if need_fix and skills_cnt_subq is not None:
+        base_stmt = (
+            base_stmt
+            .outerjoin(skills_cnt_subq, skills_cnt_subq.c.mid == Monster.id)
+            .where(
+                or_(
+                    skills_cnt_subq.c.cnt.is_(None),
+                    skills_cnt_subq.c.cnt == 0,
+                    skills_cnt_subq.c.cnt > 5,
+                )
+            )
+        )
 
     # 排序依赖（仅影响 SELECT FROM 的 JOIN，计数不需要 order_by）
     sort_col, need_join = _get_sort_target(sort or "updated_at")
@@ -155,27 +189,38 @@ def list_monsters(
     subq = base_stmt.subquery()
     total = db.scalar(select(func.count()).select_from(subq)) or 0
 
-    # 取行
+    # ---------- 取行 ----------
     rows_stmt = select(Monster)
 
-    # 文本/基础条件
     if q:
         like = f"%{q}%"
-        rows_stmt = rows_stmt.where(Monster.name.like(like))
+        rows_stmt = rows_stmt.where(Monster.name.ilike(like))
     if element:
         rows_stmt = rows_stmt.where(Monster.element == element)
     if role:
         rows_stmt = rows_stmt.where(Monster.role == role)
-    if acq_type:
-        rows_stmt = rows_stmt.where(Monster.type == acq_type)
+    if acq:
+        rows_stmt = rows_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
     if isinstance(new_type, bool):
         rows_stmt = rows_stmt.where(Monster.new_type == new_type)
 
-    # 标签条件
     if use_multi and multi_subq is not None:
         rows_stmt = rows_stmt.where(Monster.id.in_(select(multi_subq.c.id)))
     elif tag:
         rows_stmt = rows_stmt.join(Monster.tags).where(Tag.name == tag)
+
+    if need_fix and skills_cnt_subq is not None:
+        rows_stmt = (
+            rows_stmt
+            .outerjoin(skills_cnt_subq, skills_cnt_subq.c.mid == Monster.id)
+            .where(
+                or_(
+                    skills_cnt_subq.c.cnt.is_(None),
+                    skills_cnt_subq.c.cnt == 0,
+                    skills_cnt_subq.c.cnt > 5,
+                )
+            )
+        )
 
     # 排序（派生排序需要 OUTER JOIN）
     if need_join:
@@ -192,7 +237,6 @@ def list_monsters(
 
 
 # ---- 标签 upsert（保持返回 Tag 实体列表） ----
-
 def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
     """
     将一维标签名写入 Tag 表后返回 Tag 实体列表；
@@ -217,7 +261,6 @@ def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
 
 
 # ---- 设置标签即派生：统一依赖 derive_service，避免旧 infer_role_for_monster ----
-
 def set_tags_and_rederive(
     db: Session,
     monster: Monster,
@@ -238,7 +281,6 @@ def set_tags_and_rederive(
 
 
 # ---- 批量“自动匹配”：用正则建议标签 → set_tags_and_rederive ----
-
 def auto_match_monsters(
     db: Session,
     *,
