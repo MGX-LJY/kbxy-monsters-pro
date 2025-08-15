@@ -1,16 +1,26 @@
+/* client/src/styles.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* 基础 */
-:root { color-scheme: light; }
-body { @apply bg-white text-gray-900; }
-.container { @apply max-w-7xl mx-auto px-4; }
-/* 在 styles.css 里，放在 .btn 定义的上面或一起放进去 */
-.btn {
+:root {
+  color-scheme: light;
+
+  /* 点击涟漪的默认位置（避免自定义属性解析报错） */
   --press-x: 50%;
   --press-y: 50%;
+
+  /* 限幅：所有蓝色覆盖层的最大透明度（避免过曝） */
+  --blue-overlay-a: 0.10;
+  --blue-overlay-a-hover: 0.12;
+  --blue-overlay-a-press: 0.14;
+
+  /* 主按钮的涟漪改成白色（避免与主色叠加发蓝） */
+  --primary-ripple-a: 0.20;
 }
+body { @apply bg-white text-gray-900; }
+.container { @apply max-w-7xl mx-auto px-4; }
 
 /* 卡片 */
 .card { @apply bg-white rounded-2xl shadow-sm border border-gray-100 p-4; }
@@ -26,11 +36,13 @@ body { @apply bg-white text-gray-900; }
     position: relative;
     color: #111827; /* gray-900 */
     border: 1px solid rgba(255,255,255,0.50);
-    /* 叠两层：白玻璃 + 极浅蓝内填充（非常浅） */
+
+    /* 叠两层：白玻璃 + 极浅蓝内填充（非常浅、做了“限幅”） */
     background-image:
-      linear-gradient(180deg, rgba(59,130,246,0.06), rgba(37,99,235,0.04)),
+      linear-gradient(180deg, rgba(59,130,246, calc(var(--blue-overlay-a) - 0.04)), rgba(37,99,235, calc(var(--blue-overlay-a) - 0.06))),
       linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0.32));
     background-clip: padding-box, padding-box;
+
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     box-shadow:
@@ -43,17 +55,16 @@ body { @apply bg-white text-gray-900; }
       box-shadow 160ms ease,
       transform 260ms cubic-bezier(.2,.9,.2,1); /* 更弹 */
   }
-  /* 浅蓝边框 & 轻微高光 */
+
+  /* 浅蓝边框 & 轻微高光（不额外叠蓝，只提亮边和高光） */
   .btn:hover {
     border-color: rgba(147,197,253,0.80); /* blue-300 */
-    background-image:
-      linear-gradient(180deg, rgba(59,130,246,0.09), rgba(37,99,235,0.06)),
-      linear-gradient(180deg, rgba(255,255,255,0.45), rgba(255,255,255,0.38));
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.75),
       0 10px 28px rgba(31,38,135,0.18);
   }
-  /* 聚焦：更明显但仍然柔和的浅蓝描边 */
+
+  /* 聚焦：更明显但柔和的浅蓝描边（不加蓝填充） */
   .btn:focus-visible {
     border-color: rgba(147,197,253,0.95);
     box-shadow:
@@ -61,92 +72,86 @@ body { @apply bg-white text-gray-900; }
       inset 0 1px 0 rgba(255,255,255,0.75),
       0 10px 28px rgba(31,38,135,0.18);
   }
-  /* 原生 :active 作为兜底（有 JS 涟漪/弹性时也能兼容） */
+
+  /* 原生 :active 作为兜底（尽量不加蓝，仅微缩放+白高光） */
   .btn:active {
     transform: translateY(0.5px) scale(0.985);
     border-color: rgba(96,165,250,0.90); /* blue-400 */
-    background-image:
-      linear-gradient(180deg, rgba(59,130,246,0.07), rgba(37,99,235,0.05)),
-      linear-gradient(180deg, rgba(255,255,255,0.40), rgba(255,255,255,0.34));
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.70),
       0 6px 18px rgba(31,38,135,0.16);
   }
 
-  /* 涟漪层：从点击点（--press-x/--press-y）扩散 */
+  /* 涟漪层（默认蓝色，但透明度受 --blue-overlay-a-press 限制） */
   .btn::after {
     content: "";
     position: absolute; inset: 0;
     pointer-events: none;
     border-radius: inherit;
-    background: radial-gradient(160px 160px at var(--press-x, 50%) var(--press-y, 50%),
-                rgba(59,130,246,0.22) 0%,
-                rgba(59,130,246,0.00) 60%);
+    background:
+      radial-gradient(
+        160px 160px at var(--press-x, 50%) var(--press-y, 50%),
+        rgba(59,130,246, var(--blue-overlay-a-press)) 0%,
+        rgba(59,130,246, 0) 60%
+      );
     opacity: 0;
     transform: scale(0.94);
     transition: opacity 260ms ease, transform 260ms ease;
   }
-  /* JS 按压时触发（更明显的涟漪） */
-  .btn.pressing::after { opacity: .16; transform: scale(1.08); }
+  .btn.pressing::after { opacity: .14; transform: scale(1.08); }
 
-  /* 主按钮（有色玻璃，保留浅蓝边框反馈） */
+  /* ===== 主按钮（持续蓝：不再在 hover/active 上叠更多蓝） ===== */
   .btn.primary, .btn-primary {
     color: #fff;
+
+    /* 基础主色：保持稳定的色值，不在 hover 再加蓝 */
     border-color: rgba(99,102,241,0.55); /* indigo-500 */
     background-image:
-      linear-gradient(180deg, rgba(99,102,241,0.78), rgba(79,70,229,0.72)),
-      linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.18));
+      linear-gradient(180deg, rgba(99,102,241,0.78), rgba(79,70,229,0.72)),   /* 主色层 */
+      linear-gradient(180deg, rgba(255,255,255,0.20), rgba(255,255,255,0.16));/* 仅白高光层 */
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.25),
+      inset 0 1px 0 rgba(255,255,255,0.22),
       0 10px 28px rgba(79,70,229,0.35);
   }
+
+  /* 悬停：只加“白高光 + 浅蓝描边 + 微亮/微饱和”，不加更多蓝填充 */
   .btn.primary:hover, .btn-primary:hover {
-    border-color: rgba(147,197,253,0.85); /* 浅蓝描边 */
+    border-color: rgba(147,197,253,0.85);            /* 浅蓝描边 */
+    filter: brightness(1.03) saturate(1.03);         /* 轻微提升，不改变色相 */
     box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.35),
+      inset 0 1px 0 rgba(255,255,255,0.30),          /* 白高光 */
       0 12px 32px rgba(79,70,229,0.42);
   }
+
   .btn.primary:focus-visible, .btn-primary:focus-visible {
     border-color: rgba(147,197,253,0.95);
     box-shadow:
-      0 0 0 3px rgba(147,197,253,0.35),
-      inset 0 1px 0 rgba(255,255,255,0.35),
+      0 0 0 3px rgba(147,197,253,0.35),              /* 浅蓝环 */
+      inset 0 1px 0 rgba(255,255,255,0.30),
       0 12px 32px rgba(79,70,229,0.42);
   }
+
   .btn.primary:active, .btn-primary:active {
     transform: translateY(0.5px) scale(0.985);
   }
 
-  /* 幽灵按钮（更轻的玻璃） */
-  .btn.ghost, .btn-ghost {
-    color: #374151; /* gray-700 */
-    border-color: rgba(255,255,255,0.50);
-    background-image:
-      linear-gradient(180deg, rgba(59,130,246,0.05), rgba(37,99,235,0.03)),
-      linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.22));
-    -webkit-backdrop-filter: blur(10px);
-    backdrop-filter: blur(10px);
-  }
-  .btn.ghost:hover, .btn-ghost:hover {
-    border-color: rgba(147,197,253,0.80);
-  }
-  .btn.ghost:focus-visible, .btn-ghost:focus-visible {
-    border-color: rgba(147,197,253,0.95);
-    box-shadow:
-      0 0 0 3px rgba(147,197,253,0.35),
-      inset 0 1px 0 rgba(255,255,255,0.65);
-  }
-  .btn.ghost:active, .btn-ghost:active {
-    transform: translateY(0.5px) scale(0.985);
+  /* 主按钮的涟漪用“白色”而不是蓝色，避免过曝叠色 */
+  .btn.primary::after, .btn-primary::after {
+    background:
+      radial-gradient(
+        160px 160px at var(--press-x, 50%) var(--press-y, 50%),
+        rgba(255,255,255, var(--primary-ripple-a)) 0%,
+        rgba(255,255,255, 0) 60%
+      );
   }
 
-  /* ====== JS 驱动的按压/释放类（增强弹性） ====== */
+  /* ===== JS 驱动的按压/释放类（增强弹性） ===== */
   .btn.pressing {
     transform: translateY(1px) scale(0.965);
     border-color: rgba(96,165,250,0.95);   /* blue-400 */
-    filter: saturate(110%) brightness(0.985);
+    filter: saturate(108%) brightness(0.985);
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,0.70),
       0 6px 18px rgba(31,38,135,0.16);
@@ -166,13 +171,13 @@ body { @apply bg-white text-gray-900; }
            transition focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100;
   }
 
-  /* ===== 下拉框 Select（玻璃态 + 浅蓝悬停） ===== */
+  /* ===== 下拉框 Select（玻璃态 + 浅蓝悬停；同样“限幅”避免过蓝） ===== */
   .select {
     @apply h-9 w-full rounded-xl text-sm px-3 pr-9 border shadow-md
            focus:outline-none;
 
     background-image:
-      linear-gradient(180deg, rgba(59,130,246,0.06), rgba(37,99,235,0.04)),
+      linear-gradient(180deg, rgba(59,130,246, calc(var(--blue-overlay-a) - 0.04)), rgba(37,99,235, calc(var(--blue-overlay-a) - 0.06))),
       linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0.32));
     border-color: rgba(255,255,255,0.45);
     -webkit-backdrop-filter: blur(10px);
@@ -195,7 +200,7 @@ body { @apply bg-white text-gray-900; }
     background-size: 14px 8px;
     background-image:
       url("data:image/svg+xml,%3Csvg width='14' height='8' viewBox='0 0 14 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L7 6.5L13 1.5' stroke='rgba(68,68,68,0.8)' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"),
-      linear-gradient(180deg, rgba(59,130,246,0.06), rgba(37,99,235,0.04)),
+      linear-gradient(180deg, rgba(59,130,246, calc(var(--blue-overlay-a) - 0.04)), rgba(37,99,235, calc(var(--blue-overlay-a) - 0.06))),
       linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0.32));
   }
   .select:hover {
