@@ -207,7 +207,7 @@ export default function MonstersPage() {
   const list = useQuery({
     queryKey: ['monsters', {
       q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
-      page, pageSize, warehouseOnly, onlyGettable, fixMode         // ✅ 将 fixMode 加入 key
+      page, pageSize, warehouseOnly, onlyGettable, fixMode
     }],
     queryFn: async () => {
       const endpoint = '/monsters'
@@ -217,19 +217,18 @@ export default function MonstersPage() {
         role: role || undefined,
         type: acqType || undefined,
         acq_type: acqType || undefined,
-        possess: warehouseOnly ? true : undefined,   // ✅ 仓库模式 → possess=true
+        possess: warehouseOnly ? true : undefined,
         new_type: onlyGettable ? true : undefined,
         sort, order,
-        page,                                        // ✅ 用当前的 page
-        page_size: pageSize,                         // ✅ 用当前的 pageSize
-        need_fix: fixMode ? true : undefined         // ✅ 后端筛选“需要修复”
+        page,
+        page_size: pageSize,
+        need_fix: fixMode ? true : undefined
       }
       if (selectedTags.length >= 2) params.tags_all = selectedTags
       else if (selectedTags.length === 1) params.tag = selectedTags[0]
 
       return (await api.get(endpoint, { params })).data as MonsterListResp
     },
-    //（可选）避免窗口切回触发旧 key 的自动刷新造成“来回切”
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   })
@@ -317,7 +316,7 @@ export default function MonstersPage() {
     })
   }
   const toggleAllVisible = () => {
-    const ids = (list.data?.items as any[])?.map(i => i.id) || []
+    const ids = (filteredItems as any[])?.map(i => i.id) || []
     const allSelected = ids.length > 0 && ids.every(id => selectedIds.has(id))
     setSelectedIds(prev => {
       const next = new Set(prev)
@@ -847,6 +846,12 @@ export default function MonstersPage() {
   }
   // ========== 识别链接功能（结束） ==========
 
+  // 计算“本页可见是否全选”
+  const allVisibleSelected = useMemo(() => {
+    const ids = filteredItems.map(i => i.id)
+    return ids.length > 0 && ids.every(id => selectedIds.has(id))
+  }, [filteredItems, selectedIds])
+
   return (
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
@@ -871,9 +876,9 @@ export default function MonstersPage() {
               {fixMode ? '修复妖怪（已开启）' : '修复妖怪'}
             </button>
 
-            <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>一键 AI 打标签</button>
-            {/* 要求：一键全部派生按钮设为白色 */}
-            <button className={`btn ${BTN_FX}`} onClick={deriveBatch}>一键全部派生</button>
+            {/* 文案精简 */}
+            <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>打标签</button>
+            <button className={`btn ${BTN_FX}`} onClick={deriveBatch}>派生</button>
 
             <button
               className={`btn btn-lg ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
@@ -890,7 +895,7 @@ export default function MonstersPage() {
               仅显示可获得妖怪
             </button>
             <button className={`btn ${BTN_FX}`} onClick={startCrawl} disabled={crawling}>
-              {crawling ? '爬取中…' : '一键爬取图鉴'}
+              {crawling ? '获取中…' : '获取图鉴'}
             </button>
 
             {/* 新增：新增妖怪 */}
@@ -1013,10 +1018,18 @@ export default function MonstersPage() {
       {/* 列表 */}
       <div className="card">
         <div className="overflow-auto">
-          <table className="table table-auto">
+          <table className="table table-auto table-zebra">
             <thead>
               <tr>
-                <th className="w-10 text-center" />
+                <th className="w-10 text-center">
+                  <input
+                    type="checkbox"
+                    className="h-5 w-5"
+                    checked={allVisibleSelected}
+                    onChange={toggleAllVisible}
+                    aria-label="全选本页可见项"
+                  />
+                </th>
                 <th className="w-16 text-center">ID</th>
                 <th className="text-left">名称</th>
                 <th className="w-20 min-w-[64px] text-center">元素</th>
@@ -1034,29 +1047,29 @@ export default function MonstersPage() {
             {list.isLoading && <SkeletonRows rows={8} cols={13} />}
             {!list.isLoading && (
               <tbody>
-                {filteredItems.map((m: any) => {
+                {filteredItems.map((m: any, idx: number) => {
                   const buckets = bucketizeTags(m.tags)
                   const chips = (arr: string[], prefixEmoji: string) =>
                     arr.slice(0, LIMIT_TAGS_PER_CELL).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
                   return (
-                    <tr key={m.id} className="align-middle">
-                      <td className="text-center align-middle py-2.5">
+                    <tr
+                      key={m.id}
+                      className="align-middle cursor-pointer hover:bg-gray-50"
+                      onClick={() => openDetail(m)}
+                      title="点击查看详情"
+                    >
+                      <td className="text-center align-middle py-2.5" onClick={(e) => e.stopPropagation()}>
                         <input
                           type="checkbox"
+                          className="h-5 w-5"
                           checked={selectedIds.has(m.id)}
                           onChange={() => toggleOne(m.id)}
                           aria-label={`选择 ${m.name || m.name_final}`}
                         />
                       </td>
                       <td className="text-center align-middle py-2.5">{m.id}</td>
-                      <td className="text-left align-middle py-2.5">
-                        <button
-                          className={`text-blue-600 hover:underline ${BTN_FX} truncate max-w-[240px]`}
-                          title={m.name || m.name_final}
-                          onClick={() => openDetail(m)}
-                        >
-                          {m.name || m.name_final}
-                        </button>
+                      <td className="text-left align-middle py-2.5 truncate max-w-[240px]" title={m.name || m.name_final}>
+                        {m.name || m.name_final}
                       </td>
                       <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
                         {m.element}
@@ -1094,12 +1107,10 @@ export default function MonstersPage() {
             )}
           </table>
         </div>
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <div className="text-sm text-gray-500">ETag: {list.data?.etag}</div>
-          <div className="flex items-center gap-2">
-            <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
-            <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
-          </div>
+        <div className="mt-3 flex items-center justify-end gap-2">
+          {/* 移除 ETag 显示 */}
+          <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
+          <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
         </div>
       </div>
 
@@ -1187,11 +1198,11 @@ export default function MonstersPage() {
 
                     {/* 仓库/可获取 */}
                     <div className="flex items-center gap-2">
-                      <input id="possess" type="checkbox" checked={editPossess} onChange={e => setEditPossess(e.target.checked)} />
+                      <input id="possess" type="checkbox" checked={editPossess} onChange={e => setEditPossess(e.target.checked)} className="h-5 w-5" />
                       <label htmlFor="possess" className="text-sm">已拥有（加入仓库）</label>
                     </div>
                     <div className="flex items-center gap-2">
-                      <input id="gettable" type="checkbox" checked={editGettable} onChange={e => setEditGettable(e.target.checked)} />
+                      <input id="gettable" type="checkbox" checked={editGettable} onChange={e => setEditGettable(e.target.checked)} className="h-5 w-5" />
                       <label htmlFor="gettable" className="text-sm">当前可获取</label>
                     </div>
 
