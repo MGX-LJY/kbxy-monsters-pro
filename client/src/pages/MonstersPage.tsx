@@ -207,29 +207,32 @@ export default function MonstersPage() {
   })
 
   const list = useQuery({
-    queryKey: ['monsters', {
-      q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable
-    }],
-    queryFn: async () => {
-      const endpoint = warehouseOnly ? '/warehouse' : '/monsters'
-      const params: any = {
-        q: q || undefined,
-        element: element || undefined,
-        role: role || undefined,
-        // 获取途径多口径
-        type: acqType || undefined,
-        acq_type: acqType || undefined,
-        acquire_type: acqType || undefined,
-        type_contains: acqType || undefined,
-        new_type: onlyGettable ? true : undefined,
-        sort, order, page, page_size: pageSize,
-      }
-      if (selectedTags.length >= 2) params.tags_all = selectedTags
-      else if (selectedTags.length === 1) params.tag = selectedTags[0]
-
-      return (await api.get(endpoint, { params })).data as MonsterListResp
+  queryKey: ['monsters', {
+    q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable
+  }],
+  queryFn: async () => {
+    const endpoint = '/monsters'
+    const params: any = {
+      q: q || undefined,
+      element: element || undefined,
+      role: role || undefined,
+      type: acqType || undefined,
+      acq_type: acqType || undefined,
+      possess: warehouseOnly ? true : undefined,   // ✅ 仓库模式 → possess=true
+      new_type: onlyGettable ? true : undefined,
+      sort, order,
+      page,                                        // ✅ 用当前的 page
+      page_size: pageSize                          // ✅ 用当前的 pageSize
     }
-  })
+    if (selectedTags.length >= 2) params.tags_all = selectedTags
+    else if (selectedTags.length === 1) params.tag = selectedTags[0]
+
+    return (await api.get(endpoint, { params })).data as MonsterListResp
+  },
+  //（可选）避免窗口切回触发旧 key 的自动刷新造成“来回切”
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+})
 
   // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
@@ -380,49 +383,8 @@ export default function MonstersPage() {
   }
 
   // —— 导入/导出/备份/恢复 —— //
-  const importCSVInputRef = useRef<HTMLInputElement>(null)
   const restoreInputRef = useRef<HTMLInputElement>(null)
 
-  const openImportCSV = () => importCSVInputRef.current?.click()
-  const onImportCSVFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (!f) return
-    const fd = new FormData()
-    fd.append('file', f)
-    try {
-      try {
-        await api.post('/api/v1/import/monsters_csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-      } catch {
-        try {
-          await api.post('/import/monsters_csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-        } catch {
-          await api.post('/import/monsters.csv', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
-        }
-      }
-      alert('CSV 导入完成！')
-      list.refetch(); stats.refetch(); wstats.refetch()
-    } catch (err: any) {
-      alert('CSV 导入失败：' + (err?.response?.data?.detail || err?.message || '未知错误'))
-    } finally {
-      e.target.value = ''
-    }
-  }
-
-  const exportCSV = async () => {
-    const params: any = {
-      q: q || undefined, element: element || undefined, role: role || undefined,
-      type: acqType || undefined, acq_type: acqType || undefined,
-      new_type: onlyGettable ? true : undefined, sort, order
-    }
-    if (selectedTags.length >= 2) params.tags_all = selectedTags
-    else if (selectedTags.length === 1) params.tag = selectedTags[0]
-
-    const res = await api.get('/export/monsters.csv', { params, responseType: 'blob' })
-    const url = window.URL.createObjectURL(res.data)
-    const a = document.createElement('a')
-    a.href = url; a.download = `monsters_${Date.now()}.csv`; a.click()
-    window.URL.revokeObjectURL(url)
-  }
   const exportBackup = async () => {
     const res = await api.get('/backup/export_json', { responseType: 'blob' })
     const url = window.URL.createObjectURL(res.data)
@@ -808,24 +770,30 @@ export default function MonstersPage() {
 
   // —— 列表前端兜底过滤（获取途径 + 多标签 AND + 修复妖怪） —— //
   const filteredItems = useMemo(() => {
-    let arr = (list.data?.items as any[]) || []
-    if (acqType) {
-      arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
+  let arr = (list.data?.items as any[]) || []
+
+  // ✅ 仓库开关：本地兜底（即使后端忽略 possess，也能切换）
+  if (warehouseOnly) {
+    arr = arr.filter(m => m.possess === true)
+  }
+
+  if (acqType) {
+    arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
+  }
+  if (selectedTags.length > 0) {
+    const canClientFilter = arr.every(m => Array.isArray(m.tags))
+    if (canClientFilter) {
+      arr = arr.filter(m => selectedTags.every(t => (m.tags as string[]).includes(t)))
     }
-    if (selectedTags.length > 0) {
-      arr = arr.filter(m => {
-        const set = new Set<string>((m.tags || []) as string[])
-        return selectedTags.every(t => set.has(t))
-      })
-    }
-    if (fixMode) {
-      arr = arr.filter(m => {
-        const c = skillCountMap[m.id]
-        return typeof c === 'number' ? (c === 0 || c > 5) : false
-      })
-    }
-    return arr
-  }, [list.data, acqType, selectedTags, fixMode, skillCountMap])
+  }
+  if (fixMode) {
+    arr = arr.filter(m => {
+      const c = skillCountMap[m.id]
+      return typeof c === 'number' ? (c === 0 || c > 5) : false
+    })
+  }
+  return arr
+}, [list.data, warehouseOnly, acqType, selectedTags, fixMode, skillCountMap])
 
   // —— 新建：初始化清空并打开编辑抽屉 —— //
   const startCreate = () => {
@@ -922,14 +890,12 @@ export default function MonstersPage() {
       <div className="card p-4">
         {/* 0 行：导入/导出/备份/恢复（放最上方，紧邻“导入 CSV”一组） */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <button className={`btn ${BTN_FX}`} onClick={openImportCSV}>导入 CSV</button>
-            <button className={`btn ${BTN_FX}`} onClick={exportCSV}>导出 CSV</button>
-            <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
-            <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
-            <input ref={importCSVInputRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onImportCSVFile} />
-            <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden" onChange={onRestoreFile} />
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
+          <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
+          <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden"
+                 onChange={onRestoreFile}/>
+        </div>
           <div className="flex flex-wrap items-center gap-2">
             {/* 新增：修复妖怪（放在“一键 AI 打标签”左边） */}
             <button
