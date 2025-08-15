@@ -86,10 +86,8 @@ export default function MonstersPage() {
   const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库
   const [onlyGettable, setOnlyGettable] = useState(false)   // 仅显示可获得妖怪（new_type=true）
 
-  // “修复妖怪”筛选（当前页：技能数为 0 或 >5）
+  // “修复妖怪”后端筛选模式
   const [fixMode, setFixMode] = useState(false)
-  const [fixLoading, setFixLoading] = useState(false)
-  const [skillCountMap, setSkillCountMap] = useState<Record<number, number>>({})
 
   // 分页
   const [page, setPage] = useState(1)
@@ -207,32 +205,34 @@ export default function MonstersPage() {
   })
 
   const list = useQuery({
-  queryKey: ['monsters', {
-    q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order, page, pageSize, warehouseOnly, onlyGettable
-  }],
-  queryFn: async () => {
-    const endpoint = '/monsters'
-    const params: any = {
-      q: q || undefined,
-      element: element || undefined,
-      role: role || undefined,
-      type: acqType || undefined,
-      acq_type: acqType || undefined,
-      possess: warehouseOnly ? true : undefined,   // ✅ 仓库模式 → possess=true
-      new_type: onlyGettable ? true : undefined,
-      sort, order,
-      page,                                        // ✅ 用当前的 page
-      page_size: pageSize                          // ✅ 用当前的 pageSize
-    }
-    if (selectedTags.length >= 2) params.tags_all = selectedTags
-    else if (selectedTags.length === 1) params.tag = selectedTags[0]
+    queryKey: ['monsters', {
+      q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
+      page, pageSize, warehouseOnly, onlyGettable, fixMode         // ✅ 将 fixMode 加入 key
+    }],
+    queryFn: async () => {
+      const endpoint = '/monsters'
+      const params: any = {
+        q: q || undefined,
+        element: element || undefined,
+        role: role || undefined,
+        type: acqType || undefined,
+        acq_type: acqType || undefined,
+        possess: warehouseOnly ? true : undefined,   // ✅ 仓库模式 → possess=true
+        new_type: onlyGettable ? true : undefined,
+        sort, order,
+        page,                                        // ✅ 用当前的 page
+        page_size: pageSize,                         // ✅ 用当前的 pageSize
+        need_fix: fixMode ? true : undefined         // ✅ 后端筛选“需要修复”
+      }
+      if (selectedTags.length >= 2) params.tags_all = selectedTags
+      else if (selectedTags.length === 1) params.tag = selectedTags[0]
 
-    return (await api.get(endpoint, { params })).data as MonsterListResp
-  },
-  //（可选）避免窗口切回触发旧 key 的自动刷新造成“来回切”
-  refetchOnWindowFocus: false,
-  refetchOnReconnect: false,
-})
+      return (await api.get(endpoint, { params })).data as MonsterListResp
+    },
+    //（可选）避免窗口切回触发旧 key 的自动刷新造成“来回切”
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
 
   // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
@@ -293,38 +293,6 @@ export default function MonstersPage() {
     queryFn: async () => (await api.get(`/monsters/${(selected as any)!.id}/skills`)).data as SkillDTO[]
   })
 
-  // —— 当前页“修复妖怪”需要的技能计数 —— //
-  useEffect(() => {
-    let stopped = false
-    const load = async () => {
-      if (!fixMode) return
-      const items = (list.data?.items as any[]) || []
-      if (!items.length) { setSkillCountMap({}); return }
-      setFixLoading(true)
-      try {
-        const pairs = await Promise.all(
-          items.map(async (m: any) => {
-            try {
-              const r = await api.get(`/monsters/${m.id}/skills`)
-              const cnt = ((r.data as SkillDTO[]) || []).filter(s => isValidSkillName(s.name)).length
-              return [m.id, cnt] as [number, number]
-            } catch {
-              return [m.id, 0] as [number, number]
-            }
-          })
-        )
-        if (stopped) return
-        const map: Record<number, number> = {}
-        pairs.forEach(([id, c]) => { map[id] = c })
-        setSkillCountMap(map)
-      } finally {
-        if (!stopped) setFixLoading(false)
-      }
-    }
-    load()
-    return () => { stopped = true }
-  }, [fixMode, list.data, page])
-
   // —— 展示用六维 —— //
   const showStats = selected ? {
     hp: (selected as any).hp || 0,
@@ -382,7 +350,7 @@ export default function MonstersPage() {
     list.refetch(); stats.refetch(); wstats.refetch()
   }
 
-  // —— 导入/导出/备份/恢复 —— //
+  // —— 备份/恢复 —— //
   const restoreInputRef = useRef<HTMLInputElement>(null)
 
   const exportBackup = async () => {
@@ -768,32 +736,27 @@ export default function MonstersPage() {
   // 计算进度百分比
   const progressPct = overlay.total ? Math.floor(((overlay.done || 0) / overlay.total) * 100) : null
 
-  // —— 列表前端兜底过滤（获取途径 + 多标签 AND + 修复妖怪） —— //
+  // —— 列表前端兜底过滤（获取途径 + 多标签 AND） —— //
   const filteredItems = useMemo(() => {
-  let arr = (list.data?.items as any[]) || []
+    let arr = (list.data?.items as any[]) || []
 
-  // ✅ 仓库开关：本地兜底（即使后端忽略 possess，也能切换）
-  if (warehouseOnly) {
-    arr = arr.filter(m => m.possess === true)
-  }
-
-  if (acqType) {
-    arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
-  }
-  if (selectedTags.length > 0) {
-    const canClientFilter = arr.every(m => Array.isArray(m.tags))
-    if (canClientFilter) {
-      arr = arr.filter(m => selectedTags.every(t => (m.tags as string[]).includes(t)))
+    // ✅ 仓库开关：本地兜底（即使后端忽略 possess，也能切换）
+    if (warehouseOnly) {
+      arr = arr.filter(m => m.possess === true)
     }
-  }
-  if (fixMode) {
-    arr = arr.filter(m => {
-      const c = skillCountMap[m.id]
-      return typeof c === 'number' ? (c === 0 || c > 5) : false
-    })
-  }
-  return arr
-}, [list.data, warehouseOnly, acqType, selectedTags, fixMode, skillCountMap])
+
+    if (acqType) {
+      arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
+    }
+    if (selectedTags.length > 0) {
+      const canClientFilter = arr.every(m => Array.isArray(m.tags))
+      if (canClientFilter) {
+        arr = arr.filter(m => selectedTags.every(t => (m.tags as string[]).includes(t)))
+      }
+    }
+    // ❌ 不再基于本页技能数做“修复”筛选，交给后端 need_fix
+    return arr
+  }, [list.data, warehouseOnly, acqType, selectedTags])
 
   // —— 新建：初始化清空并打开编辑抽屉 —— //
   const startCreate = () => {
@@ -888,24 +851,24 @@ export default function MonstersPage() {
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
       <div className="card p-4">
-        {/* 0 行：导入/导出/备份/恢复（放最上方，紧邻“导入 CSV”一组） */}
+        {/* 0 行：备份 / 恢复 */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
-          <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
-          <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden"
-                 onChange={onRestoreFile}/>
-        </div>
           <div className="flex flex-wrap items-center gap-2">
-            {/* 新增：修复妖怪（放在“一键 AI 打标签”左边） */}
+            <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
+            <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
+            <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden"
+                   onChange={onRestoreFile}/>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 修复妖怪（走后端 need_fix） */}
             <button
               className={`btn ${BTN_FX} ${fixMode ? 'btn-primary' : ''}`}
-              title="筛选出当前页中没有技能或技能数量大于 5 的妖怪"
+              title="筛选出需要修复的妖怪（后端分页）"
               aria-pressed={fixMode}
-              onClick={() => setFixMode(v => !v)}
+              onClick={() => { setFixMode(v => !v); setPage(1) }}
               disabled={list.isLoading}
             >
-              {fixMode ? (fixLoading ? '修复妖怪（筛选中…）' : '修复妖怪（已开启）') : '修复妖怪'}
+              {fixMode ? '修复妖怪（已开启）' : '修复妖怪'}
             </button>
 
             <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>一键 AI 打标签</button>
@@ -1071,12 +1034,7 @@ export default function MonstersPage() {
             {list.isLoading && <SkeletonRows rows={8} cols={13} />}
             {!list.isLoading && (
               <tbody>
-                {fixMode && fixLoading && (
-                  <tr>
-                    <td colSpan={13} className="text-center text-gray-500 py-4">正在根据技能数量筛选中…</td>
-                  </tr>
-                )}
-                {!fixLoading && filteredItems.map((m: any) => {
+                {filteredItems.map((m: any) => {
                   const buckets = bucketizeTags(m.tags)
                   const chips = (arr: string[], prefixEmoji: string) =>
                     arr.slice(0, LIMIT_TAGS_PER_CELL).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
@@ -1127,9 +1085,9 @@ export default function MonstersPage() {
                     </tr>
                   )
                 })}
-                {!fixLoading && filteredItems.length === 0 && (
+                {filteredItems.length === 0 && (
                   <tr>
-                    <td colSpan={13} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON/CSV。</td>
+                    <td colSpan={13} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON。</td>
                   </tr>
                 )}
               </tbody>

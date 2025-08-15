@@ -3,10 +3,10 @@ from typing import Optional, List, Tuple, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import select
+from sqlalchemy import select, func, or_
 
 from ..db import SessionLocal
-from ..models import Monster, MonsterSkill
+from ..models import Monster, MonsterSkill, Skill, Tag  # ✅ 引入 Skill/Tag 以做 need_fix 统计与标签筛选
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
@@ -84,6 +84,8 @@ def list_api(
     order: Optional[str] = "desc",
     page: int = 1,
     page_size: int = 20,
+    # ✅ 新增：前端点击“修复妖怪”时会传 need_fix=true
+    need_fix: Optional[bool] = Query(None, description="仅返回需要修复的怪物（技能数为 0 或 > 5）"),
     db: Session = Depends(get_db),
 ):
     """
@@ -91,6 +93,8 @@ def list_api(
     1) 旧参数：tag=xxx（单标签）
     2) 新参数：tags_all=...（可重复，AND）/ tags_any=...（OR）
     3) 组合/分组：buf_tags_* / deb_tags_* / util_tags_*；以及 tags[]=... + tag_mode=and|or
+    另外：
+    - need_fix=true 时筛选“技能数为 0 或 >5”的怪物（只统计名字非空技能）
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
@@ -125,31 +129,73 @@ def list_api(
         page=page,
         page_size=page_size,
     )
-
-    # 优先使用新多标签；否则回退到旧 tag
     if resolved_tags_all:
         base_kwargs["tags_all"] = resolved_tags_all
     if resolved_tags_any:
         base_kwargs["tags_any"] = resolved_tags_any
     if (not resolved_tags_all and not resolved_tags_any) and tag:
         base_kwargs["tag"] = tag
+    # ✅ 新增：若服务层已支持 need_fix，则透传
+    if need_fix is not None:
+        base_kwargs["need_fix"] = need_fix
 
-    # —— 调用服务：若后端未升级签名，降级使用旧参数 —— #
+    # —— 优先调用服务层；若不支持 need_fix 或签名较旧，则回退到本地实现 —— #
     try:
-        items, total = list_monsters(**base_kwargs)  # 新版服务应支持 tags_all/tags_any
+        items, total = list_monsters(**base_kwargs)  # 新版服务应支持 tags_all/tags_any/need_fix
     except TypeError:
-        # 旧版回退：只能单标签；多标签时尽可能退化为首个标签
-        legacy_tag = None
-        if resolved_tags_all:
-            legacy_tag = resolved_tags_all[0]
-        elif resolved_tags_any:
-            legacy_tag = resolved_tags_any[0]
-        else:
-            legacy_tag = tag
+        # 服务层签名较旧：自己实现 need_fix（或普通列表）的查询
+        # 当 need_fix=True 时，按“技能数为 0 或 >5（技能名非空才计数）”筛选
+        query = db.query(Monster)
 
-        items, total = list_monsters(
-            db, q=q, element=element, role=role, tag=legacy_tag,
-            sort=sort, order=order, page=page, page_size=page_size
+        # 基础筛选
+        if q:
+            like = f"%{q.strip()}%"
+            query = query.filter(Monster.name.ilike(like))
+        if element:
+            query = query.filter(Monster.element == element)
+        if role:
+            query = query.filter(Monster.role == role)
+
+        # 标签筛选（与服务层保持语义一致）
+        if resolved_tags_all:
+            for t in resolved_tags_all:
+                query = query.filter(Monster.tags.any(Tag.name == t))
+        if resolved_tags_any:
+            query = query.filter(Monster.tags.any(Tag.name.in_(resolved_tags_any)))
+        if (not resolved_tags_all and not resolved_tags_any) and tag:
+            query = query.filter(Monster.tags.any(Tag.name == tag))
+
+        if need_fix:
+            # 统计每只怪“名字非空”的技能数量
+            skill_cnt_sub = (
+                db.query(
+                    MonsterSkill.monster_id.label("mid"),
+                    func.count(MonsterSkill.skill_id).label("cnt"),
+                )
+                .join(Skill, Skill.id == MonsterSkill.skill_id)
+                .filter(func.trim(func.coalesce(Skill.name, "")) != "")
+                .group_by(MonsterSkill.monster_id)
+                .subquery()
+            )
+            query = (
+                query.outerjoin(skill_cnt_sub, skill_cnt_sub.c.mid == Monster.id)
+                     .filter(or_(skill_cnt_sub.c.cnt.is_(None),
+                                 skill_cnt_sub.c.cnt == 0,
+                                 skill_cnt_sub.c.cnt > 5))
+            )
+
+        # 排序（默认为 updated_at；其余派生字段排序由服务层处理，这里保持简单）
+        sort_col = getattr(Monster, sort, getattr(Monster, "updated_at", None))
+        if sort_col is None:
+            sort_col = getattr(Monster, "updated_at")
+        query = query.order_by(sort_col.asc() if (order or "").lower() == "asc" else sort_col.desc())
+
+        total = query.count()
+        items = (
+            query
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
         )
 
     # 预加载集合（注意：不能对 association_proxy 做 loader）
@@ -490,7 +536,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
             # 关联级字段
             if s_in and hasattr(ms, "selected") and (s_in.selected is not None):
                 ms.selected = bool(s_in.selected)
-            if s_in and hasattr(ms, "description") and (s_in.description or "").trim():
+            if s_in and hasattr(ms, "description") and (s_in.description or "").strip():  # ✅ 用 strip 而不是 trim
                 ms.description = s_in.description.strip()
             db.add(ms)
 
