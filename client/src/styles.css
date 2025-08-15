@@ -21,32 +21,80 @@ body { @apply bg-white text-gray-900; }
            disabled:opacity-50 disabled:cursor-not-allowed
            focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-1;
 
-    /* 悬停：浅蓝 */
     @apply hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700;
-    /* 按下：更蓝 + 轻微缩放 */
     @apply active:bg-blue-100 active:border-blue-400 active:text-blue-800 active:scale-[0.98];
   }
 
-  /* 实心主按钮（保持你的命名：.btn.primary 以及别名 .btn-primary） */
-  .btn.primary, .btn-primary {
-    @apply bg-indigo-600 text-white border-indigo-600;
-  }
+  .btn.primary, .btn-primary { @apply bg-indigo-600 text-white border-indigo-600; }
   .btn.primary:hover, .btn-primary:hover { @apply bg-indigo-700 border-indigo-700; }
   .btn.primary:active, .btn-primary:active { @apply bg-indigo-800 border-indigo-800 scale-[0.98]; }
 
-  /* 幽灵按钮（白底），按下仍然变蓝 */
-  .btn.ghost, .btn-ghost {
-    @apply bg-white text-gray-700 border border-gray-200;
-  }
+  .btn.ghost, .btn-ghost { @apply bg-white text-gray-700 border border-gray-200; }
   .btn.ghost:hover, .btn-ghost:hover { @apply bg-blue-50 border-blue-300 text-blue-700; }
   .btn.ghost:active, .btn-ghost:active { @apply bg-blue-100 border-blue-400 text-blue-800 scale-[0.98]; }
 
   .btn-lg { @apply px-4 py-2 text-base; }
 
-  /* 表单控件 */
-  .input, .select {
+  /* 输入框（保留原样） */
+  .input {
     @apply h-9 w-full rounded-lg border border-gray-200 px-3 bg-white text-sm
            transition focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100;
+  }
+
+  /* ▼ 液态玻璃 Select（控件本体） */
+  .select {
+    @apply h-9 w-full rounded-xl text-sm px-3 pr-9
+           border shadow-md transition
+           focus:outline-none focus:ring-2 focus:ring-indigo-300/40;
+
+    /* 玻璃：半透明底 + 模糊 + 内外高光边 */
+    background: rgba(255,255,255,0.35);
+    border-color: rgba(255,255,255,0.45);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.6),
+      0 8px 24px rgba(31,38,135,0.15);
+
+    /* 视觉反馈 */
+    transition: background 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  }
+  .select:hover {
+    background: rgba(255,255,255,0.45);
+    border-color: rgba(255,255,255,0.6);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.75),
+      0 10px 28px rgba(31,38,135,0.18);
+  }
+  .select:active {
+    background: rgba(255,255,255,0.4);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.7),
+      0 6px 18px rgba(31,38,135,0.16);
+  }
+
+  /* 隐藏系统箭头 + 自定义箭头（兼容 Chrome/Edge/Firefox） */
+  .select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+
+    /* 右侧自定义下拉箭头（SVG） */
+    background-image: url("data:image/svg+xml,%3Csvg width='14' height='8' viewBox='0 0 14 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L7 6.5L13 1.5' stroke='rgba(68,68,68,0.8)' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.55rem center;
+    background-size: 14px 8px;
+  }
+  /* Safari 的原生箭头隐藏 */
+  .select::-ms-expand { display: none; }
+
+  /* 不支持 backdrop-filter 的降级方案：不透明白底 */
+  @supports not ((-webkit-backdrop-filter: blur(0)) or (backdrop-filter: blur(0))) {
+    .select {
+      background: rgba(255,255,255,0.95);
+      border-color: rgba(229,231,235,1); /* gray-200 */
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+    }
   }
 
   /* 标签/徽标与表格 */
