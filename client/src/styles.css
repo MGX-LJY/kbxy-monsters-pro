@@ -13,42 +13,142 @@ body { @apply bg-white text-gray-900; }
 
 /* 组件层：按钮、表单、表格等 */
 @layer components {
-  /* 按钮：统一 hover/active 蓝色反馈 + 轻微缩放 */
+  /* ===== 按钮（玻璃态 + 浅蓝悬停 + 按下动效） ===== */
   .btn {
     @apply inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-medium
-           border border-gray-200 bg-white text-gray-800 shadow-sm select-none
-           transition-all duration-150 ease-out
-           disabled:opacity-50 disabled:cursor-not-allowed
-           focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-1;
+           select-none disabled:opacity-50 disabled:cursor-not-allowed
+           focus:outline-none;
 
-    @apply hover:bg-blue-50 hover:border-blue-300 hover:text-blue-700;
-    @apply active:bg-blue-100 active:border-blue-400 active:text-blue-800 active:scale-[0.98];
+    position: relative;
+    color: #111827; /* gray-900 */
+    border: 1px solid rgba(255,255,255,0.50);
+    /* 叠两层：白玻璃 + 极浅蓝内填充（非常浅） */
+    background-image:
+      linear-gradient(180deg, rgba(59,130,246,0.06), rgba(37,99,235,0.04)),
+      linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0.32));
+    background-clip: padding-box, padding-box;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.6),
+      0 8px 24px rgba(31,38,135,0.15);
+
+    transition:
+      background 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease,
+      transform 160ms cubic-bezier(.22,1,.36,1);
+  }
+  /* 浅蓝边框 & 轻微高光 */
+  .btn:hover {
+    border-color: rgba(147,197,253,0.80); /* blue-300 */
+    background-image:
+      linear-gradient(180deg, rgba(59,130,246,0.09), rgba(37,99,235,0.06)),
+      linear-gradient(180deg, rgba(255,255,255,0.45), rgba(255,255,255,0.38));
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.75),
+      0 10px 28px rgba(31,38,135,0.18);
+  }
+  /* 聚焦：更明显但仍然柔和的浅蓝描边 */
+  .btn:focus-visible {
+    border-color: rgba(147,197,253,0.95);
+    box-shadow:
+      0 0 0 3px rgba(147,197,253,0.35),
+      inset 0 1px 0 rgba(255,255,255,0.75),
+      0 10px 28px rgba(31,38,135,0.18);
+  }
+  /* 按下：微缩放 + 弹性回弹；并带一个非常轻的蓝色脉冲覆层 */
+  .btn:active {
+    transform: translateY(0.5px) scale(0.985);
+    border-color: rgba(96,165,250,0.90); /* blue-400 */
+    background-image:
+      linear-gradient(180deg, rgba(59,130,246,0.07), rgba(37,99,235,0.05)),
+      linear-gradient(180deg, rgba(255,255,255,0.40), rgba(255,255,255,0.34));
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.70),
+      0 6px 18px rgba(31,38,135,0.16);
+  }
+  /* 轻量脉冲层（纯 CSS，无 JS） */
+  .btn::after {
+    content: "";
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: radial-gradient(120% 120% at 50% 50%, rgba(59,130,246,0.18) 0%, rgba(59,130,246,0.00) 60%);
+    opacity: 0; transform: scale(.96);
+    transition: opacity 220ms ease, transform 220ms ease;
+    border-radius: inherit;
+  }
+  .btn:active::after { opacity: .10; transform: scale(1); }
+
+  /* 主按钮（有色玻璃，保留浅蓝边框反馈） */
+  .btn.primary, .btn-primary {
+    color: #fff;
+    border-color: rgba(99,102,241,0.55); /* indigo-500 */
+    background-image:
+      linear-gradient(180deg, rgba(99,102,241,0.78), rgba(79,70,229,0.72)),
+      linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.18));
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.25),
+      0 10px 28px rgba(79,70,229,0.35);
+  }
+  .btn.primary:hover, .btn-primary:hover {
+    border-color: rgba(147,197,253,0.85); /* 同样转成浅蓝描边提示 */
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.35),
+      0 12px 32px rgba(79,70,229,0.42);
+  }
+  .btn.primary:focus-visible, .btn-primary:focus-visible {
+    border-color: rgba(147,197,253,0.95);
+    box-shadow:
+      0 0 0 3px rgba(147,197,253,0.35),
+      inset 0 1px 0 rgba(255,255,255,0.35),
+      0 12px 32px rgba(79,70,229,0.42);
+  }
+  .btn.primary:active, .btn-primary:active {
+    transform: translateY(0.5px) scale(0.985);
   }
 
-  .btn.primary, .btn-primary { @apply bg-indigo-600 text-white border-indigo-600; }
-  .btn.primary:hover, .btn-primary:hover { @apply bg-indigo-700 border-indigo-700; }
-  .btn.primary:active, .btn-primary:active { @apply bg-indigo-800 border-indigo-800 scale-[0.98]; }
-
-  .btn.ghost, .btn-ghost { @apply bg-white text-gray-700 border border-gray-200; }
-  .btn.ghost:hover, .btn-ghost:hover { @apply bg-blue-50 border-blue-300 text-blue-700; }
-  .btn.ghost:active, .btn-ghost:active { @apply bg-blue-100 border-blue-400 text-blue-800 scale-[0.98]; }
+  /* 幽灵按钮（更轻的玻璃） */
+  .btn.ghost, .btn-ghost {
+    color: #374151; /* gray-700 */
+    border-color: rgba(255,255,255,0.50);
+    background-image:
+      linear-gradient(180deg, rgba(59,130,246,0.05), rgba(37,99,235,0.03)),
+      linear-gradient(180deg, rgba(255,255,255,0.28), rgba(255,255,255,0.22));
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+  .btn.ghost:hover, .btn-ghost:hover {
+    border-color: rgba(147,197,253,0.80);
+  }
+  .btn.ghost:focus-visible, .btn-ghost:focus-visible {
+    border-color: rgba(147,197,253,0.95);
+    box-shadow:
+      0 0 0 3px rgba(147,197,253,0.35),
+      inset 0 1px 0 rgba(255,255,255,0.65);
+  }
+  .btn.ghost:active, .btn-ghost:active {
+    transform: translateY(0.5px) scale(0.985);
+  }
 
   .btn-lg { @apply px-4 py-2 text-base; }
 
-  /* 输入框（保留原样） */
+  /* 输入框（保持原样） */
   .input {
     @apply h-9 w-full rounded-lg border border-gray-200 px-3 bg-white text-sm
            transition focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100;
   }
 
-  /* ▼ 液态玻璃 Select（控件本体） */
+  /* ===== 下拉框 Select（玻璃态 + 浅蓝悬停） ===== */
   .select {
-    @apply h-9 w-full rounded-xl text-sm px-3 pr-9
-           border shadow-md transition
-           focus:outline-none focus:ring-2 focus:ring-indigo-300/40;
+    @apply h-9 w-full rounded-xl text-sm px-3 pr-9 border shadow-md
+           focus:outline-none;
 
-    /* 玻璃：半透明底 + 模糊 + 内外高光边 */
-    background: rgba(255,255,255,0.35);
+    background-image:
+      linear-gradient(180deg, rgba(59,130,246,0.06), rgba(37,99,235,0.04)),
+      linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0.32));
     border-color: rgba(255,255,255,0.45);
     -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
@@ -56,44 +156,75 @@ body { @apply bg-white text-gray-900; }
       inset 0 1px 0 rgba(255,255,255,0.6),
       0 8px 24px rgba(31,38,135,0.15);
 
-    /* 视觉反馈 */
-    transition: background 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
-  }
-  .select:hover {
-    background: rgba(255,255,255,0.45);
-    border-color: rgba(255,255,255,0.6);
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.75),
-      0 10px 28px rgba(31,38,135,0.18);
-  }
-  .select:active {
-    background: rgba(255,255,255,0.4);
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.7),
-      0 6px 18px rgba(31,38,135,0.16);
-  }
-
-  /* 隐藏系统箭头 + 自定义箭头（兼容 Chrome/Edge/Firefox） */
-  .select {
+    transition:
+      background 160ms ease,
+      border-color 160ms ease,
+      box-shadow 160ms ease;
     appearance: none;
     -webkit-appearance: none;
     -moz-appearance: none;
 
-    /* 右侧自定义下拉箭头（SVG） */
-    background-image: url("data:image/svg+xml,%3Csvg width='14' height='8' viewBox='0 0 14 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L7 6.5L13 1.5' stroke='rgba(68,68,68,0.8)' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    /* 自定义箭头 */
     background-repeat: no-repeat;
     background-position: right 0.55rem center;
     background-size: 14px 8px;
+    background-image:
+      url("data:image/svg+xml,%3Csvg width='14' height='8' viewBox='0 0 14 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L7 6.5L13 1.5' stroke='rgba(68,68,68,0.8)' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"),
+      linear-gradient(180deg, rgba(59,130,246,0.06), rgba(37,99,235,0.04)),
+      linear-gradient(180deg, rgba(255,255,255,0.38), rgba(255,255,255,0.32));
+    /* 注意：上面的多重 background 会被箭头覆盖，因此把蓝色渐变也放进 background-image 列表 */
   }
-  /* Safari 的原生箭头隐藏 */
+  .select:hover {
+    border-color: rgba(147,197,253,0.80);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.75),
+      0 10px 28px rgba(31,38,135,0.18);
+  }
+  .select:focus-visible {
+    border-color: rgba(147,197,253,0.95);
+    box-shadow:
+      0 0 0 3px rgba(147,197,253,0.35),
+      inset 0 1px 0 rgba(255,255,255,0.75),
+      0 10px 28px rgba(31,38,135,0.18);
+  }
+  .select:active {
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,0.7),
+      0 6px 18px rgba(31,38,135,0.16);
+  }
   .select::-ms-expand { display: none; }
 
-  /* 不支持 backdrop-filter 的降级方案：不透明白底 */
+  /* ▼ 对不支持 backdrop-filter 的降级：按钮 + 选择框 */
   @supports not ((-webkit-backdrop-filter: blur(0)) or (backdrop-filter: blur(0))) {
-    .select {
-      background: rgba(255,255,255,0.95);
-      border-color: rgba(229,231,235,1); /* gray-200 */
+    .btn {
+      background: rgba(255,255,255,0.96);
+      border-color: rgba(229,231,235,1);
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+    }
+    .btn:hover { border-color: rgba(147,197,253,0.80); }
+    .btn:focus-visible {
+      border-color: rgba(147,197,253,0.95);
+      box-shadow: 0 0 0 3px rgba(147,197,253,0.35);
+    }
+    .btn.primary, .btn-primary {
+      background: #6366f1; /* indigo-500 纯色降级 */
+      border-color: #6366f1;
+      box-shadow: none;
+      color: #fff;
+    }
+    .btn.ghost, .btn-ghost {
+      background: #ffffff;
+      border-color: rgba(229,231,235,1);
+    }
+    .select {
+      background: rgba(255,255,255,0.96);
+      border-color: rgba(229,231,235,1);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+    }
+    .select:hover { border-color: rgba(147,197,253,0.80); }
+    .select:focus-visible {
+      border-color: rgba(147,197,253,0.95);
+      box-shadow: 0 0 0 3px rgba(147,197,253,0.35);
     }
   }
 
@@ -110,4 +241,11 @@ body { @apply bg-white text-gray-900; }
   .toast { @apply fixed right-4 top-4 z-50 rounded-xl shadow-lg bg-white border p-3 text-sm; }
   .modal-backdrop { @apply fixed inset-0 bg-black/40 backdrop-blur-sm; }
   .modal { @apply fixed inset-0 flex items-center justify-center p-4; }
+}
+
+/* 减少动态偏好：弱化动效，避免眩晕 */
+@media (prefers-reduced-motion: reduce) {
+  .btn, .select { transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease !important; }
+  .btn, .btn:active { transform: none !important; }
+  .btn::after { display: none !important; }
 }
