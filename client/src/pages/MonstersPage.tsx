@@ -761,9 +761,6 @@ export default function MonstersPage() {
       arr = arr.filter(m => m.possess === true)
     }
 
-    if (acqType) {
-      arr = arr.filter(m => ((m?.type || '') as string).includes(acqType))
-    }
     if (selectedTags.length > 0) {
       const canClientFilter = arr.every(m => Array.isArray(m.tags))
       if (canClientFilter) {
@@ -1044,7 +1041,7 @@ export default function MonstersPage() {
                 <th className="w-14 text-center">速</th>
                 <th className="w-14 text-center">压</th>
                 <th className="text-center">增强</th>
-                <th className="text中心">削弱</th>
+                <th className="text-center">削弱</th>
                 <th className="text-center">特殊</th>
               </tr>
             </thead>
@@ -1204,7 +1201,7 @@ export default function MonstersPage() {
                       <input id="possess" type="checkbox" checked={editPossess} onChange={e => setEditPossess(e.target.checked)} className="h-5 w-5" />
                       <label htmlFor="possess" className="text-sm">已拥有（加入仓库）</label>
                     </div>
-                    <div className="flex items中心 gap-2">
+                    <div className="flex items-center gap-2">
                       <input id="gettable" type="checkbox" checked={editGettable} onChange={e => setEditGettable(e.target.checked)} className="h-5 w-5" />
                       <label htmlFor="gettable" className="text-sm">当前可获取</label>
                     </div>
@@ -1400,7 +1397,7 @@ export default function MonstersPage() {
 
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               {typeof progressPct === 'number' ? (
-                <div className="h-2 bg紫色-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
+                <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
               ) : (
                 <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
               )}
