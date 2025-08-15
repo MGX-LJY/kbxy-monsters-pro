@@ -50,15 +50,14 @@ pick_pm() {
 }
 
 start_backend() {
-  cd "$SERVER_DIR"
+  cd "$ROOT"   # ← 改这里：到项目根，而不是 server/
   local pidf="$LOG_DIR/backend.pid"
   if running "$pidf"; then
     echo "[INFO] 后端已在运行中 (PID $(cat "$pidf"))，跳过启动。"
     return 0
   fi
-  echo "[INFO] 启动后端：uvicorn server.app.main:app --host $BACKEND_HOST --port $BACKEND_PORT --reload"
-  # 后台 + 日志
-  nohup uvicorn server.app.main:app \
+  echo "[INFO] 启动后端：uvicorn --app-dir \"$SERVER_DIR\" app.main:app --host $BACKEND_HOST --port $BACKEND_PORT --reload"
+  nohup uvicorn --app-dir "$SERVER_DIR" app.main:app \
       --host "$BACKEND_HOST" \
       --port "$BACKEND_PORT" \
       --reload \
