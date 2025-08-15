@@ -69,6 +69,18 @@ const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
   妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械', 特殊: '' // “特殊”不当作元素
 }
 
+// —— 进度弹框状态（新增 cancelable） —— //
+type OverlayState = {
+  show: boolean
+  title?: string
+  sub?: string
+  total?: number
+  done?: number
+  ok?: number
+  fail?: number
+  cancelable?: boolean
+}
+
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
@@ -126,16 +138,8 @@ export default function MonstersPage() {
   const [rawText, setRawText] = useState<string>('')         // 这里改成贴“链接”
   const [recognizing, setRecognizing] = useState<boolean>(false)
 
-  // 全屏模糊等待弹框 + 真实进度
-  const [overlay, setOverlay] = useState<{
-    show: boolean
-    title?: string
-    sub?: string
-    total?: number
-    done?: number
-    ok?: number
-    fail?: number
-  }>({ show: false })
+  // 全屏模糊等待弹框 + 真实进度（类型化 + 可取消）
+  const [overlay, setOverlay] = useState<OverlayState>({ show: false })
 
   // —— 一键爬取 —— //
   const [crawling, setCrawling] = useState(false)
@@ -628,17 +632,32 @@ export default function MonstersPage() {
     return Array.from(new Set(ids))
   }
 
-  // —— 一键 AI 打标签（真实进度版） —— //
+  // —— “取消 AI 打标签”标记 —— //
+  const cancelAITagRef = useRef(false)
+
+  // —— 一键 AI 打标签（真实进度版 + 可取消） —— //
   const aiTagBatch = async () => {
     let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
     if (!targetIds.length) return alert('当前没有可处理的记录')
 
-    setOverlay({ show: true, title: 'AI 打标签进行中…', sub: '正在分析', total: targetIds.length, done: 0, ok: 0, fail: 0 })
+    // 开始前重置取消标记，并打开允许取消的弹框
+    cancelAITagRef.current = false
+    setOverlay({
+      show: true,
+      title: 'AI 打标签进行中…',
+      sub: '正在分析',
+      total: targetIds.length,
+      done: 0,
+      ok: 0,
+      fail: 0,
+      cancelable: true
+    })
 
     let okCount = 0
     let failCount = 0
     try {
       for (const id of targetIds) {
+        if (cancelAITagRef.current) break
         try {
           try {
             await api.post(`/tags/monsters/${id}/retag_ai`)
@@ -659,11 +678,17 @@ export default function MonstersPage() {
         setSelected(fresh)
       }
 
-      alert(`AI 打标签完成：共 ${targetIds.length} 条，成功 ${okCount}，失败 ${failCount}`)
+      if (cancelAITagRef.current) {
+        const processed = okCount + failCount
+        alert(`已取消：已处理 ${processed} 条（成功 ${okCount}，失败 ${failCount}）`)
+      } else {
+        alert(`AI 打标签完成：共 ${targetIds.length} 条，成功 ${okCount}，失败 ${failCount}`)
+      }
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'AI 打标签失败')
     } finally {
       setOverlay({ show: false })
+      cancelAITagRef.current = false
     }
   }
 
@@ -1023,7 +1048,7 @@ export default function MonstersPage() {
                 <th className="w-14 text-center">速</th>
                 <th className="w-14 text-center">压</th>
                 <th className="text-center">增强</th>
-                <th className="text-center">削弱</th>
+                <th className="text中心">削弱</th>
                 <th className="text-center">特殊</th>
               </tr>
             </thead>
@@ -1183,7 +1208,7 @@ export default function MonstersPage() {
                       <input id="possess" type="checkbox" checked={editPossess} onChange={e => setEditPossess(e.target.checked)} className="h-5 w-5" />
                       <label htmlFor="possess" className="text-sm">已拥有（加入仓库）</label>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items中心 gap-2">
                       <input id="gettable" type="checkbox" checked={editGettable} onChange={e => setEditGettable(e.target.checked)} className="h-5 w-5" />
                       <label htmlFor="gettable" className="text-sm">当前可获取</label>
                     </div>
@@ -1369,7 +1394,7 @@ export default function MonstersPage() {
         )}
       </SideDrawer>
 
-      {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 */}
+      {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 + 取消按钮 */}
       {overlay.show && (
         <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
           <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
@@ -1379,7 +1404,7 @@ export default function MonstersPage() {
 
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               {typeof progressPct === 'number' ? (
-                <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
+                <div className="h-2 bg紫色-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
               ) : (
                 <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
               )}
@@ -1388,6 +1413,20 @@ export default function MonstersPage() {
             {typeof progressPct === 'number' && (
               <div className="text-xs text-gray-500">
                 {overlay.done}/{overlay.total}（成功 {overlay.ok}，失败 {overlay.fail}） — {progressPct}%
+              </div>
+            )}
+
+            {overlay.cancelable && (
+              <div className="pt-1">
+                <button
+                  className={`btn ${BTN_FX}`}
+                  onClick={() => {
+                    cancelAITagRef.current = true
+                    setOverlay(prev => ({ ...prev, sub: '正在取消当前任务…', cancelable: false }))
+                  }}
+                >
+                  取消
+                </button>
               </div>
             )}
           </div>
