@@ -847,17 +847,56 @@ export default function MonstersPage() {
     setIsEditing(true)
   }
 
-  // —— 识别：清洗与解析 —— //
-  const normalizeText = (raw: string) => {
+    // —— 文本别名映射 —— //
+  const ELEMENT_ALIASES: Record<string, string> = {
+    '圣': '圣系','火': '火系','水': '水系','风': '风系','雷': '雷系','冰': '冰系',
+    '木': '木系','土': '土系','金': '金系','毒': '毒系','幻': '幻系','灵': '灵系',
+    '妖': '妖系','魔': '魔系','音': '音系','机械': '机械',
+    '特': '特殊','特殊': '特殊','无': ''
+  }
+  const KIND_ALIASES: Record<string, string> = {
+    '技能': '法术','法': '法术','法术': '法术',
+    '物': '物理','物理': '物理',
+    '特': '特殊','特殊': '特殊'
+  }
+  const NOISE_PREFIX = [/^作者：/, /^来源：/, /^时间：/, /^举报反馈/, /^相关链接/, /^妖怪获得小技巧/, /^序号：/, /^系别：/, /^进化等级：/, /^简介：/]
+
+  // 纵向六维识别：连续 6 行纯数字，上方 1~3 行当名字
+  const findVerticalStats = (lines: string[]) => {
+    for (let i = 0; i <= lines.length - 6; i++) {
+      const chunk = lines.slice(i, i + 6)
+      if (chunk.every((s: string) => /^\d+$/.test(s))) {
+        for (let up = i - 1; up >= Math.max(0, i - 3); up--) {
+          const cand = lines[up]
+          if (/^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z\s]{0,20}$/.test(cand)) {
+            return { name: cand.replace(/\s+/g, ''), nums: chunk.map((n: string) => parseInt(n, 10)) }
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  // 规范化原文（去零宽/统一标点/清噪声）
+  const normalizeText = (raw: string): string => {
     return raw
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .replace(/\r/g, '\n')
+      .replace(/\u00A0/g, ' ')
       .replace(/[　\t]+/g, ' ')
-      .replace(/[，]/g, '，')
-      .replace(/[。]/g, '。')
+      .replace(/[：:]/g, '：')
+      .replace(/[（）]/g, m => (m === '（' ? '(' : ')'))
+      .replace(/[，,]/g, '，')
+      .replace(/[。\.]/g, '。')
+      .split('\n')
+      .map((s: string) => s.trim())
+      .filter((s: string) => s.length > 0 && !NOISE_PREFIX.some(re => re.test(s)) && !/by4399|4399小猪|4399小编/i.test(s))
+      .join('\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim()
   }
 
+    // —— 识别：清洗与解析 —— //
   const parseAndPrefillFromText = (raw: string) => {
     const text = normalizeText(raw)
     if (!text) { alert('请先粘贴文本'); return }
@@ -865,9 +904,11 @@ export default function MonstersPage() {
     // 拆行（移除空行）
     const allLines = text.split('\n').map(s => s.trim()).filter(Boolean)
 
-    // 1) 名称 + 六维（扫描形如：名字 6个数字）
+    // -------- 1) 名称 + 六维 --------
     type StatRow = { name: string, nums: number[] }
     const statRows: StatRow[] = []
+
+    // 1.1 横向一行：名字 + 六维
     const statRegex = /^([\u4e00-\u9fa5A-Za-z]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/
     for (const ln of allLines) {
       const m = ln.match(statRegex)
@@ -879,21 +920,30 @@ export default function MonstersPage() {
         }
       }
     }
-    // 选名：默认第二个（高阶），否则第一个
+    // 1.2 纵向六维：连续6行纯数字 + 上方 1~3 行中文名
+    if (!statRows.length) {
+      const v = findVerticalStats(allLines)
+      if (v) statRows.push(v)
+    }
+
+    // 选名：若有两档（基础+进化）默认第二个，否则第一个
     const chosen = statRows[1] || statRows[0]
     if (chosen) {
       setEditName(chosen.name)
-      setCreatePreferredName(chosen.name)
+      // 若没有 setCreatePreferredName 这行可删
+      // setCreatePreferredName?.(chosen.name as any)
       setHp(chosen.nums[0]); setSpeed(chosen.nums[1]); setAttack(chosen.nums[2]); setDefense(chosen.nums[3]); setMagic(chosen.nums[4]); setResist(chosen.nums[5])
     }
 
-    // 2) 获得方式 / 渠道
-    const idxAcquire = allLines.findIndex(l => l.includes('获得方式'))
+    // -------- 2) 获得方式 / 渠道 --------
+    // 兼容“获得方式 / 获取方式 / 获取渠道 / 获得渠道”
+    const idxAcquire = allLines.findIndex(l => /(获得方式|获取方式|获取渠道|获得渠道|分布地)/.test(l))
     if (idxAcquire >= 0) {
-      let method = allLines[idxAcquire].replace(/.*?获得方式/, '').trim()
+      const keyLine = allLines[idxAcquire]
+      let method = keyLine.replace(/.*?(获得方式|获取方式|获取渠道|获得渠道|分布地)\s*[:：]?/, '').trim()
       if (!method) method = allLines[idxAcquire + 1] || ''
       setEditMethod(method || '')
-      // 渠道枚举匹配
+
       let typeGuess = ''
       const s = method
       if (/捕捉|可捕捉/.test(s)) typeGuess = '可捕捉宠物'
@@ -907,68 +957,88 @@ export default function MonstersPage() {
       if (/可获得|可捕捉|VIP可获得|年费/.test(s)) setEditGettable(true)
     }
 
-    // 3) 技能表解析
-    const idxTab = allLines.findIndex(l => l.includes('技能表'))
+    // -------- 3) 技能表解析 --------
+    // 找到“技能表”起点（容错：含“技能表”三字就算）
+    const idxTab = allLines.findIndex(l => /技能表/.test(l))
     let skillLines: string[] = []
     if (idxTab >= 0) {
-      // 从“技能表”后开始，直到文本结束（或遇到明显的下一个模块关键词停止，这里简单取到结尾）
       const after = allLines.slice(idxTab + 1)
-      // 跳过表头（包含“技能名称/等级/技能属性/类型/威力/PP/技能描述”）
+      // 跳过各种表头行（包含下列任意关键词）
+      const headerRE = /(技能名称|等级|技能属性|类型|威力|PP|技能描述|技能属性\/类型|属性\/类型)/
       let start = 0
       for (let i = 0; i < after.length; i++) {
-        if (!/技能名称|等级|技能属性|类型|威力|PP|技能描述/.test(after[i])) { start = i; break }
+        if (!headerRE.test(after[i])) { start = i; break }
       }
       skillLines = after.slice(start)
+    } else {
+      // 没找到“技能表”也尝试全量扫（有些文末直接罗列技能）
+      skillLines = allLines.slice()
     }
 
-    // 将“断行的威力+PP+描述”合并到上一行（例如：... 特殊 法术 | 下一行：0 20 描述）
+    // 把“下一行是威力+PP”的合并到上一行（宽松）
     const merged: string[] = []
-    const partialRe = /^(\S+)\s+(\d+)\s+(圣|火|水|风|雷|冰|木|土|金|毒|幻|灵|妖|魔|音|机械|特殊)\s+(法术|物理|特殊)(?:\s+(\d+))?/
+    const partialRe = /^(\S+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(\d+))?/
     for (let i = 0; i < skillLines.length; i++) {
       let ln = skillLines[i]
       const m = ln.match(partialRe)
       if (m && !/\s\d+\s+\d+\s+/.test(ln) && i + 1 < skillLines.length) {
-        ln = (ln + ' ' + skillLines[i + 1]).trim()
-        i += 1
+        // 下一行含“数字 数字”视为 power + PP 接着描述
+        if (/\b\d+\s+\d+\b/.test(skillLines[i + 1])) {
+          ln = (ln + ' ' + skillLines[i + 1]).trim()
+          i += 1
+        }
       }
       merged.push(ln)
     }
 
-    const rowRe = /^(\S+)\s+(\d+)\s+(圣|火|水|风|雷|冰|木|土|金|毒|幻|灵|妖|魔|音|机械|特殊)\s+(法术|物理|特殊)\s*(\d+)?\s*(\d+)?\s*(.*)$/
+    // 统一把“特/技能/无”等别名映射到规范值
+    const rowRe = /^(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(\d+)?\s*(\d+)?\s*(.*)$/
     const parsedSkills: SkillDTO[] = []
     for (const ln of merged) {
       const m = ln.match(rowRe)
       if (!m) continue
+
       const name = m[1]
-      const attr = m[3]
-      const kind = m[4]
-      const powerStr = m[5]
-      const desc = m[7] || ''
       if (!isValidSkillName(name)) continue
-      const elementLabel = SHORT_ELEMENT_TO_LABEL[attr] ?? ''
+
+      // m[2] 等级（这里用不到，不存）
+      const rawAttr = m[3]       // 可能是：水/特/无/圣/火…
+      const rawKind = m[4]       // 可能是：技能/法术/物理/特殊/物
+      const powerStr = m[5]      // 可能为空
+      const desc = (m[7] || '').trim()
+
+      const elementLabel =
+        ELEMENT_ALIASES[rawAttr] ??
+        ELEMENT_ALIASES[rawAttr.replace(/系$/, '')] ?? ''  // 兼容“水系/水”
+      const kindLabel = KIND_ALIASES[rawKind] ?? rawKind
+
       const pow = powerStr ? Number(powerStr) : NaN
       parsedSkills.push({
         name,
         element: elementLabel || '',
-        kind,
+        kind: kindLabel,
         power: Number.isFinite(pow) ? (pow === 0 ? null : pow) : null,
-        description: desc.trim()
+        description: desc
       })
     }
 
-    // 4) 满级配招 → 置顶
-    const idxCombo = allLines.findIndex(l => l.includes('满级配招'))
+    // -------- 4) 配招推荐置顶（兼容多种写法） --------
+    // “配招推荐 / 推荐配招 / 满级配招”
+    const idxCombo = allLines.findIndex(l => /(配招推荐|推荐配招|满级配招)/.test(l))
     let recNames: string[] = []
     if (idxCombo >= 0) {
-      const line = allLines[idxCombo].replace(/.*?满级配招/, '').trim()
+      // 当前行优先，否则取下一行
+      const line = allLines[idxCombo].replace(/.*?(配招推荐|推荐配招|满级配招)\s*[:：]?/, '').trim()
       const next = allLines[idxCombo + 1] || ''
-      const comboText = (line || next || '').replace(/[（）]/g, (m) => (m === '（' ? '(' : m === '）' ? ')' : m))
-      const inside = (comboText.match(/\(([^)]*)\)/)?.[1] || '').split(/、|,|，|\s+/).map(s => s.trim()).filter(Boolean)
-      const outside = comboText.replace(/\([^)]*\)/g, '').split(/、|,|，|\s+/).map(s => s.trim()).filter(Boolean)
-      recNames = Array.from(new Set([...outside, ...inside])).filter(isValidSkillName)
+      const comboText = (line || next || '')
+        .replace(/[（）]/g, (m) => (m === '（' ? '(' : ')'))
+        .replace(/等。?$/, '') // 去掉“等/等。”
+      recNames = comboText
+        .split(/、|,|，|\s+|\/|；|;|\(|\)/)
+        .map(s => s.trim())
+        .filter(isValidSkillName)
     }
 
-    // 将推荐配招排最前；没在表里的，用占位补上
     const byName = new Map<string, SkillDTO>()
     parsedSkills.forEach(s => byName.set(s.name, s))
     const prioritized: SkillDTO[] = []
@@ -977,13 +1047,14 @@ export default function MonstersPage() {
         prioritized.push(byName.get(nm)!)
         byName.delete(nm)
       } else {
+        // 推荐里有表外技能，给空壳放前面
         prioritized.push({ name: nm, element: '', kind: '', power: null, description: '' })
       }
     }
     const finalSkills = [...prioritized, ...Array.from(byName.values())]
     setEditSkills(finalSkills.length ? finalSkills : [{ name: '', element: '', kind: '', power: null, description: '' }])
 
-    // 5) 通过技能主属性简单推断元素（若未填）
+    // -------- 5) 通过技能主属性简单推断元素（若未选） --------
     if (!editElement) {
       const counts: Record<string, number> = {}
       for (const s of parsedSkills) {
