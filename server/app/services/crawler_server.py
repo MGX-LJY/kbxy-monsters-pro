@@ -1,12 +1,6 @@
-# server/app/services/crawler_server.py
 # -*- coding: utf-8 -*-
 """
 4399【卡布西游-妖怪大全】爬虫（合并版）
-- 解析种族值 / 技能 / 推荐配招 / 系别：完全沿用“原版”（视为正确答案）
-- 仅“获取渠道（type/new_type/method）”：替换为强化修复版（表格优先 + 正文兜底 + 打分挑一句 + 有序正则分类 + 新/当期判断）
-
-运行示例（与原版一致，输出前 N 个最高形态的精简 JSON）：
-    python server/app/services/crawler_server.py
 """
 
 from __future__ import annotations
@@ -20,12 +14,14 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Generator, Iterable, Optional, Tuple, Set
 from urllib.parse import urljoin, urlparse
 
+import requests
 from DrissionPage import SessionPage
 from bs4 import BeautifulSoup, Tag
+from bs4.dammit import UnicodeDammit
 
 log = logging.getLogger(__name__)
 
-# ---------- 原版数据模型 ----------
+# ---------- 数据模型 ----------
 @dataclass
 class SkillRow:
     name: str
@@ -38,7 +34,7 @@ class SkillRow:
 @dataclass
 class MonsterRow:
     name: str
-    element: Optional[str]  # 妖怪系别（风系/火系/.../复合系/机械）
+    element: Optional[str]
     hp: int
     speed: int
     attack: int
@@ -47,18 +43,17 @@ class MonsterRow:
     resist: int
     source_url: str
     img_url: Optional[str] = None
-    # 获取渠道（强化修复版生成）
+    # 获取渠道
     type: Optional[str] = None
     new_type: Optional[bool] = None
     method: Optional[str] = None
-    # 其它（原版）
-    series_names: List[str] = field(default_factory=list)
+    # 其它
+    series_names: List[SkillRow] = field(default_factory=list)
     skills: List[SkillRow] = field(default_factory=list)
     recommended_names: List[str] = field(default_factory=list)
     selected_skills: List[SkillRow] = field(default_factory=list)
 
-
-# ---------- 原版工具 ----------
+# ---------- 小工具 ----------
 _INT = re.compile(r"-?\d+")
 _WS = re.compile(r"\s+")
 def _to_int(s: str | None) -> Optional[int]:
@@ -78,9 +73,7 @@ def _abs(base: str, href: str) -> str:
 def _is_detail_link(href: str) -> bool:
     return bool(href) and '/kabuxiyou/yaoguaidaquan/' in href and href.endswith('.html')
 
-
-# ---------- 获取渠道（强化修复版：常量 & 正则 & 工具） ----------
-# 触发与过滤
+# ---------- 获取渠道：常量 & 正则 ----------
 ACQ_KEYWORDS = [
     "获得方式","获取方式","获取方法","获得方法","获得渠道","获取渠道","获取途径",
     "获得：","获取：","分布地","获得","获取",
@@ -99,14 +92,39 @@ BLOCK_PHRASES = [
     "红色印记","妖怪性格","资质视频","充值卡布币","视频攻略","太上令","点击查看性格大全",
     "卡布西游红色印记","卡布西游妖怪性格","卡布西游充值卡布币","卡布西游太上令",
 ]
+_HEADER_WORDS = {"种族值", "体力", "速度", "攻击", "防御", "法术", "抗性", "资料", "妖怪名", "名称", "：", ":"}
 
-# 日期/期次特征
 DATE_RE = re.compile(r"\d{4}年\d{1,2}月\d{1,2}日?|(\d{4}年\d{1,2}月)|(\d{1,2}月\d{1,2}日)")
 DATE_HINT = re.compile(r"\d{4}年\d{1,2}月(?:\d{1,2}日)?|(?:\d{1,2}月\d{1,2}日)")
-
-# 锚点裁剪
 ANCHOR_HEAD_RE = re.compile(r"(获得方式|获取方式|获得方法|获取方法|获得[:：]|获取[:：]|分布地[:：])")
 TRIM_TAIL_RE = re.compile(r"(极品性格|点击查看性格大全|推荐修为|推荐配招|相关链接|种族值|妖怪名|系别|进化等级|作者|来源)")
+
+# —— 统一字段值（技能“元素/类型”规范化）——
+CANON_ELEM_MAP = {
+    "特": "特殊",
+    "无": "特殊",
+}
+CANON_KIND_MAP = {
+    "技能": "法术",   # 如果你更倾向把“技能”算成“特殊”，把这里改成 "特殊"
+    "技": "法术",
+    "状态": "特殊",
+    "变化": "特殊",
+    "辅助": "特殊",
+    "特": "特殊",     # 有些页面把“类型”也写成“特”
+    "": None,
+}
+
+def normalize_skill_element(e: Optional[str]) -> Optional[str]:
+    if e is None:
+        return None
+    e = e.strip()
+    return CANON_ELEM_MAP.get(e, e) or None
+
+def normalize_skill_kind(k: Optional[str]) -> Optional[str]:
+    if k is None:
+        return None
+    k = k.strip()
+    return CANON_KIND_MAP.get(k, k) or None
 
 def _acq_clean(x: str) -> str:
     if not x: return ""
@@ -121,16 +139,6 @@ def _is_negative_value(text: str) -> bool:
 
 def _bad_block(text: str) -> bool:
     return any(p in text for p in BLOCK_PHRASES)
-
-def css_like_path(el: Tag) -> str:
-    parts, cur = [], el
-    while cur and isinstance(cur, Tag) and cur.name not in ("[document]","html"):
-        frag = cur.name
-        if cur.get("id"): frag += f"#{cur.get('id')}"
-        if cur.get("class"): frag += "." + ".".join(cur.get("class")[:2])
-        parts.append(frag); cur = cur.parent
-        if len(parts) > 6: break
-    return " > ".join(reversed(parts))
 
 def pick_main_container(soup: BeautifulSoup) -> Tag:
     for sel in ["#newstext",".article",".news_text",".con",".content","article",".text"]:
@@ -192,13 +200,13 @@ def _collect_candidates_from_tables(scope: Tag) -> List[Dict[str, object]]:
                         label = "table_loc"
                     else:
                         label = "table_misc"
-                    cands.append({"from":label,"path":css_like_path(td),"text":txt,"score":_score_candidate(txt),"discard":None})
+                    cands.append({"from":label,"path":"table","text":txt,"score":_score_candidate(txt),"discard":None})
             else:
                 txt = _trim_acq_phrase(line)
                 if not txt or _bad_block(txt): continue
                 label = "table_acq" if any(k in line for k in ["获得方式","获取方式","获得方法","获取方法","获得：","获取："]) \
                         else ("table_loc" if "分布地" in line else "table_misc")
-                cands.append({"from":label,"path":css_like_path(tr),"text":txt,"score":_score_candidate(txt),"discard":None})
+                cands.append({"from":label,"path":"tr","text":txt,"score":_score_candidate(txt),"discard":None})
     return cands
 
 def _collect_candidates_from_text(scope: Tag) -> List[Dict[str, object]]:
@@ -213,7 +221,7 @@ def _collect_candidates_from_text(scope: Tag) -> List[Dict[str, object]]:
             if not (re.search(r"(获[得取]|获取|可获得|可得)", s) or re.search(r"^分布地[:：]", s)): continue
             s2 = _trim_acq_phrase(s)
             if not s2 or _bad_block(s2): continue
-            cands.append({"from":"text","path":css_like_path(el),"text":s2,"score":_score_candidate(s2),"discard":None})
+            cands.append({"from":"text","path":"text","text":s2,"score":_score_candidate(s2),"discard":None})
         if len(cands) >= 40: break
     return cands
 
@@ -285,7 +293,7 @@ def classify_acq_type(acq_text: str) -> Tuple[Optional[str], Optional[bool]]:
     tnorm = _norm(acq_text)
     new_flag: Optional[bool] = None
     if _UNAVAILABLE.search(tnorm): new_flag = False
-    elif "起" in tnorm and DATE_HINT.search(tnorm) and "至" not in tnorm and "到" not in tnorm and "—" not in tnorm:
+    elif "起" in tnorm and DATE_HINT.search(tnorm) and ("至" not in tnorm) and ("到" not in tnorm) and ("—" not in tnorm):
         new_flag = True
     elif _AVAILABLE_HINT.search(tnorm): new_flag = True
     for patt, label in PATTERNS:
@@ -295,8 +303,7 @@ def classify_acq_type(acq_text: str) -> Tuple[Optional[str], Optional[bool]]:
         return "活动获取宠物", new_flag
     return None, new_flag
 
-
-# ---------- 爬虫主体（原版 + 新获取渠道） ----------
+# ---------- 爬虫主体 ----------
 class Kabu4399Crawler:
     BASE = "https://news.4399.com"
     ROOT = "/kabuxiyou/yaoguaidaquan/"
@@ -342,6 +349,7 @@ class Kabu4399Crawler:
                 "Chrome/123.0 Safari/537.36"
             ),
             "Accept-Language": "zh-CN,zh;q=0.9",
+            "Referer": self.BASE + self.ROOT,
         })
         if headers:
             self.sp.session.headers.update(headers)
@@ -349,6 +357,17 @@ class Kabu4399Crawler:
         self.max_retries = max_retries
         self.timeout = timeout
         self.seen_urls: Set[str] = set()
+        self._warmed: bool = False
+
+    # ---- 预热：访问图鉴列表页，拿站点 Cookie ----
+    def _warm_up(self) -> None:
+        if self._warmed:
+            return
+        try:
+            self.sp.get(_abs(self.BASE, self.ROOT), timeout=self.timeout)
+        except Exception:
+            pass
+        self._warmed = True
 
     # ---- 基础 GET（带重试 + 节流）----
     def _get(self, url: str) -> bool:
@@ -395,7 +414,7 @@ class Kabu4399Crawler:
                     self.seen_urls.add(u)
                     yield u
 
-    # ---- 系别识别（原版）----
+    # ---- 系别识别 ----
     def _infer_element_from_url(self, page_url: str) -> Optional[str]:
         try:
             path = urlparse(page_url).path.strip("/")
@@ -407,9 +426,9 @@ class Kabu4399Crawler:
             pass
         return None
 
-    def _infer_element_from_breadcrumb(self) -> Optional[str]:
-        for a in self.sp.eles('t:div@@class=dq t:a'):
-            txt = (_clean(a.text) or "").strip()
+    def _infer_element_from_breadcrumb(self, soup: BeautifulSoup) -> Optional[str]:
+        for a in soup.select('div.dq a'):
+            txt = (_clean(a.get_text()) or "").strip()
             if not txt:
                 continue
             if txt.endswith("系") or txt == "机械":
@@ -431,14 +450,14 @@ class Kabu4399Crawler:
             return None
         return max(counter.items(), key=lambda kv: kv[1])[0]
 
-    def _infer_element(self, page_url: str, skills: List[SkillRow]) -> Optional[str]:
+    def _infer_element(self, page_url: str, skills: List[SkillRow], soup: Optional[BeautifulSoup]) -> Optional[str]:
         return (
             self._infer_element_from_url(page_url)
-            or self._infer_element_from_breadcrumb()
+            or (self._infer_element_from_breadcrumb(soup) if soup else None)
             or self._infer_element_from_skills(skills)
         )
 
-    # ---- 详情页解析（原版）----
+    # ---- Drission 解析（旧表结构优先）----
     def _pick_page_title_name(self) -> Optional[str]:
         h1 = self.sp.ele('t:h1')
         if not h1:
@@ -447,73 +466,11 @@ class Kabu4399Crawler:
         m = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9·]+", txt)
         return m[-1] if m else None
 
-    def _parse_stats_table(self, page_url: str) -> List[MonsterRow]:
-        results: List[MonsterRow] = []
-        target_tables = []
-        for tbl in self.sp.eles('t:table'):
-            txt = _clean(tbl.text)
-            if ("种族值" in txt) or ("资料" in txt and "体力" in txt and "攻击" in txt):
-                target_tables.append(tbl)
-        if not target_tables:
-            return results
-
-        tbl = target_tables[-1]
-        rows = tbl.eles('t:tr')
-        if len(rows) < 3:
-            return results
-
-        header_idx = None
-        for i, tr in enumerate(rows[:6]):
-            t = _clean(tr.text)
-            if all(k in t for k in ("体力", "速度", "攻击", "防御", "法术", "抗性")):
-                header_idx = i
-                break
-        if header_idx is None:
-            return results
-
-        title_name = self._pick_page_title_name()
-        img_ele = self.sp.ele('t:img')
-        page_img = img_ele.attr('src') if img_ele else None
-        if page_img and page_img.startswith('//'):
-            page_img = _abs(self.BASE, page_img)
-
-        for tr in rows[header_idx + 1:]:
-            tds = tr.eles('t:td')
-            if len(tds) < 7:
-                continue
-            vals = [_clean(td.text) for td in tds]
-            if len(vals) >= 8:
-                name = vals[0] or vals[1]
-                cols = vals[2:8]
-            else:
-                name = vals[0]
-                cols = vals[1:7]
-            if len(cols) != 6:
-                continue
-            m = MonsterRow(
-                name=_clean(name),
-                element=None,
-                hp=_to_int(cols[0]) or 0,
-                speed=_to_int(cols[1]) or 0,
-                attack=_to_int(cols[2]) or 0,
-                defense=_to_int(cols[3]) or 0,
-                magic=_to_int(cols[4]) or 0,
-                resist=_to_int(cols[5]) or 0,
-                source_url=page_url,
-                img_url=page_img,
-            )
-            results.append(m)
-
-        if title_name:
-            for r in results:
-                r.series_names = [rr.name for rr in results]
-        return results
-
     def _parse_skills_table(self) -> List[SkillRow]:
         skills: List[SkillRow] = []
         target_tbl = None
         for tbl in self.sp.eles('t:table'):
-            if "技能表" in _clean(tbl.text):
+            if "技能表" in _clean(tbl.text) or "技能名称" in _clean(tbl.text):
                 target_tbl = tbl
         if not target_tbl:
             return skills
@@ -523,9 +480,9 @@ class Kabu4399Crawler:
             return skills
 
         header_idx = None
-        for i, tr in enumerate(rows[:6]):
+        for i, tr in enumerate(rows[:10]):
             t = _clean(tr.text)
-            if all(k in t for k in ("技能名称", "等级", "技能属性", "类型", "威力", "PP", "技能描述")):
+            if all(k in t for k in ("技能名称", "等级", "技能属性", "类型", "威力")):
                 header_idx = i
                 break
         if header_idx is None:
@@ -533,9 +490,10 @@ class Kabu4399Crawler:
 
         for tr in rows[header_idx + 1:]:
             tds = tr.eles('t:td')
-            if len(tds) < 7:
+            if len(tds) < 5:
                 continue
-            vals = [_clean(td.text) for td in tds[:7]]
+            vals = [_clean(td.text) for td in tds]
+            vals += [""] * (7 - len(vals))
             name = vals[0]
             if not name or name == "无":
                 continue
@@ -543,38 +501,145 @@ class Kabu4399Crawler:
             element = vals[2]
             kind = vals[3]
             power = _to_int(vals[4])
-            desc = vals[6]
+            desc = vals[6] if len(vals) > 6 else ""
             skills.append(SkillRow(name, level, element, kind, power, desc))
         return skills
 
-    # ---- 获取渠道解析（替换为强化修复版）----
-    def _parse_acquisition_info(self) -> Tuple[Optional[str], Optional[bool], Optional[str]]:
-        """
-        返回 (type, new_type, method)
-        - method：从表格/正文候选中打分挑一句（强化修复版）
-        - type/new_type：有序正则分类 + 新/当期判断（强化修复版）
-        """
-        # 用页面 HTML 走 BeautifulSoup 的候选/打分逻辑
-        html = self.sp.html or ""
-        if not html:
-            return None, None, None
-        soup = BeautifulSoup(html, "lxml")
-        acq_text = pick_acquire_text(soup)
-        acq_text = _acq_clean(acq_text)
-        acq_type, new_flag = classify_acq_type(acq_text)
-        return acq_type, new_flag, (acq_text or None)
+    # ---- 纯 BeautifulSoup 解析（稳）----
+    def _bs4_parse_stats_table(self, soup: BeautifulSoup, page_url: str) -> List[MonsterRow]:
+        tables = soup.find_all("table")
+        target = None
+        for tb in tables:
+            txt = (_clean(tb.get_text(" ", strip=True)) or "")
+            if ("种族值" in txt) or ("资料" in txt and all(k in txt for k in ("体力", "攻击", "速度"))):
+                target = tb
+        if not target:
+            for tb in tables:
+                rows = tb.find_all("tr")
+                for tr in rows:
+                    tds = tr.find_all(["td", "th"])
+                    if len(tds) >= 7:
+                        nums = sum(1 for td in tds[-6:] if _to_int(_clean(td.get_text())) is not None)
+                        if nums >= 5:
+                            target = tb
+                            break
+                if target: break
+        if not target:
+            return []
 
-    # ---- 推荐配招（原版）----
-    def _parse_recommended_names(self) -> List[str]:
-        for tbl in self.sp.eles('t:table'):
-            for tr in tbl.eles('t:tr'):
-                tds = tr.eles('t:td')
+        rows = target.find_all("tr")
+        if len(rows) < 2:
+            return []
+
+        header_idx = None
+        for i, tr in enumerate(rows[:10]):
+            t = _clean(tr.get_text(" ", strip=True))
+            if all(k in t for k in ("体力", "速度", "攻击", "防御", "法术", "抗性")):
+                header_idx = i
+                break
+        if header_idx is None:
+            header_idx = -1
+
+        img = soup.find("img")
+        page_img = img["src"] if img and img.get("src") else None
+        if page_img and page_img.startswith("//"):
+            page_img = _abs(self.BASE, page_img)
+
+        out: List[MonsterRow] = []
+        for tr in rows[header_idx + 1:]:
+            tds = tr.find_all("td")
+            if len(tds) < 2:
+                continue
+
+            vals = [_clean(td.get_text(" ", strip=True)) for td in tds]
+            num_idx = [i for i, v in enumerate(vals) if _to_int(v) is not None]
+            if len(num_idx) < 6:
+                continue
+
+            last_six_idx = num_idx[-6:]
+            cols = [(_to_int(vals[i]) or 0) for i in last_six_idx]
+            if len(cols) != 6:
+                continue
+
+            first_num_pos = last_six_idx[0]
+            name_zone = [v for v in vals[:first_num_pos] if v]
+
+            def _looks_header(s: str) -> bool:
+                return any(w in s for w in _HEADER_WORDS)
+
+            name = ""
+            for seg in reversed(name_zone):
+                if seg and not _looks_header(seg):
+                    name = seg
+                    break
+            if not name:
+                m = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9·]+", " ".join(name_zone) or tr.get_text(" ", strip=True))
+                for x in reversed(m):
+                    if x not in _HEADER_WORDS:
+                        name = x
+                        break
+            if not name:
+                continue
+
+            out.append(MonsterRow(
+                name=_clean(name),
+                element=None,
+                hp=cols[0], speed=cols[1], attack=cols[2],
+                defense=cols[3], magic=cols[4], resist=cols[5],
+                source_url=page_url, img_url=page_img,
+            ))
+
+        if out:
+            series = [r.name for r in out]
+            for r in out:
+                r.series_names = series
+        return out
+
+    def _bs4_parse_skills_table(self, soup: BeautifulSoup) -> List[SkillRow]:
+        target = None
+        for tb in soup.find_all("table"):
+            txt = _clean(tb.get_text(" ", strip=True))
+            if ("技能表" in txt) or ("技能名称" in txt and "类型" in txt):
+                target = tb
+        if not target:
+            return []
+        rows = target.find_all("tr")
+        if len(rows) <= 1:
+            return []
+        header_idx = 0
+        for i, tr in enumerate(rows[:10]):
+            t = _clean(tr.get_text(" ", strip=True))
+            if "技能名称" in t:
+                header_idx = i
+                break
+        out: List[SkillRow] = []
+        for tr in rows[header_idx + 1:]:
+            tds = tr.find_all("td")
+            if len(tds) < 4:
+                continue
+            vals = [_clean(td.get_text(" ", strip=True)) for td in tds]
+            vals += [""] * (7 - len(vals))
+            name = vals[0]
+            if not name or name == "无":
+                continue
+            level = _to_int(vals[1])
+            element = vals[2]
+            kind = vals[3]
+            power = _to_int(vals[4])
+            desc = vals[6] if len(vals) > 6 else ""
+            out.append(SkillRow(name, level, element, kind, power, desc))
+        return out
+
+    def _bs4_parse_recommended_names(self, soup: BeautifulSoup) -> List[str]:
+        for tb in soup.find_all("table"):
+            for tr in tb.find_all("tr"):
+                tds = tr.find_all("td")
                 if not tds:
                     continue
-                first = _clean(tds[0].text)
-                if "推荐配招" in first or "推荐技能" in first:
-                    raw = _clean(" ".join((td.text or "") for td in tds[1:])) if len(tds) > 1 else _clean(tr.text)
-                    raw = raw.replace("：", " ").replace("&nbsp;", " ").replace("\u3000", " ")
+                first = _clean(tds[0].get_text(" ", strip=True))
+                if ("推荐配招" in first) or ("推荐技能" in first):
+                    raw = _clean(" ".join(td.get_text(" ", strip=True) for td in tds[1:])) if len(tds) > 1 else _clean(tr.get_text(" ", strip=True))
+                    raw = raw.replace("：", " ").replace("\u3000", " ")
                     parts = re.split(r"[+＋、/，,；;|\s]+", raw)
                     names, seen = [], set()
                     for p in parts:
@@ -585,6 +650,15 @@ class Kabu4399Crawler:
                             seen.add(n); names.append(n)
                     return names
         return []
+
+    # ---- 获取渠道（强化修复版）----
+    def _parse_acquisition_info(self, soup: BeautifulSoup) -> Tuple[Optional[str], Optional[bool], Optional[str]]:
+        if not soup:
+            return None, None, None
+        acq_text = pick_acquire_text(soup)
+        acq_text = _acq_clean(acq_text)
+        acq_type, new_flag = classify_acq_type(acq_text)
+        return acq_type, new_flag, (acq_text or None)
 
     def _select_skills_from_recommend(self, rec_names: List[str], skills: List[SkillRow]) -> List[SkillRow]:
         def norm(s: str) -> str:
@@ -630,16 +704,15 @@ class Kabu4399Crawler:
                 out.append(s)
         return out
 
-    # ---------- 输出裁剪（与原版一致） ----------
     @staticmethod
     def _skill_public(s: SkillRow) -> Dict[str, object]:
         return {
-            "name": s.name,
+            "name": (s.name or "").strip(),
             "level": s.level,
-            "element": s.element,
-            "kind": s.kind,
+            "element": normalize_skill_element(s.element),
+            "kind": normalize_skill_kind(s.kind),
             "power": s.power,
-            "description": s.description,
+            "description": (s.description or "").strip(),
         }
 
     @staticmethod
@@ -661,26 +734,55 @@ class Kabu4399Crawler:
 
     # ---- 页面抓取（不触库）----
     def fetch_detail(self, url: str) -> Optional[MonsterRow]:
-        if not self._get(url):
-            return None
+        # 预热
+        self._warm_up()
 
-        # 原版：种族值/技能/推荐/系别
-        monsters = self._parse_stats_table(url)
+        # 先用 DrissionPage
+        html_text: Optional[str] = None
+        soup: Optional[BeautifulSoup] = None
+        if self._get(url):
+            html_text = getattr(self.sp, "html", None)
+            if html_text and len(html_text) > 500:
+                soup = BeautifulSoup(html_text, "lxml")
+
+        # 兜底：requests（解决部分编码问题）
+        if soup is None:
+            try:
+                r = requests.get(
+                    url,
+                    headers=self.sp.session.headers,
+                    timeout=self.timeout,
+                )
+                if not r.ok or not r.content:
+                    return None
+                dammit = UnicodeDammit(r.content)
+                html_text = dammit.unicode_markup
+                if not html_text:
+                    return None
+                self.sp.html = html_text
+                soup = BeautifulSoup(html_text, "lxml")
+            except Exception as e:
+                log.warning("requests fallback failed %s -> %s", url, e)
+                return None
+
+        # 解析
+        monsters = self._bs4_parse_stats_table(soup, url)
         if not monsters:
             return None
 
-        skills = self._parse_skills_table()
-        rec_names = self._parse_recommended_names()
+        skills = self._bs4_parse_skills_table(soup)
+        rec_names = self._bs4_parse_recommended_names(soup)
+
         selected: List[SkillRow] = self._select_skills_from_recommend(rec_names, skills) if rec_names else []
         if not selected:
             selected = self._all_skills_as_selected(skills, apply_filter=True)
 
         best = max(monsters, key=self._six_sum)
-        elem = self._infer_element(url, skills)
+        elem = self._infer_element(url, skills, soup)
         best.element = elem
 
-        # 新版：获取渠道
-        acq_type, acq_now, acq_method = self._parse_acquisition_info()
+        # 获取渠道
+        acq_type, acq_now, acq_method = self._parse_acquisition_info(soup)
         best.type = acq_type
         best.new_type = acq_now
         best.method = acq_method
@@ -690,7 +792,7 @@ class Kabu4399Crawler:
         best.selected_skills = selected
         return best
 
-    # ---- 顶层遍历（与原版一致）----
+    # ---- 顶层遍历 ----
     def crawl_all(self, *, persist: Optional[callable] = None) -> Generator[MonsterRow, None, None]:
         for detail_url in self.iter_detail_urls():
             m = self.fetch_detail(detail_url)
@@ -704,8 +806,7 @@ class Kabu4399Crawler:
             yield m
             time.sleep(random.uniform(*self.throttle_range))
 
-
-# ---------- 示例持久化（原版） ----------
+# ---------- 示例 ----------
 def example_persist(mon: MonsterRow) -> None:
     log.info(
         "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s new=%s",
@@ -714,20 +815,16 @@ def example_persist(mon: MonsterRow) -> None:
         mon.type or "-", str(mon.new_type)
     )
 
-# ---------- 独立运行（与原版一致） ----------
 def _to_public_json(m: MonsterRow) -> Dict[str, object]:
     return Kabu4399Crawler._to_public_json(m)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     crawler = Kabu4399Crawler()
-
-    # 收集前 N 个角色（最高形态）并输出 JSON
     N = 10
     out: List[Dict[str, object]] = []
     for item in crawler.crawl_all(persist=example_persist):
         out.append(_to_public_json(item))
         if len(out) >= N:
             break
-
     print(json.dumps(out, ensure_ascii=False, indent=2))

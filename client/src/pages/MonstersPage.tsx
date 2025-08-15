@@ -124,10 +124,10 @@ export default function MonstersPage() {
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
-  // —— 新增模式 & 识别粘贴框 —— //
+  // —— 新增模式 & 识别链接框 —— //
   const [isCreating, setIsCreating] = useState<boolean>(false)
-  const [rawText, setRawText] = useState<string>('')
-  const [createPreferredName, setCreatePreferredName] = useState<string>('')
+  const [rawText, setRawText] = useState<string>('')         // 这里改成贴“链接”
+  const [recognizing, setRecognizing] = useState<boolean>(false)
 
   // 全屏模糊等待弹框 + 真实进度
   const [overlay, setOverlay] = useState<{
@@ -512,11 +512,10 @@ export default function MonstersPage() {
           name: (s.name || '').trim(),
           element: (s.element || '').trim() || undefined,
           kind: (s.kind || '').trim() || undefined,
-          power, // ← 不再和 '' 比较
+          power,
           description: (s.description || '').trim(),
         }
       })
-  .filter(s => isValidSkillName(s.name))
       .filter(s => isValidSkillName(s.name))
       .filter(s => {
         if (seen.has(s.name)) return false
@@ -532,13 +531,13 @@ export default function MonstersPage() {
         return o
       })
 
-    // 2) 新接口：PUT + 裸数组（你的后端签名就是 List[SkillIn]）
+    // 2) 新接口：PUT + 裸数组
     try {
       return await api.put(`/monsters/${monsterId}/skills`, skills, {
         headers: { 'Content-Type': 'application/json' }
       })
     } catch (e1: any) {
-      // 3) 老接口兜底（尽量不走，会引发老逻辑的重复名问题）
+      // 3) 老接口兜底
       try {
         return await api.post('/skills/set', { monster_id: monsterId, skills })
       } catch (e2: any) {
@@ -833,7 +832,6 @@ export default function MonstersPage() {
     setIsCreating(true)
     setSelected({ id: 0 })
     setRawText('')
-    setCreatePreferredName('')
     setEditName('')
     setEditElement('')
     setEditRole('')
@@ -847,226 +845,76 @@ export default function MonstersPage() {
     setIsEditing(true)
   }
 
-    // —— 文本别名映射 —— //
-  const ELEMENT_ALIASES: Record<string, string> = {
-    '圣': '圣系','火': '火系','水': '水系','风': '风系','雷': '雷系','冰': '冰系',
-    '木': '木系','土': '土系','金': '金系','毒': '毒系','幻': '幻系','灵': '灵系',
-    '妖': '妖系','魔': '魔系','音': '音系','机械': '机械',
-    '特': '特殊','特殊': '特殊','无': ''
-  }
-  const KIND_ALIASES: Record<string, string> = {
-    '技能': '法术','法': '法术','法术': '法术',
-    '物': '物理','物理': '物理',
-    '特': '特殊','特殊': '特殊'
-  }
-  const NOISE_PREFIX = [/^作者：/, /^来源：/, /^时间：/, /^举报反馈/, /^相关链接/, /^妖怪获得小技巧/, /^序号：/, /^系别：/, /^进化等级：/, /^简介：/]
-
-  // 纵向六维识别：连续 6 行纯数字，上方 1~3 行当名字
-  const findVerticalStats = (lines: string[]) => {
-    for (let i = 0; i <= lines.length - 6; i++) {
-      const chunk = lines.slice(i, i + 6)
-      if (chunk.every((s: string) => /^\d+$/.test(s))) {
-        for (let up = i - 1; up >= Math.max(0, i - 3); up--) {
-          const cand = lines[up]
-          if (/^[\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z\s]{0,20}$/.test(cand)) {
-            return { name: cand.replace(/\s+/g, ''), nums: chunk.map((n: string) => parseInt(n, 10)) }
-          }
-        }
-      }
-    }
-    return null
+  // ========== 识别链接功能（新增） ==========
+  const extractUrls = (text: string): string[] => {
+    const re = /https?:\/\/[^\s)（）]+/gi
+    const raw = text.match(re) || []
+    const clean = raw
+      .map(u => u.replace(/[)，。；;,]+$/, ''))
+      .map(s => s.trim())
+      .filter(Boolean)
+    return Array.from(new Set(clean))
   }
 
-  // 规范化原文（去零宽/统一标点/清噪声）
-  const normalizeText = (raw: string): string => {
-    return raw
-      .replace(/[\u200B-\u200D\uFEFF]/g, '')
-      .replace(/\r/g, '\n')
-      .replace(/\u00A0/g, ' ')
-      .replace(/[　\t]+/g, ' ')
-      .replace(/[：:]/g, '：')
-      .replace(/[（）]/g, m => (m === '（' ? '(' : ')'))
-      .replace(/[，,]/g, '，')
-      .replace(/[。\.]/g, '。')
-      .split('\n')
-      .map((s: string) => s.trim())
-      .filter((s: string) => s.length > 0 && !NOISE_PREFIX.some(re => re.test(s)) && !/by4399|4399小猪|4399小编/i.test(s))
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
+  const recognizeAndPrefillFromLinks = async () => {
+    const urls = extractUrls(rawText)
+    if (!urls.length) {
+      alert('请在文本框中粘贴至少一个怪物详情页链接（支持 4399 图鉴详情页）')
+      return
+    }
+    const url = urls[0]
+    setRecognizing(true)
+    try {
+      let data: any
+      try {
+        // 推荐：POST JSON
+        data = (await api.post('/api/v1/crawl/fetch_one', { url })).data
+      } catch {
+        // 兜底：GET query
+        data = (await api.get('/api/v1/crawl/fetch_one', { params: { url } })).data
+      }
+      if (!data || typeof data !== 'object') {
+        alert('未识别到有效数据'); return
+      }
+
+      // 基础信息
+      if (data.name) setEditName(data.name)
+      if (data.element) setEditElement(data.element)
+      if (typeof data.new_type === 'boolean') setEditGettable(!!data.new_type)
+      if (data.type) setEditType(data.type)
+      if (data.method) setEditMethod(data.method)
+
+      // 六维（优先覆盖为 >0 的数值）
+      const n = (x: any) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
+      const hv = (k: string) => Math.max(0, n(data[k]) ?? 0)
+      if (n(data.hp) != null) setHp(hv('hp'))
+      if (n(data.speed) != null) setSpeed(hv('speed'))
+      if (n(data.attack) != null) setAttack(hv('attack'))
+      if (n(data.defense) != null) setDefense(hv('defense'))
+      if (n(data.magic) != null) setMagic(hv('magic'))
+      if (n(data.resist) != null) setResist(hv('resist'))
+
+      // 技能（selected_skills）
+      const rows: SkillDTO[] = Array.isArray(data.selected_skills) ? data.selected_skills
+        .filter((s: any) => isValidSkillName(s?.name))
+        .map((s: any) => ({
+          name: s.name || '',
+          element: s.element || '',
+          kind: s.kind || '',
+          power: (typeof s.power === 'number' && Number.isFinite(s.power)) ? s.power : null,
+          description: s.description || ''
+        }))
+        : []
+      setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '' }])
+
+      alert('已从链接识别并填充，可继续手动调整。')
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || '识别失败，请确认链接是否可访问')
+    } finally {
+      setRecognizing(false)
+    }
   }
-
-    // —— 识别：清洗与解析 —— //
-  const parseAndPrefillFromText = (raw: string) => {
-    const text = normalizeText(raw)
-    if (!text) { alert('请先粘贴文本'); return }
-
-    // 拆行（移除空行）
-    const allLines = text.split('\n').map(s => s.trim()).filter(Boolean)
-
-    // -------- 1) 名称 + 六维 --------
-    type StatRow = { name: string, nums: number[] }
-    const statRows: StatRow[] = []
-
-    // 1.1 横向一行：名字 + 六维
-    const statRegex = /^([\u4e00-\u9fa5A-Za-z]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$/
-    for (const ln of allLines) {
-      const m = ln.match(statRegex)
-      if (m) {
-        const name = m[1]
-        const nums = m.slice(2).map(x => parseInt(x, 10))
-        if (nums.length === 6 && nums.every(n => Number.isFinite(n))) {
-          statRows.push({ name, nums })
-        }
-      }
-    }
-    // 1.2 纵向六维：连续6行纯数字 + 上方 1~3 行中文名
-    if (!statRows.length) {
-      const v = findVerticalStats(allLines)
-      if (v) statRows.push(v)
-    }
-
-    // 选名：若有两档（基础+进化）默认第二个，否则第一个
-    const chosen = statRows[1] || statRows[0]
-    if (chosen) {
-      setEditName(chosen.name)
-      // 若没有 setCreatePreferredName 这行可删
-      // setCreatePreferredName?.(chosen.name as any)
-      setHp(chosen.nums[0]); setSpeed(chosen.nums[1]); setAttack(chosen.nums[2]); setDefense(chosen.nums[3]); setMagic(chosen.nums[4]); setResist(chosen.nums[5])
-    }
-
-    // -------- 2) 获得方式 / 渠道 --------
-    // 兼容“获得方式 / 获取方式 / 获取渠道 / 获得渠道”
-    const idxAcquire = allLines.findIndex(l => /(获得方式|获取方式|获取渠道|获得渠道|分布地)/.test(l))
-    if (idxAcquire >= 0) {
-      const keyLine = allLines[idxAcquire]
-      let method = keyLine.replace(/.*?(获得方式|获取方式|获取渠道|获得渠道|分布地)\s*[:：]?/, '').trim()
-      if (!method) method = allLines[idxAcquire + 1] || ''
-      setEditMethod(method || '')
-
-      let typeGuess = ''
-      const s = method
-      if (/捕捉|可捕捉/.test(s)) typeGuess = '可捕捉宠物'
-      else if (/BOSS/.test(s)) typeGuess = 'BOSS宠物'
-      else if (/活动|VIP|年费|礼包|节日/.test(s)) typeGuess = '活动获取宠物'
-      else if (/兑换|商店/.test(s)) typeGuess = '兑换/商店'
-      else if (/任务/.test(s)) typeGuess = '任务获取'
-      else if (/超进化/.test(s)) typeGuess = '超进化'
-      else typeGuess = '其它'
-      if (acquireTypeOptions.includes(typeGuess)) setEditType(typeGuess)
-      if (/可获得|可捕捉|VIP可获得|年费/.test(s)) setEditGettable(true)
-    }
-
-    // -------- 3) 技能表解析 --------
-    // 找到“技能表”起点（容错：含“技能表”三字就算）
-    const idxTab = allLines.findIndex(l => /技能表/.test(l))
-    let skillLines: string[] = []
-    if (idxTab >= 0) {
-      const after = allLines.slice(idxTab + 1)
-      // 跳过各种表头行（包含下列任意关键词）
-      const headerRE = /(技能名称|等级|技能属性|类型|威力|PP|技能描述|技能属性\/类型|属性\/类型)/
-      let start = 0
-      for (let i = 0; i < after.length; i++) {
-        if (!headerRE.test(after[i])) { start = i; break }
-      }
-      skillLines = after.slice(start)
-    } else {
-      // 没找到“技能表”也尝试全量扫（有些文末直接罗列技能）
-      skillLines = allLines.slice()
-    }
-
-    // 把“下一行是威力+PP”的合并到上一行（宽松）
-    const merged: string[] = []
-    const partialRe = /^(\S+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(\d+))?/
-    for (let i = 0; i < skillLines.length; i++) {
-      let ln = skillLines[i]
-      const m = ln.match(partialRe)
-      if (m && !/\s\d+\s+\d+\s+/.test(ln) && i + 1 < skillLines.length) {
-        // 下一行含“数字 数字”视为 power + PP 接着描述
-        if (/\b\d+\s+\d+\b/.test(skillLines[i + 1])) {
-          ln = (ln + ' ' + skillLines[i + 1]).trim()
-          i += 1
-        }
-      }
-      merged.push(ln)
-    }
-
-    // 统一把“特/技能/无”等别名映射到规范值
-    const rowRe = /^(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s*(\d+)?\s*(\d+)?\s*(.*)$/
-    const parsedSkills: SkillDTO[] = []
-    for (const ln of merged) {
-      const m = ln.match(rowRe)
-      if (!m) continue
-
-      const name = m[1]
-      if (!isValidSkillName(name)) continue
-
-      // m[2] 等级（这里用不到，不存）
-      const rawAttr = m[3]       // 可能是：水/特/无/圣/火…
-      const rawKind = m[4]       // 可能是：技能/法术/物理/特殊/物
-      const powerStr = m[5]      // 可能为空
-      const desc = (m[7] || '').trim()
-
-      const elementLabel =
-        ELEMENT_ALIASES[rawAttr] ??
-        ELEMENT_ALIASES[rawAttr.replace(/系$/, '')] ?? ''  // 兼容“水系/水”
-      const kindLabel = KIND_ALIASES[rawKind] ?? rawKind
-
-      const pow = powerStr ? Number(powerStr) : NaN
-      parsedSkills.push({
-        name,
-        element: elementLabel || '',
-        kind: kindLabel,
-        power: Number.isFinite(pow) ? (pow === 0 ? null : pow) : null,
-        description: desc
-      })
-    }
-
-    // -------- 4) 配招推荐置顶（兼容多种写法） --------
-    // “配招推荐 / 推荐配招 / 满级配招”
-    const idxCombo = allLines.findIndex(l => /(配招推荐|推荐配招|满级配招)/.test(l))
-    let recNames: string[] = []
-    if (idxCombo >= 0) {
-      // 当前行优先，否则取下一行
-      const line = allLines[idxCombo].replace(/.*?(配招推荐|推荐配招|满级配招)\s*[:：]?/, '').trim()
-      const next = allLines[idxCombo + 1] || ''
-      const comboText = (line || next || '')
-        .replace(/[（）]/g, (m) => (m === '（' ? '(' : ')'))
-        .replace(/等。?$/, '') // 去掉“等/等。”
-      recNames = comboText
-        .split(/、|,|，|\s+|\/|；|;|\(|\)/)
-        .map(s => s.trim())
-        .filter(isValidSkillName)
-    }
-
-    const byName = new Map<string, SkillDTO>()
-    parsedSkills.forEach(s => byName.set(s.name, s))
-    const prioritized: SkillDTO[] = []
-    for (const nm of recNames) {
-      if (byName.has(nm)) {
-        prioritized.push(byName.get(nm)!)
-        byName.delete(nm)
-      } else {
-        // 推荐里有表外技能，给空壳放前面
-        prioritized.push({ name: nm, element: '', kind: '', power: null, description: '' })
-      }
-    }
-    const finalSkills = [...prioritized, ...Array.from(byName.values())]
-    setEditSkills(finalSkills.length ? finalSkills : [{ name: '', element: '', kind: '', power: null, description: '' }])
-
-    // -------- 5) 通过技能主属性简单推断元素（若未选） --------
-    if (!editElement) {
-      const counts: Record<string, number> = {}
-      for (const s of parsedSkills) {
-        if (!s.element) continue
-        counts[s.element] = (counts[s.element] || 0) + 1
-      }
-      const guess = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0]
-      if (guess) setEditElement(guess)
-    }
-
-    alert('已识别并填充，可继续手动调整。')
-  }
+  // ========== 识别链接功能（结束） ==========
 
   return (
     <div className="container my-6 space-y-4">
@@ -1374,19 +1222,20 @@ export default function MonstersPage() {
 
             {isEditing ? (
               <>
-                {/* 识别粘贴框（仅编辑态显示；新增和编辑都可用） */}
+                {/* 识别链接框（仅编辑态显示；新增和编辑都可用） */}
                 <div className="card p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <h4 className="font-semibold">识别粘贴框</h4>
-                    <button className={`btn ${BTN_FX}`} onClick={() => parseAndPrefillFromText(rawText)}>识别并填充</button>
+                    <h4 className="font-semibold">识别链接（自动爬取并填充）</h4>
+                    <button className={`btn ${BTN_FX}`} onClick={recognizeAndPrefillFromLinks} disabled={recognizing}>
+                      {recognizing ? '识别中…' : '识别并填充'}
+                    </button>
                   </div>
                   <textarea
                     className="input h-32"
-                    placeholder="将网页复制的资料直接粘贴到这里，例如包含：满级配招 / 获得方式 / 种族值 / 技能表 等。"
+                    placeholder="将 4399 图鉴详情页链接粘贴到这里（可混在一段文字里；支持多条，默认取第 1 条）"
                     value={rawText}
                     onChange={e => setRawText(e.target.value)}
                   />
-                  {createPreferredName && <div className="text-xs text-gray-500">已选择形态：{createPreferredName}</div>}
                 </div>
 
                 {/* 基础信息编辑 */}
@@ -1606,7 +1455,7 @@ export default function MonstersPage() {
       {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 */}
       {overlay.show && (
         <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
-          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text中心 space-y-3">
+          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
             <div className="text-2xl">🐱</div>
             <div className="text-lg font-semibold">{overlay.title || '处理中…'}</div>
             <div className="text-sm text-gray-600">{overlay.sub || '请稍候~'}</div>
@@ -1615,7 +1464,7 @@ export default function MonstersPage() {
               {typeof progressPct === 'number' ? (
                 <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
               ) : (
-                <div className="h-2 w-1/2 animate-pulse bg紫色-300 rounded-full" />
+                <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
               )}
             </div>
 
