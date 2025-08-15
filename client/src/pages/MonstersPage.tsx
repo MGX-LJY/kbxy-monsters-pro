@@ -85,7 +85,6 @@ export default function MonstersPage() {
   const [sort, setSort] = useState<SortKey>('updated_at')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库
-  const [onlyGettable, setOnlyGettable] = useState(false)   // 仅显示可获得妖怪（new_type=true）
 
   // “修复妖怪”后端筛选模式
   const [fixMode, setFixMode] = useState(false)
@@ -206,7 +205,7 @@ export default function MonstersPage() {
   const list = useQuery({
     queryKey: ['monsters', {
       q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
-      page, pageSize, warehouseOnly, onlyGettable, fixMode
+      page, pageSize, warehouseOnly, fixMode
     }],
     queryFn: async () => {
       const endpoint = '/monsters'
@@ -217,7 +216,6 @@ export default function MonstersPage() {
         type: acqType || undefined,
         acq_type: acqType || undefined,
         possess: warehouseOnly ? true : undefined,
-        new_type: onlyGettable ? true : undefined,
         sort, order,
         page,
         page_size: pageSize,
@@ -612,7 +610,6 @@ export default function MonstersPage() {
         role: role || undefined,
         type: acqType || undefined,
         acq_type: acqType || undefined,
-        new_type: onlyGettable ? true : undefined,
         sort, order,
         page: pageNo,
         page_size: pageSizeFetch
@@ -670,14 +667,14 @@ export default function MonstersPage() {
     }
   }
 
-  // —— 一键全部派生（未勾选 → 全部；无需进度） —— //
+  // —— 一键全部分析（未勾选 → 全部；无需进度） —— //
   const deriveBatch = async () => {
     const items = (list.data?.items as any[]) || []
     const ids = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
     if (!ids.length && !items.length) return alert('当前没有可处理的记录')
 
     const showOverlay = ids.length > 1
-    if (showOverlay) setOverlay({ show: true, title: '派生计算中…', sub: '可爱的等等呦 (=^･ω･^=)' })
+    if (showOverlay) setOverlay({ show: true, title: '计算中…', sub: '可爱的等等呦 (=^･ω･^=)' })
     try {
       try {
         await api.post('/api/v1/derived/batch', { ids: ids.length ? ids : undefined })
@@ -696,9 +693,9 @@ export default function MonstersPage() {
         const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
         setSelected(fresh)
       }
-      alert('派生完成')
+      alert('分析完成')
     } catch (e:any) {
-      alert(e?.response?.data?.detail || '派生失败')
+      alert(e?.response?.data?.detail || '分析失败')
     } finally {
       if (showOverlay) setOverlay({ show: false })
     }
@@ -872,26 +869,19 @@ export default function MonstersPage() {
               onClick={() => { setFixMode(v => !v); setPage(1) }}
               disabled={list.isLoading}
             >
-              {fixMode ? '修复妖怪（已开启）' : '修复妖怪'}
+              {fixMode ? '修复' : '修复'}
             </button>
 
             {/* 文案精简 */}
-            <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>打标签</button>
-            <button className={`btn ${BTN_FX}`} onClick={deriveBatch}>派生</button>
+            <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>标签</button>
+            <button className={`btn ${BTN_FX}`} onClick={deriveBatch}>分析</button>
 
             <button
-              className={`btn btn-lg ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
+              className={`btn ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
               onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
               title="只显示仓库已有的宠物 / 再次点击还原"
             >
-              仓库管理
-            </button>
-            <button
-              className={`btn ${onlyGettable ? 'btn-primary' : ''} ${BTN_FX}`}
-              onClick={() => { setOnlyGettable(v => !v); setPage(1) }}
-              title="只显示当前可获得妖怪"
-            >
-              仅显示可获得妖怪
+              仓库
             </button>
             <button className={`btn ${BTN_FX}`} onClick={startCrawl} disabled={crawling}>
               {crawling ? '获取中…' : '获取图鉴'}
@@ -965,11 +955,11 @@ export default function MonstersPage() {
               onChange={(e) => setSort(e.target.value as SortKey)}
             >
               <option value="updated_at">更新时间</option>
-              <option value="offense">攻（派生）</option>
-              <option value="survive">生（派生）</option>
-              <option value="control">控（派生）</option>
-              <option value="tempo">速（派生）</option>
-              <option value="pp_pressure">压（派生）</option>
+              <option value="offense">输出</option>
+              <option value="survive">生存</option>
+              <option value="control">控制</option>
+              <option value="tempo">节奏</option>
+              <option value="pp_pressure">压制</option>
             </select>
             <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
               <option value="desc">降序</option>
@@ -1129,7 +1119,6 @@ export default function MonstersPage() {
                 <>
                   {!isCreating && (
                     <button className={`btn ${BTN_FX}`} onClick={async () => {
-                      // 抽屉内“填充”使用派生建议（仅编辑已有时）
                       const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
                         role_suggested?: string, tags?: string[]
                       }
