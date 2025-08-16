@@ -254,32 +254,44 @@ export default function MonstersPage() {
   }, [vsElement, typeEffects.data])
 
   const list = useQuery({
-    queryKey: ['monsters', {
-      q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
-      page, pageSize, warehouseOnly, fixMode
-    }],
-    queryFn: async () => {
-      const endpoint = '/monsters'
-      const params: any = {
-        q: q || undefined,
-        element: element || undefined,
-        role: role || undefined,
-        type: acqType || undefined,
-        acq_type: acqType || undefined,
-        possess: warehouseOnly ? true : undefined,
-        sort, order,
-        page,
-        page_size: pageSize,
-        need_fix: fixMode ? true : undefined
-      }
-      if (selectedTags.length >= 2) params.tags_all = selectedTags
-      else if (selectedTags.length === 1) params.tag = selectedTags[0]
+  queryKey: ['monsters', {
+    q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
+    page, pageSize, warehouseOnly, fixMode
+  }],
+  queryFn: async () => {
+    const baseParams: any = {
+      q: q || undefined,
+      element: element || undefined,
+      role: role || undefined,
+      type: acqType || undefined,
+      acq_type: acqType || undefined,
+      sort, order,
+      page,
+      page_size: pageSize,
+      need_fix: fixMode ? true : undefined,
+    }
+    if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
+    else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
 
-      return (await api.get(endpoint, { params })).data as MonsterListResp
-    },
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  })
+    // ✅ 仓库模式：优先 /warehouse → 退化 /monsters?possess=true → 最后 /monsters
+    if (warehouseOnly) {
+      try {
+        return (await api.get('/warehouse', { params: baseParams })).data as MonsterListResp
+      } catch {
+        try {
+          return (await api.get('/monsters', { params: { ...baseParams, possess: true } })).data as MonsterListResp
+        } catch {
+          return (await api.get('/monsters', { params: baseParams })).data as MonsterListResp
+        }
+      }
+    }
+
+    // 非仓库模式
+    return (await api.get('/monsters', { params: baseParams })).data as MonsterListResp
+  },
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+})
 
   // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
