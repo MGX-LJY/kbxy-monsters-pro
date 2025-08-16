@@ -28,7 +28,7 @@ type MatrixDTO =
 const BTN_FX =
   'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
 
-// ===== 固定排序表（按你给的顺序） =====
+// ===== 固定排序表（按你的顺序） =====
 const TYPE_ORDER = [
   '火系','金系','木系','水系','土系','翼系','怪系','魔系','妖系',
   '风系','毒系','雷系','幻系','冰系','灵系','机械系',
@@ -42,16 +42,13 @@ const TYPE_INDEX: Record<string, number> = TYPE_ORDER
 const compareByTypeOrder = (a: string, b: string) => {
   const na = normalizeType(a)
   const nb = normalizeType(b)
-  const ia = TYPE_INDEX.hasOwnProperty(na) ? TYPE_INDEX[na] : 999
-  const ib = TYPE_INDEX.hasOwnProperty(nb) ? TYPE_INDEX[nb] : 999
+  const ia = Object.prototype.hasOwnProperty.call(TYPE_INDEX, na) ? TYPE_INDEX[na] : 999
+  const ib = Object.prototype.hasOwnProperty.call(TYPE_INDEX, nb) ? TYPE_INDEX[nb] : 999
   if (ia !== ib) return ia - ib
-  // 都不在表里时，兜底中文排序
   return a.localeCompare(b, 'zh')
 }
 
-const sortElementList = (arr: string[]) => {
-  return arr.slice().sort(compareByTypeOrder)
-}
+const sortElementList = (arr: string[]) => arr.slice().sort(compareByTypeOrder)
 
 // ========= 小工具 =========
 async function getWithFallback<T = any>(primary: string, fallback: string, params?: any): Promise<T> {
@@ -112,13 +109,12 @@ function normalizeMatrix(dto: MatrixDTO): { types: string[]; rows: MatrixRows } 
 // 从 rows 中抽取一行或一列并分组（分组内用固定顺序排序）
 function pickGroups(rows: MatrixRows, types: string[], base: string, perspective: Perspective): ChartGroups {
   const arr: ChartGroupItem[] = []
-
   if (!base || !types.length) return { high: [], ordinary: [], low: [] }
 
-  // 为了“遍历顺序”也稳定，types 先按固定顺序拍平
   const orderedTypes = sortElementList(types)
 
   if (perspective === 'attack') {
+    // 我打别人：取 base 行
     const row = rows[base] || {}
     for (const t of orderedTypes) {
       if (t === base) continue
@@ -126,7 +122,7 @@ function pickGroups(rows: MatrixRows, types: string[], base: string, perspective
       if (Number.isFinite(x)) arr.push({ target: t, x })
     }
   } else {
-    // defense：取“对方打我”的那一列
+    // 别人打我：固定用“进攻矩阵”的列（即从 rows[from][base] 抽）
     for (const from of orderedTypes) {
       if (from === base) continue
       const x = Number(rows[from]?.[base])
@@ -148,7 +144,6 @@ function splitToGroups(arr: ChartGroupItem[]): ChartGroups {
     else if (x > 1) high.push(it)
     else low.push(it)
   }
-  // 分组内按固定顺序排，不再按倍率或拼音
   high.sort((a, b) => compareByTypeOrder(a.target, b.target))
   ordinary.sort((a, b) => compareByTypeOrder(a.target, b.target))
   low.sort((a, b) => compareByTypeOrder(a.target, b.target))
@@ -181,7 +176,6 @@ export default function TypeChartDialog({
     enabled: open,
     queryFn: async () => {
       const data = await getWithFallback<any>('/api/v1/types/list', '/types/list')
-      // 兼容 {types:[...]} / {items:[...]} / 直接数组
       if (Array.isArray(data)) return data as string[]
       if (Array.isArray(data?.types)) return data.types as string[]
       if (Array.isArray(data?.items)) return data.items as string[]
@@ -191,10 +185,7 @@ export default function TypeChartDialog({
   })
 
   // 排好序的元素列表（用于下拉与默认选中）
-  const elementsSorted = useMemo(
-    () => sortElementList(elements.data || []),
-    [elements.data]
-  )
+  const elementsSorted = useMemo(() => sortElementList(elements.data || []), [elements.data])
 
   // 首次打开时自动选中第一个（按固定顺序）
   useEffect(() => {
@@ -204,9 +195,9 @@ export default function TypeChartDialog({
     }
   }, [open, base, elementsSorted])
 
-  // 分别拉取“进攻视角/防守视角”矩阵
-  const matrixAttack = useQuery<MatrixDTO>({
-    queryKey: ['type_matrix', 'attack'],
+  // 只拉一次矩阵（使用进攻视角或后端默认）
+  const matrix = useQuery<MatrixDTO>({
+    queryKey: ['type_matrix', 'attack_only'],
     enabled: open,
     queryFn: async () =>
       await getWithFallback<MatrixDTO>('/api/v1/types/matrix', '/types/matrix', {
@@ -215,47 +206,22 @@ export default function TypeChartDialog({
     refetchOnWindowFocus: false,
   })
 
-  const matrixDefense = useQuery<MatrixDTO>({
-    queryKey: ['type_matrix', 'defense'],
-    enabled: open,
-    queryFn: async () =>
-      await getWithFallback<MatrixDTO>('/api/v1/types/matrix', '/types/matrix', {
-        perspective: 'defense',
-      }),
-    refetchOnWindowFocus: false,
-  })
+  const { types, rows } = useMemo(() => normalizeMatrix(matrix.data || {}), [matrix.data])
+  const allTypes = useMemo(() => sortElementList(types), [types])
 
-  // 统一类型列表（两边取并集，通常应一致）
-  const { types: typesAtk, rows: rowsAtk } = useMemo(
-    () => normalizeMatrix(matrixAttack.data || {}),
-    [matrixAttack.data]
-  )
-  const { types: typesDef, rows: rowsDef } = useMemo(
-    () => normalizeMatrix(matrixDefense.data || {}),
-    [matrixDefense.data]
-  )
-
-  const allTypes = useMemo(() => {
-    const set = new Set<string>([...typesAtk, ...typesDef])
-    return sortElementList(Array.from(set))
-  }, [typesAtk, typesDef])
-
-  // 基于同一个 base，同时计算「进攻」与「防守」分组
+  // 同一份矩阵：行→进攻；列→防守
   const groupsAttack: ChartGroups = useMemo(
-    () => pickGroups(rowsAtk, allTypes, base, 'attack'),
-    [rowsAtk, allTypes, base]
+    () => pickGroups(rows, allTypes, base, 'attack'),
+    [rows, allTypes, base]
   )
   const groupsDefense: ChartGroups = useMemo(
-    () => pickGroups(rowsDef, allTypes, base, 'defense'),
-    [rowsDef, allTypes, base]
+    () => pickGroups(rows, allTypes, base, 'defense'),
+    [rows, allTypes, base]
   )
 
-  const isLoading = elements.isLoading || matrixAttack.isLoading || matrixDefense.isLoading
-  const hasError = !!(elements.error || matrixAttack.error || matrixDefense.error)
-  const errorMsg =
-    (elements.error as any)?.message ||
-    (matrixAttack.error as any)?.message ||
-    (matrixDefense.error as any)?.message
+  const isLoading = elements.isLoading || matrix.isLoading
+  const hasError = !!(elements.error || matrix.error)
+  const errorMsg = (elements.error as any)?.message || (matrix.error as any)?.message
 
   if (!open) return null
 
@@ -274,7 +240,7 @@ export default function TypeChartDialog({
         <div className="flex items-center justify-between border-b px-5 py-3">
           <div className="flex items-center gap-2">
             <div className="text-base font-semibold">属性克制表</div>
-            <div className="text-xs text-gray-500">（双视角同时展示｜仅显示倍率，不着色）</div>
+            <div className="text-xs text-gray-500">（同一矩阵双视角：行=我打别人，列=别人打我）</div>
           </div>
           <button
             className={`btn h-8 px-2 ${BTN_FX}`}
@@ -327,12 +293,8 @@ export default function TypeChartDialog({
               {/* 进攻视角卡片 */}
               <div className="rounded-xl border bg-white">
                 <div className="border-b px-4 py-3">
-                  <div className="text-sm font-semibold">
-                    进攻视角（我打别人）
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    当前：{base || '—'} → 其它元素
-                  </div>
+                  <div className="text-sm font-semibold">进攻视角（我打别人）</div>
+                  <div className="text-xs text-gray-500">当前：{base || '—'} → 其它元素</div>
                 </div>
                 <div className="p-4">
                   <Section title="高倍率（> ×1.0）" items={groupsAttack.high} placeholder="（无）" />
@@ -344,12 +306,8 @@ export default function TypeChartDialog({
               {/* 防守视角卡片 */}
               <div className="rounded-xl border bg-white">
                 <div className="border-b px-4 py-3">
-                  <div className="text-sm font-semibold">
-                    防守视角（别人打我）
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    当前：其它元素 → {base || '—'}
-                  </div>
+                  <div className="text-sm font-semibold">防守视角（别人打我）</div>
+                  <div className="text-xs text-gray-500">当前：其它元素 → {base || '—'}</div>
                 </div>
                 <div className="p-4">
                   <Section title="高倍率（> ×1.0）" items={groupsDefense.high} placeholder="（无）" />

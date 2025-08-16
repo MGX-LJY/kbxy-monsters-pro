@@ -5,9 +5,8 @@ from typing import Iterable, List, Tuple
 from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import select, func
 
-from ..models import Monster, MonsterSkill  # 注意：MonsterSkill 仅用于预加载其 .skill
+from ..models import Monster, MonsterSkill, Tag
 from ..services.derive_service import compute_derived_out, compute_and_persist
-from ..services.tags_service import infer_role_for_monster, suggest_tags_for_monster
 
 
 # -------- 基础操作：加入/移出/批量设置 --------
@@ -32,7 +31,10 @@ def remove_from_warehouse(db: Session, monster_id: int) -> bool:
 
 
 def bulk_set_warehouse(db: Session, ids: Iterable[int], possess: bool) -> int:
-    n = 0
+    """
+    批量设置 possess；返回实际变更的数量。
+    """
+    changed = 0
     uniq_ids = list({int(i) for i in (ids or [])})
     if not uniq_ids:
         return 0
@@ -42,10 +44,10 @@ def bulk_set_warehouse(db: Session, ids: Iterable[int], possess: bool) -> int:
             continue
         if bool(getattr(m, "possess", False)) != possess:
             m.possess = possess
-            n += 1
-    if n:
+            changed += 1
+    if changed:
         db.flush()
-    return n
+    return changed
 
 
 # -------- 统计 --------
@@ -55,7 +57,7 @@ def warehouse_stats(db: Session) -> dict:
     return {"total": int(total), "in_warehouse": int(in_wh)}
 
 
-# -------- 列表（仅 possess=True），带轻量筛选与派生刷新 --------
+# -------- 仓库列表（仅 possess=True） --------
 def list_warehouse(
     db: Session,
     *,
@@ -63,6 +65,9 @@ def list_warehouse(
     element: str | None = None,
     role: str | None = None,
     tag: str | None = None,
+    tags_all: Iterable[str] | None = None,  # 多标签 AND
+    type: str | None = None,                # 获取渠道（兼容）
+    acq_type: str | None = None,            # 获取渠道（兼容）
     sort: str = "updated_at",
     order: str = "desc",
     page: int = 1,
@@ -70,47 +75,66 @@ def list_warehouse(
 ) -> Tuple[List[Monster], int]:
     """
     仅返回在仓库中的怪（Monster.possess=True）。
-    筛选项尽量贴合 /monsters 的常用参数；排序默认 updated_at。
+
+    支持筛选：
+      - q                   : 模糊匹配 name / explain_json.skill_names
+      - element / role      : 基础属性
+      - tag                 : 单标签
+      - tags_all            : 多标签 AND（每个都必须命中）
+      - type / acq_type     : 获取渠道（任取其一）
+    排序：
+      - updated_at / created_at 直接在 SQL 层排序
+      - offense/survive/control/tempo/pp_pressure：先按 updated_at 排序分页，再对当前页内存排序
     """
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
 
     stmt = select(Monster).where(Monster.possess.is_(True))
 
+    # 关键词（轻量）
     if q:
         like = f"%{q.strip()}%"
-        # 仅按 name / explain_json.skill_names 做简单 LIKE；如需按技能描述/标签全文可扩展
         stmt = stmt.where(
             (Monster.name.ilike(like)) |
             (Monster.explain_json["skill_names"].as_string().ilike(like))  # type: ignore
         )
+
+    # 基础筛选
     if element:
         stmt = stmt.where(Monster.element == element)
     if role:
         stmt = stmt.where(Monster.role == role)
-    if tag:
-        # 简单通过 ANY JSON -> LIKE 的方式过滤；若需要精准基于联结表过滤可改为 join Tag
-        like_tag = f"%{tag}%"
-        stmt = stmt.where(Monster.explain_json["tags"].as_string().ilike(like_tag))  # type: ignore
 
-    # 排序：仅允许白名单
+    # 获取渠道（兼容 type / acq_type）
+    type_value = type or acq_type
+    if type_value:
+        stmt = stmt.where(Monster.type == type_value)
+
+    # 标签筛选（基于关系表，精确匹配）
+    if tag:
+        stmt = stmt.where(Monster.tags.any(Tag.name == tag))
+
+    if tags_all:
+        uniq = [t for t in {t for t in tags_all if t}]
+        for t in uniq:
+            stmt = stmt.where(Monster.tags.any(Tag.name == t))
+
+    # 排序白名单
     sort_whitelist = {"updated_at", "created_at", "offense", "survive", "control", "tempo", "pp_pressure"}
     sort_key = sort if sort in sort_whitelist else "updated_at"
 
     if sort_key in {"updated_at", "created_at"}:
-        order_col = getattr(Monster, sort_key)
-        stmt = stmt.order_by(order_col.desc() if order == "desc" else order_col.asc())
+        col = getattr(Monster, sort_key)
+        stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
     else:
-        # 若按派生五维排序：先按更新时间排，以免无派生导致异常
+        # 派生维度：按更新时间稳定分页
         stmt = stmt.order_by(Monster.updated_at.desc())
 
-    # 计数
+    # 计数（对当前条件取子查询再 count）
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
-    # 分页
+    # 分页 + 预加载
     stmt = stmt.limit(page_size).offset((page - 1) * page_size)
-
-    # 预加载（注意不要对 association_proxy 使用 selectinload）
     stmt = stmt.options(
         selectinload(Monster.tags),
         selectinload(Monster.derived),
@@ -119,14 +143,14 @@ def list_warehouse(
 
     items = db.execute(stmt).scalars().all()
 
-    # 若是按派生维度排序，需要补一个内存排序（避免 SQL 侧 join monster_derived）
+    # 内存排序（派生维度）
     if sort_key in {"offense", "survive", "control", "tempo", "pp_pressure"}:
         def key_fn(m: Monster):
             d = compute_derived_out(m)
             return d.get(sort_key, 0)
         items.sort(key=key_fn, reverse=(order == "desc"))
 
-    # 确保派生落库最新（可选）
+    # 可选：确保派生落库最新
     changed = False
     for m in items:
         fresh = compute_derived_out(m)

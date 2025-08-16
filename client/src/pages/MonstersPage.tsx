@@ -53,6 +53,22 @@ const bucketizeTags = (tags: string[] | undefined): TagBuckets => {
 const tagEmoji = (code: string) =>
   code.startsWith('buf_') ? '🟢' : code.startsWith('deb_') ? '🔴' : code.startsWith('util_') ? '🟣' : ''
 
+// 放在 MonstersPage.tsx 顶部工具区
+const toURLParams = (obj: Record<string, any>) => {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null || v === '' || (Array.isArray(v) && v.length === 0)) continue
+    if (k === 'tags_all' && Array.isArray(v)) {
+      v.forEach((t) => p.append('tags_all', t))   // ← 重复 key，无中括号
+    } else if (Array.isArray(v)) {
+      v.forEach((x) => p.append(k, String(x)))
+    } else {
+      p.append(k, String(v))
+    }
+  }
+  return p
+}
+
 // —— 完整元素映射（code -> 中文），以及选项数组 —— //
 const ELEMENTS: Record<string, string> = {
   huoxi: '火系', jinxi: '金系', muxi: '木系', shuixi: '水系', tuxi: '土系', yixi: '翼系',
@@ -253,6 +269,7 @@ export default function MonstersPage() {
     return elementOptionsFull.map(el => ({ value: el, text: el }))
   }, [vsElement, typeEffects.data])
 
+// —— 这里替换 MonstersPage.tsx 中的 list = useQuery({...}) 的 queryFn —— //
   const list = useQuery({
   queryKey: ['monsters', {
     q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
@@ -273,21 +290,13 @@ export default function MonstersPage() {
     if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
     else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
 
-    // ✅ 仓库模式：优先 /warehouse → 退化 /monsters?possess=true → 最后 /monsters
     if (warehouseOnly) {
-      try {
-        return (await api.get('/warehouse', { params: baseParams })).data as MonsterListResp
-      } catch {
-        try {
-          return (await api.get('/monsters', { params: { ...baseParams, possess: true } })).data as MonsterListResp
-        } catch {
-          return (await api.get('/monsters', { params: baseParams })).data as MonsterListResp
-        }
-      }
+      // ✅ 仓库模式：总是走 /warehouse（支持多标签 AND / 获取渠道等）
+      return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
     }
 
     // 非仓库模式
-    return (await api.get('/monsters', { params: baseParams })).data as MonsterListResp
+    return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
   },
   refetchOnWindowFocus: false,
   refetchOnReconnect: false,
@@ -815,23 +824,23 @@ export default function MonstersPage() {
 
   // —— 列表前端兜底过滤（获取途径 + 多标签 AND） —— //
   const filteredItems = useMemo(() => {
-    let arr = (list.data?.items as any[]) || []
+  let arr = (list.data?.items as any[]) || []
 
-    // ✅ 仓库开关：本地兜底（即使后端忽略 possess，也能切换）
-    if (warehouseOnly) {
-      arr = arr.filter(m => m.possess === true)
-    }
+  // 仓库开关：只有当数据里真的带 possess 字段时才做本地兜底；否则相信服务端分页
+  if (warehouseOnly && arr.some(m => typeof m?.possess === 'boolean')) {
+    arr = arr.filter(m => m.possess === true)
+  }
 
-    if (selectedTags.length > 0) {
-      const canClientFilter = arr.every(m => Array.isArray(m.tags))
-      if (canClientFilter) {
-        arr = arr.filter(m => selectedTags.every(t => (m.tags as string[]).includes(t)))
-      }
-    }
-    // ❌ 不再基于本页技能数做“修复”筛选，交给后端 need_fix
-    return arr
-  }, [list.data, warehouseOnly, acqType, selectedTags])
+  // 多标签 AND：不再用 every(...) 早退；用 (m.tags || []) 兜底
+  if (selectedTags.length > 0) {
+    arr = arr.filter(m => {
+      const mtags: string[] = Array.isArray(m.tags) ? m.tags : []
+      return selectedTags.every(t => mtags.includes(t))
+    })
+  }
 
+  return arr
+}, [list.data, warehouseOnly, selectedTags])
   // —— 新建：初始化清空并打开编辑抽屉 —— //
   const startCreate = () => {
     setIsCreating(true)
