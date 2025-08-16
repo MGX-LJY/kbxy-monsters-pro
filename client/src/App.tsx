@@ -1,5 +1,5 @@
 // client/src/App.tsx
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import TopBar from './components/TopBar'
@@ -7,15 +7,20 @@ import { ToastProvider } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import MonstersPage from './pages/MonstersPage'
 import { SettingsProvider } from './context/SettingsContext'
+import TypeChartDialog from './components/TypeChartDialog'
 
 export default function App() {
   const qc = useQueryClient()
+  const [showTypeChart, setShowTypeChart] = useState(false)
 
   const onRefresh = () => {
     qc.invalidateQueries({ queryKey: ['monsters'] })
     qc.invalidateQueries({ queryKey: ['tags'] })
     qc.invalidateQueries({ queryKey: ['roles'] })
     qc.invalidateQueries({ queryKey: ['health'] })
+    // 额外：顺带把克制表相关的缓存也刷掉（可选）
+    qc.invalidateQueries({ queryKey: ['type_elements'] })
+    qc.invalidateQueries({ queryKey: ['type_chart'] })
   }
 
   // ===== 方案 B：全局事件，驱动 .btn 按压/释放动画 + 点击点涟漪坐标 =====
@@ -85,7 +90,18 @@ export default function App() {
   return (
     <ToastProvider>
       <ErrorBoundary>
-        <TopBar onRefresh={onRefresh} />
+        {/* 注意：TopBar 需要已新增 onOpenTypeChart 回调并在内部按钮里调用 */}
+        <TopBar
+          onRefresh={onRefresh}
+          onOpenTypeChart={() => setShowTypeChart(true)}
+        />
+
+        {/* 这里渲染属性克制表弹框 */}
+        <TypeChartDialog
+          open={showTypeChart}
+          onClose={() => setShowTypeChart(false)}
+        />
+
         <Routes>
           <Route path="/" element={<MonstersPage />} />
         </Routes>

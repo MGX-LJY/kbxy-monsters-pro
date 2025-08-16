@@ -1,13 +1,16 @@
 import React from 'react'
-import { Github, RefreshCw } from 'lucide-react'
+import { Github, RefreshCw, Grid2x2 } from 'lucide-react'
 import SettingsButton from './SettingsButton'
 
 export default function TopBar({
   onRefresh,
   onOpenImport,
+  onOpenTypeChart,
 }: {
   onRefresh: () => void
   onOpenImport?: () => void
+  /** 点击“属性克制表”时触发，由父组件打开弹框/侧滑层并拉取后端数据渲染 */
+  onOpenTypeChart?: () => void
 }) {
   return (
     <header className="sticky top-0 z-40 border-b bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/60 shadow-sm">
@@ -36,7 +39,18 @@ export default function TopBar({
             <kbd className="ml-2 hidden sm:inline rounded border bg-white px-1.5 py-0.5 text-[10px] leading-none text-gray-600">C</kbd>
           </button>
 
-          {/* 新增：设置 */}
+          {/* 新增：属性克制表入口（由父组件控制弹框 & 调后端渲染） */}
+          <button
+            className="btn h-9 px-3 hover:bg-gray-100 transition"
+            onClick={onOpenTypeChart}
+            title="查看属性克制表"
+            aria-label="属性克制表"
+          >
+            <Grid2x2 className="w-4 h-4 mr-2" />
+            <span className="hidden sm:inline">属性克制表</span>
+          </button>
+
+          {/* 设置 */}
           <SettingsButton />
 
           <a
