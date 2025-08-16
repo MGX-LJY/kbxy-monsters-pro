@@ -12,7 +12,7 @@ from sqlalchemy import select
 from ..db import SessionLocal
 from ..models import Monster, MonsterSkill
 from ..schemas import MonsterOut, MonsterList
-from ..services.warehouse_server import (
+from ..services.warehouse_service import (
     add_to_warehouse, remove_from_warehouse, bulk_set_warehouse,
     list_warehouse, warehouse_stats,
 )

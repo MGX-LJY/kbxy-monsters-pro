@@ -8,7 +8,7 @@ from .db import Base, engine
 from .middleware import TraceIDMiddleware
 
 # 常规路由
-from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl, warehouse
+from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl, warehouse, types
 
 
 # 可选路由（不存在也不报错）
@@ -55,6 +55,7 @@ app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])
 # 任务相关（如存在则使用）
 app.include_router(tasks.router)
+app.include_router(types.router)
 
 # 可选：tags、roles
 if HAS_TAGS:

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, or_
 
 from ..db import SessionLocal
-from ..models import Monster, MonsterSkill, Skill, Tag  # ✅ 引入 Skill/Tag 以做 need_fix 统计与标签筛选
+from ..models import Monster, MonsterSkill, Skill, Tag
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills

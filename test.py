@@ -8,7 +8,7 @@
 - 使用打分器挑选最像“获取渠道”的一句
 - 扩充归类规则（补“首次打败/无双印记/战斗中出现”等）；改进“新/当期”判定
 运行示例：
-python server/app/services/crawler_server.py -n 100 -o out_acq_100.json
+python server/app/services/crawler_service.py -n 100 -o out_acq_100.json
 """
 
 import argparse

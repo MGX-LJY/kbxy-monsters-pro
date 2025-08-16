@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
 from .. import models as M
-from ..services.crawler_server import (
+from ..services.crawler_service import (
     Kabu4399Crawler, MonsterRow, SkillRow,
     normalize_skill_element, normalize_skill_kind,   # 复用统一映射
 )
