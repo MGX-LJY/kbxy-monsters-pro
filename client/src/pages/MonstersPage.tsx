@@ -103,7 +103,7 @@ export default function MonstersPage() {
   const [element, setElement] = useState('')           // 元素筛选（中文）
   const [acqType, setAcqType] = useState('')           // 获取途径
 
-  // === 新增：对面属性（vs）用于标注倍率（方案 A：仅文本，不着色） ===
+  // === 新增：对面属性（vs）用于标注倍率（仅文本，不着色） ===
   const [vsElement, setVsElement] = useState('')       // 对面属性（中文，空则不启用）
 
   // 三组标签（替代原单一 tag）
@@ -122,7 +122,7 @@ export default function MonstersPage() {
 
   // 分页
   const [page, setPage] = useState(1)
-  const { pageSize, crawlLimit } = useSettings() // ← 去掉 setCrawlLimit
+  const { pageSize, crawlLimit } = useSettings()
   // 勾选/批量
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
@@ -225,12 +225,24 @@ export default function MonstersPage() {
     }
   })
 
-  // =============== 新增：对面属性 → 请求类型倍率（attack 视角） ===============
-  const typeEffects = useQuery({
-    queryKey: ['type_effects', vsElement],
+  // =============== 对面属性倍率：分别按“我打他(attack)”和“他打我(defense)”取数，并合并成对显示 ===============
+  const typeEffectsAtk = useQuery({
+    queryKey: ['type_effects', 'attack', vsElement],
     enabled: !!vsElement,
     queryFn: async () => {
       const d = (await api.get('/types/effects', { params: { vs: vsElement, perspective: 'attack' } })).data
+      return d
+    },
+    staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
+
+  const typeEffectsDef = useQuery({
+    queryKey: ['type_effects', 'defense', vsElement],
+    enabled: !!vsElement,
+    queryFn: async () => {
+      const d = (await api.get('/types/effects', { params: { vs: vsElement, perspective: 'defense' } })).data
       return d
     },
     staleTime: 10 * 60 * 1000,
@@ -248,59 +260,145 @@ export default function MonstersPage() {
     return String(x)
   }
 
-  // 计算：用于“元素筛选（顶部第 1 个下拉）”的选项（带倍率文本，value 仍是纯中文元素名）
-  const filterElementOptionsLabeled = useMemo(() => {
-    const okList = vsElement && typeEffects.data && Array.isArray(typeEffects.data.items) && typeEffects.data.items.length
-      ? (typeEffects.data.items as any[])
-      : null
+  // 合并成：元素 → { atk, def, label: "×atk/×def" }
+  type EffectPair = { atk?: number; def?: number; label?: string }
+  const effectsPairByType = useMemo(() => {
+    const m: Record<string, EffectPair> = {}
 
-    if (okList) {
-      return okList.map((it: any) => {
-        const value = it?.type || it?.name || '' // 纯中文元素名
-        let text = it?.label as string | undefined
-        if (!text) {
-          const mm = formatMultiplier(it?.multiplier)
-          text = mm ? `${value}（×${mm}）` : value
-        }
-        return { value, text }
+    const add = (items: any[] | undefined | null, key: 'atk' | 'def') => {
+      if (!items) return
+      for (const it of items) {
+        const k = it?.type ?? it?.name
+        if (!k) continue
+        if (!m[k]) m[k] = {}
+        const mult = Number(it?.multiplier ?? it?.value)
+        if (Number.isFinite(mult)) m[k][key] = mult
+      }
+    }
+
+    add(typeEffectsAtk.data?.items, 'atk')   // 我打他
+    add(typeEffectsDef.data?.items, 'def')   // 他打我
+
+    for (const [k, v] of Object.entries(m)) {
+      const a = v.atk != null ? `×${formatMultiplier(v.atk)}` : ''
+      const d = v.def != null ? `×${formatMultiplier(v.def)}` : ''
+      v.label = a && d ? `${a}/${d}` : (a || d || '')
+    }
+    return m
+  }, [typeEffectsAtk.data, typeEffectsDef.data])
+
+  // ======== 新增：把 (atk, def) 分类 + 计算强弱，用于元素下拉排序 ========
+  const classifyPair = (pair?: EffectPair) => {
+    const aRaw = Number(pair?.atk)
+    const dRaw = Number(pair?.def)
+    const a = Number.isFinite(aRaw) ? aRaw : 1
+    const d = Number.isFinite(dRaw) ? dRaw : 1
+    const eps = 1e-9
+    const atkRel = a > 1 + eps ? 1 : a < 1 - eps ? -1 : 0   // 攻：>1 优，<1 劣
+    const defRel = d < 1 - eps ? 1 : d > 1 + eps ? -1 : 0   // 受：<1 优，>1 劣
+
+    // 组别（数字越小越靠前）
+    // 0：攻优+受优；1：仅受优；2：仅攻优；3：全中立；4：仅攻劣；5：仅受劣；6：全劣
+    let group = 3
+    if (atkRel === 1 && defRel === 1) group = 0
+    else if (defRel === 1 && atkRel === 0) group = 1
+    else if (atkRel === 1 && defRel === 0) group = 2
+    else if (atkRel === 0 && defRel === 0) group = 3
+    else if (atkRel === -1 && defRel === 0) group = 4
+    else if (atkRel === 0 && defRel === -1) group = 5
+    else if (atkRel === -1 && defRel === -1) group = 6
+
+    // 优势强度（越大越好）：攻(>1) + 受(<1)
+    const advMag = Math.max(0, a - 1) + Math.max(0, 1 - d)
+    // 劣势强度（越小越好）：攻(<1) + 受(>1)
+    const disadvMag = Math.max(0, 1 - a) + Math.max(0, d - 1)
+
+    return { group, advMag, disadvMag }
+  }
+
+  // ======== 新增：百分比格式化（用于下拉文本显示“攻±X%/受±Y%”） ========
+  const formatPct = (v: number) => {
+    if (!Number.isFinite(v)) return '0%'
+    // 优先取整数，其次 1 位小数，再次 2 位小数
+    const abs = Math.abs(v)
+    let num: number
+    if (Math.abs(v - Math.round(v)) < 1e-9) num = Math.round(v)
+    else if (Math.abs(v * 10 - Math.round(v * 10)) < 1e-9) num = Math.round(v * 10) / 10
+    else num = Math.round(v * 100) / 100
+    const sign = v > 0 ? '+' : v < 0 ? '-' : ''
+    return `${sign}${Math.abs(num)}%`
+  }
+
+  const percentLabelForPair = (pair?: EffectPair) => {
+    if (!pair) return ''
+    const a = Number.isFinite(Number(pair.atk)) ? Number(pair.atk) : 1
+    const d = Number.isFinite(Number(pair.def)) ? Number(pair.def) : 1
+    const atkPct = (a - 1) * 100      // 攻：倍率相对 1 的增减
+    const defPct = (1 - d) * 100      // 受：倍率越小越好，所以用 (1-d)
+    return `攻${formatPct(atkPct)}/受${formatPct(defPct)}`
+  }
+  // ======== 百分比格式化（结束） ========
+
+  // 计算：用于“元素筛选（顶部第 1 个下拉）”的选项（文本显示百分比，value 仍是纯中文元素名）
+  const filterElementOptionsLabeled = useMemo(() => {
+    if (vsElement) {
+      const opts = elementOptionsFull.map((value) => {
+        const pair = effectsPairByType[value]
+        const { group, advMag, disadvMag } = classifyPair(pair)
+        // —— 在下拉处改用百分比 —— //
+        const pctText = percentLabelForPair(pair)
+        const text = pctText ? `${value}（${pctText}）` : value
+        return { value, text, group, advMag, disadvMag }
       })
+
+      // 排序规则：
+      // 组别优先：攻优+受优(0) > 受优(1) > 攻优(2) > 中立(3) > 攻劣(4) > 受劣(5) > 全劣(6)
+      // 同组内：前3组按优势强度降序；中立按名称拼音；后三组按劣势强度升序（越不差越靠前）
+      opts.sort((a, b) => {
+        if (a.group !== b.group) return a.group - b.group
+        if (a.group <= 2) return b.advMag - a.advMag
+        if (a.group === 3) return String(a.value).localeCompare(String(b.value), 'zh')
+        return a.disadvMag - b.disadvMag
+      })
+
+      return opts.map(({ value, text }) => ({ value, text }))
     }
     // 无 vs 或请求失败时，使用原始列表
     return elementOptionsFull.map(el => ({ value: el, text: el }))
-  }, [vsElement, typeEffects.data])
+  }, [vsElement, effectsPairByType])
 
-// —— 这里替换 MonstersPage.tsx 中的 list = useQuery({...}) 的 queryFn —— //
+  // —— 这里替换 MonstersPage.tsx 中的 list = useQuery({...}) 的 queryFn —— //
   const list = useQuery({
-  queryKey: ['monsters', {
-    q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
-    page, pageSize, warehouseOnly, fixMode
-  }],
-  queryFn: async () => {
-    const baseParams: any = {
-      q: q || undefined,
-      element: element || undefined,
-      role: role || undefined,
-      type: acqType || undefined,
-      acq_type: acqType || undefined,
-      sort, order,
-      page,
-      page_size: pageSize,
-      need_fix: fixMode ? true : undefined,
-    }
-    if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
-    else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
+    queryKey: ['monsters', {
+      q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
+      page, pageSize, warehouseOnly, fixMode
+    }],
+    queryFn: async () => {
+      const baseParams: any = {
+        q: q || undefined,
+        element: element || undefined,
+        role: role || undefined,
+        type: acqType || undefined,
+        acq_type: acqType || undefined,
+        sort, order,
+        page,
+        page_size: pageSize,
+        need_fix: fixMode ? true : undefined,
+      }
+      if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
+      else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
 
-    if (warehouseOnly) {
-      // ✅ 仓库模式：总是走 /warehouse（支持多标签 AND / 获取渠道等）
-      return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
-    }
+      if (warehouseOnly) {
+        // ✅ 仓库模式：总是走 /warehouse（支持多标签 AND / 获取渠道等）
+        return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
+      }
 
-    // 非仓库模式
-    return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
-  },
-  refetchOnWindowFocus: false,
-  refetchOnReconnect: false,
-})
+      // 非仓库模式
+      return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
+    },
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
 
   // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
@@ -341,7 +439,7 @@ export default function MonstersPage() {
     }
   })
 
-  // 总数
+  // 总数（统计栏保留原样）
   const stats = useQuery({
     queryKey: ['stats'],
     queryFn: async () => (await api.get('/stats')).data as StatsDTO
@@ -705,55 +803,55 @@ export default function MonstersPage() {
 
   // —— 一键 AI 打标签（真实进度版 + 可取消） —— //
   const aiTagBatch = async () => {
-  let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
-  if (!targetIds.length) return alert('当前没有可处理的记录')
+    let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
+    if (!targetIds.length) return alert('当前没有可处理的记录')
 
-  // 开始前重置取消标记，并打开允许取消的弹框
-  cancelAITagRef.current = false
-  setOverlay({
-    show: true,
-    title: 'AI 打标签进行中…',
-    sub: '正在分析',
-    total: targetIds.length,
-    done: 0,
-    ok: 0,
-    fail: 0,
-    cancelable: true
-  })
-
-  let okCount = 0
-  let failCount = 0
-  try {
-    for (const id of targetIds) {
-      if (cancelAITagRef.current) break
-      try {
-        try {
-          await api.post(`/tags/monsters/${id}/retag_ai`)
-        } catch {
-          await api.post(`/tags/monsters/${id}/retag`)
-        }
-        okCount += 1
-        setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, ok: (prev.ok || 0) + 1 }))
-      } catch {
-        failCount += 1
-        setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, fail: (prev.fail || 0) + 1 }))
-      }
-    }
-
-    // 完成后只刷新数据，静默不弹窗
-    await list.refetch()
-    if (selected) {
-      const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
-      setSelected(fresh)
-    }
-  } catch (e: any) {
-    // 仅失败时提示
-    alert(e?.response?.data?.detail || 'AI 打标签失败')
-  } finally {
-    setOverlay({ show: false })
+    // 开始前重置取消标记，并打开允许取消的弹框
     cancelAITagRef.current = false
+    setOverlay({
+      show: true,
+      title: 'AI 打标签进行中…',
+      sub: '正在分析',
+      total: targetIds.length,
+      done: 0,
+      ok: 0,
+      fail: 0,
+      cancelable: true
+    })
+
+    let okCount = 0
+    let failCount = 0
+    try {
+      for (const id of targetIds) {
+        if (cancelAITagRef.current) break
+        try {
+          try {
+            await api.post(`/tags/monsters/${id}/retag_ai`)
+          } catch {
+            await api.post(`/tags/monsters/${id}/retag`)
+          }
+          okCount += 1
+          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, ok: (prev.ok || 0) + 1 }))
+        } catch {
+          failCount += 1
+          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, fail: (prev.fail || 0) + 1 }))
+        }
+      }
+
+      // 完成后只刷新数据，静默不弹窗
+      await list.refetch()
+      if (selected) {
+        const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
+        setSelected(fresh)
+      }
+    } catch (e: any) {
+      // 仅失败时提示
+      alert(e?.response?.data?.detail || 'AI 打标签失败')
+    } finally {
+      setOverlay({ show: false })
+      cancelAITagRef.current = false
+    }
   }
-}
 
   // —— 一键全部分析（成功静默） —— //
   const deriveBatch = async () => {
@@ -824,23 +922,24 @@ export default function MonstersPage() {
 
   // —— 列表前端兜底过滤（获取途径 + 多标签 AND） —— //
   const filteredItems = useMemo(() => {
-  let arr = (list.data?.items as any[]) || []
+    let arr = (list.data?.items as any[]) || []
 
-  // 仓库开关：只有当数据里真的带 possess 字段时才做本地兜底；否则相信服务端分页
-  if (warehouseOnly && arr.some(m => typeof m?.possess === 'boolean')) {
-    arr = arr.filter(m => m.possess === true)
-  }
+    // 仓库开关：只有当数据里真的带 possess 字段时才做本地兜底；否则相信服务端分页
+    if (warehouseOnly && arr.some(m => typeof m?.possess === 'boolean')) {
+      arr = arr.filter(m => m.possess === true)
+    }
 
-  // 多标签 AND：不再用 every(...) 早退；用 (m.tags || []) 兜底
-  if (selectedTags.length > 0) {
-    arr = arr.filter(m => {
-      const mtags: string[] = Array.isArray(m.tags) ? m.tags : []
-      return selectedTags.every(t => mtags.includes(t))
-    })
-  }
+    // 多标签 AND：不再用 every(...) 早退；用 (m.tags || []) 兜底
+    if (selectedTags.length > 0) {
+      arr = arr.filter(m => {
+        const mtags: string[] = Array.isArray(m.tags) ? m.tags : []
+        return selectedTags.every(t => mtags.includes(t))
+      })
+    }
 
-  return arr
-}, [list.data, warehouseOnly, selectedTags])
+    return arr
+  }, [list.data, warehouseOnly, selectedTags])
+
   // —— 新建：初始化清空并打开编辑抽屉 —— //
   const startCreate = () => {
     setIsCreating(true)
@@ -980,7 +1079,7 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 1 行：搜索（已移除“抓取上限”输入框） */}
+        {/* 1 行：搜索 */}
         <div className="mb-3">
           <div className="grid grid-cols-1 gap-3 min-w-0">
             <input
@@ -993,16 +1092,15 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签 + 定位 + 排序
-            注：将列数改为 md:grid-cols-9，以便“排序区域 col-span-2”能整齐对齐 */}
+        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签 + 定位 + 排序 */}
         <div className="grid grid-cols-2 md:grid-cols-9 gap-3">
-          {/* 新增：对面属性——仅用于给“元素下拉”标注倍率和排序 */}
+          {/* 新增：对面属性——仅用于给“元素下拉”标注百分比并排序 */}
           <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
             <option value="">对面属性</option>
             {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
 
-          {/* 元素筛选（使用带倍率的 label；value 仍是纯中文元素名） */}
+          {/* 元素筛选（使用“百分比”的 label；value 仍是中文元素名） */}
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
             <option value="">全部元素</option>
             {filterElementOptionsLabeled.map(opt => (
@@ -1067,7 +1165,7 @@ export default function MonstersPage() {
         </div>
       </div>
 
-      {/* 统计栏 */}
+      {/* 统计栏（保持原样） */}
       <div className="card p-4">
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
@@ -1189,7 +1287,6 @@ export default function MonstersPage() {
           </table>
         </div>
         <div className="mt-3 flex items-center justify-end gap-2">
-          {/* 移除 ETag 显示 */}
           <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
           <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
         </div>
