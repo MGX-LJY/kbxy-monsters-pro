@@ -87,6 +87,9 @@ export default function MonstersPage() {
   const [element, setElement] = useState('')           // 元素筛选（中文）
   const [acqType, setAcqType] = useState('')           // 获取途径
 
+  // === 新增：对面属性（vs）用于标注倍率（方案 A：仅文本，不着色） ===
+  const [vsElement, setVsElement] = useState('')       // 对面属性（中文，空则不启用）
+
   // 三组标签（替代原单一 tag）
   const [tagBuf, setTagBuf] = useState('')
   const [tagDeb, setTagDeb] = useState('')
@@ -205,6 +208,50 @@ export default function MonstersPage() {
       }
     }
   })
+
+  // =============== 新增：对面属性 → 请求类型倍率（attack 视角） ===============
+  const typeEffects = useQuery({
+    queryKey: ['type_effects', vsElement],
+    enabled: !!vsElement,
+    queryFn: async () => {
+      const d = (await api.get('/types/effects', { params: { vs: vsElement, perspective: 'attack' } })).data
+      return d
+    },
+    staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
+
+  // 小工具：倍率文本格式（2.0 / 1.5 / 0.75 / 0.875）
+  const formatMultiplier = (m: any) => {
+    const x = Number(m)
+    if (!Number.isFinite(x)) return ''
+    if (Math.abs(x - Math.round(x)) < 1e-9) return x.toFixed(1)      // 2.0
+    if (Math.abs(x * 4 - Math.round(x * 4)) < 1e-9) return x.toFixed(2) // .25/.75
+    if (Math.abs(x * 8 - Math.round(x * 8)) < 1e-9) return x.toFixed(3) // .125/.875
+    return String(x)
+  }
+
+  // 计算：用于“元素筛选（顶部第 1 个下拉）”的选项（带倍率文本，value 仍是纯中文元素名）
+  const filterElementOptionsLabeled = useMemo(() => {
+    const okList = vsElement && typeEffects.data && Array.isArray(typeEffects.data.items) && typeEffects.data.items.length
+      ? (typeEffects.data.items as any[])
+      : null
+
+    if (okList) {
+      return okList.map((it: any) => {
+        const value = it?.type || it?.name || '' // 纯中文元素名
+        let text = it?.label as string | undefined
+        if (!text) {
+          const mm = formatMultiplier(it?.multiplier)
+          text = mm ? `${value}（×${mm}）` : value
+        }
+        return { value, text }
+      })
+    }
+    // 无 vs 或请求失败时，使用原始列表
+    return elementOptionsFull.map(el => ({ value: el, text: el }))
+  }, [vsElement, typeEffects.data])
 
   const list = useQuery({
     queryKey: ['monsters', {
@@ -722,6 +769,8 @@ export default function MonstersPage() {
       if (showOverlay) setOverlay({ show: false })
     }
   }
+
+  // === 保留原始元素数组供“编辑表单/技能编辑”等处使用（纯文本，不带倍率） ===
   const elementOptions = elementOptionsFull
   const acquireTypeOptions = ['可捕捉宠物','BOSS宠物','活动获取宠物','兑换/商店','任务获取','超进化','其它']
 
@@ -923,11 +972,21 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 2 行：元素 + 获取途径 + 三组标签 + 定位 + 排序 */}
-        <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
+        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签 + 定位 + 排序
+            注：将列数改为 md:grid-cols-9，以便“排序区域 col-span-2”能整齐对齐 */}
+        <div className="grid grid-cols-2 md:grid-cols-9 gap-3">
+          {/* 新增：对面属性（可选）——仅用于给“元素下拉”标注倍率和排序 */}
+          <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
+            <option value="">对面属性（可选）</option>
+            {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
+          </select>
+
+          {/* 元素筛选（使用带倍率的 label；value 仍是纯中文元素名） */}
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
             <option value="">全部元素</option>
-            {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
+            {filterElementOptionsLabeled.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.text}</option>
+            ))}
           </select>
 
           <select className="select" value={acqType} onChange={e => { setAcqType(e.target.value); setPage(1) }}>
@@ -937,7 +996,7 @@ export default function MonstersPage() {
 
           {/* 三枚标签下拉 */}
           <select className="select" value={tagBuf} onChange={e => { setTagBuf(e.target.value); setPage(1) }}>
-            <option value="">🟢 增强（全部）</option>
+            <option value="">🟢 增强</option>
             {bufCounts.map(t =>
               <option key={t.name} value={t.name}>
                 {`🟢${tagLabel(t.name)}（${t.count}）`}
@@ -945,7 +1004,7 @@ export default function MonstersPage() {
             )}
           </select>
           <select className="select" value={tagDeb} onChange={e => { setTagDeb(e.target.value); setPage(1) }}>
-            <option value="">🔴 削弱（全部）</option>
+            <option value="">🔴 削弱</option>
             {debCounts.map(t =>
               <option key={t.name} value={t.name}>
                 {`🔴${tagLabel(t.name)}（${t.count}）`}
@@ -953,7 +1012,7 @@ export default function MonstersPage() {
             )}
           </select>
           <select className="select" value={tagUtil} onChange={e => { setTagUtil(e.target.value); setPage(1) }}>
-            <option value="">🟣 特殊（全部）</option>
+            <option value="">🟣 特殊</option>
             {utilCounts.map(t =>
               <option key={t.name} value={t.name}>
                 {`🟣${tagLabel(t.name)}（${t.count}）`}
