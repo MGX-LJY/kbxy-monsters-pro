@@ -975,9 +975,9 @@ export default function MonstersPage() {
         {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签 + 定位 + 排序
             注：将列数改为 md:grid-cols-9，以便“排序区域 col-span-2”能整齐对齐 */}
         <div className="grid grid-cols-2 md:grid-cols-9 gap-3">
-          {/* 新增：对面属性（可选）——仅用于给“元素下拉”标注倍率和排序 */}
+          {/* 新增：对面属性——仅用于给“元素下拉”标注倍率和排序 */}
           <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
-            <option value="">对面属性（可选）</option>
+            <option value="">对面属性</option>
             {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
 

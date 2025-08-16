@@ -13,61 +13,128 @@ type ChartGroups = {
   low: ChartGroupItem[]
 }
 
-type ChartDTO =
+// 兼容多种后端返回结构
+type MatrixRows = Record<string, Record<string, number>>
+type MatrixDTO =
   | {
-      base: string
-      perspective: Perspective
-      groups?: Partial<ChartGroups>
-      all?: ChartGroupItem[]
-      // 兜底字段（若服务端返回映射）
-      attack_multipliers?: Record<string, number>
-      defense_multipliers?: Record<string, number>
-      mapping?: Record<string, number>
+      perspective?: Perspective
+      types?: string[]
+      matrix?: number[][]
+      rows?: MatrixRows
+      items?: Array<{ source: string; target: string; x: number }>
     }
   | Record<string, never>
 
 const BTN_FX =
   'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
 
-function formatMultiplier(n: number): string {
-  // 期望样式：整数显示 1 位小数（×2.0），否则最多 3 位小数并去尾零
-  if (Number.isInteger(n)) return `×${n.toFixed(1)}`
-  const s = n.toFixed(3)
-  return `×${s.replace(/0+$/, '').replace(/\.$/, '')}`
+// ===== 固定排序表（按你给的顺序） =====
+const TYPE_ORDER = [
+  '火系','金系','木系','水系','土系','翼系','怪系','魔系','妖系',
+  '风系','毒系','雷系','幻系','冰系','灵系','机械系',
+  '火风','木灵','圣系','土幻','水妖','音系'
+]
+const normalizeType = (s: string) => (s || '').replace(/\s+/g, '').replace(/系$/, '')
+const TYPE_INDEX: Record<string, number> = TYPE_ORDER
+  .map(normalizeType)
+  .reduce((acc, t, i) => { acc[t] = i; return acc }, {} as Record<string, number>)
+
+const compareByTypeOrder = (a: string, b: string) => {
+  const na = normalizeType(a)
+  const nb = normalizeType(b)
+  const ia = TYPE_INDEX.hasOwnProperty(na) ? TYPE_INDEX[na] : 999
+  const ib = TYPE_INDEX.hasOwnProperty(nb) ? TYPE_INDEX[nb] : 999
+  if (ia !== ib) return ia - ib
+  // 都不在表里时，兜底中文排序
+  return a.localeCompare(b, 'zh')
 }
 
-function normalizeChart(dto: ChartDTO): ChartGroups {
-  // 1) 后端已分组的情况
-  if (dto && 'groups' in dto && dto.groups) {
-    return {
-      high: dto.groups.high?.slice() || [],
-      ordinary: dto.groups.ordinary?.slice() || [],
-      low: dto.groups.low?.slice() || [],
+const sortElementList = (arr: string[]) => {
+  return arr.slice().sort(compareByTypeOrder)
+}
+
+// ========= 小工具 =========
+async function getWithFallback<T = any>(primary: string, fallback: string, params?: any): Promise<T> {
+  try {
+    const r = await api.get(primary, { params })
+    return r.data as T
+  } catch {
+    const r2 = await api.get(fallback, { params })
+    return r2.data as T
+  }
+}
+
+function formatMultiplier(n: number): string {
+  if (!Number.isFinite(n)) return '×—'
+  if (Math.abs(n - Math.round(n)) < 1e-12) return `×${n.toFixed(1)}`
+  const s = n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
+  return `×${s}`
+}
+
+// 把多形态 MatrixDTO 统一成 rows 映射
+function normalizeMatrix(dto: MatrixDTO): { types: string[]; rows: MatrixRows } {
+  // 1) rows 已给
+  if (dto && 'rows' in dto && dto.rows && typeof dto.rows === 'object') {
+    const types = Object.keys(dto.rows)
+    return { types, rows: dto.rows }
+  }
+
+  // 2) matrix + types
+  if (dto && Array.isArray(dto.matrix) && Array.isArray(dto.types)) {
+    const types = dto.types
+    const rows: MatrixRows = {}
+    dto.matrix.forEach((row, i) => {
+      const from = types[i]
+      rows[from] = rows[from] || {}
+      row.forEach((val, j) => {
+        const to = types[j]
+        rows[from][to] = Number(val)
+      })
+    })
+    return { types, rows }
+  }
+
+  // 3) items 扁平三元组
+  if (dto && Array.isArray(dto.items)) {
+    const rows: MatrixRows = {}
+    const setTypes = new Set<string>()
+    for (const it of dto.items) {
+      if (!rows[it.source]) rows[it.source] = {}
+      rows[it.source][it.target] = Number(it.x)
+      setTypes.add(it.source); setTypes.add(it.target)
+    }
+    return { types: Array.from(setTypes), rows }
+  }
+
+  return { types: [], rows: {} }
+}
+
+// 从 rows 中抽取一行或一列并分组（分组内用固定顺序排序）
+function pickGroups(rows: MatrixRows, types: string[], base: string, perspective: Perspective): ChartGroups {
+  const arr: ChartGroupItem[] = []
+
+  if (!base || !types.length) return { high: [], ordinary: [], low: [] }
+
+  // 为了“遍历顺序”也稳定，types 先按固定顺序拍平
+  const orderedTypes = sortElementList(types)
+
+  if (perspective === 'attack') {
+    const row = rows[base] || {}
+    for (const t of orderedTypes) {
+      if (t === base) continue
+      const x = Number(row[t])
+      if (Number.isFinite(x)) arr.push({ target: t, x })
+    }
+  } else {
+    // defense：取“对方打我”的那一列
+    for (const from of orderedTypes) {
+      if (from === base) continue
+      const x = Number(rows[from]?.[base])
+      if (Number.isFinite(x)) arr.push({ target: from, x })
     }
   }
 
-  // 2) 后端给了全量数组
-  if (dto && 'all' in dto && Array.isArray(dto.all)) {
-    return splitToGroups(dto.all)
-  }
-
-  // 3) 后端给了映射：attack_multipliers / defense_multipliers / mapping
-  const map =
-    (dto && 'attack_multipliers' in dto && dto.attack_multipliers) ||
-    (dto && 'defense_multipliers' in dto && dto.defense_multipliers) ||
-    (dto && 'mapping' in dto && dto.mapping) ||
-    null
-
-  if (map && typeof map === 'object') {
-    const arr: ChartGroupItem[] = Object.entries(map).map(([k, v]) => ({
-      target: k,
-      x: Number(v),
-    }))
-    return splitToGroups(arr)
-  }
-
-  // 4) 兜底空
-  return { high: [], ordinary: [], low: [] }
+  return splitToGroups(arr)
 }
 
 function splitToGroups(arr: ChartGroupItem[]): ChartGroups {
@@ -76,19 +143,19 @@ function splitToGroups(arr: ChartGroupItem[]): ChartGroups {
   const low: ChartGroupItem[] = []
   for (const it of arr) {
     const x = Number(it.x)
-    if (Number.isFinite(x)) {
-      if (Math.abs(x - 1) < 1e-9) ordinary.push(it)
-      else if (x > 1) high.push(it)
-      else low.push(it)
-    }
+    if (!Number.isFinite(x)) continue
+    if (Math.abs(x - 1) < 1e-9) ordinary.push(it)
+    else if (x > 1) high.push(it)
+    else low.push(it)
   }
-  // 排序：高→按倍率降序；低→倍率升序；普通→字典序
-  high.sort((a, b) => b.x - a.x || a.target.localeCompare(b.target, 'zh'))
-  low.sort((a, b) => a.x - b.x || a.target.localeCompare(b.target, 'zh'))
-  ordinary.sort((a, b) => a.target.localeCompare(b.target, 'zh'))
+  // 分组内按固定顺序排，不再按倍率或拼音
+  high.sort((a, b) => compareByTypeOrder(a.target, b.target))
+  ordinary.sort((a, b) => compareByTypeOrder(a.target, b.target))
+  low.sort((a, b) => compareByTypeOrder(a.target, b.target))
   return { high, ordinary, low }
 }
 
+// ========= 组件 =========
 export default function TypeChartDialog({
   open,
   onClose,
@@ -96,7 +163,6 @@ export default function TypeChartDialog({
   open: boolean
   onClose: () => void
 }) {
-  const [perspective, setPerspective] = useState<Perspective>('attack')
   const [base, setBase] = useState<string>('')
 
   // Esc 关闭
@@ -109,40 +175,87 @@ export default function TypeChartDialog({
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
-  // 元素列表
+  // 读取元素列表（后端：/types/list；兼容 /api/v1 前缀）
   const elements = useQuery<string[]>({
     queryKey: ['type_elements'],
     enabled: open,
     queryFn: async () => {
-      const r = await api.get('/api/v1/types/elements')
-      const data = Array.isArray(r.data) ? r.data : r.data?.items || []
-      return data as string[]
+      const data = await getWithFallback<any>('/api/v1/types/list', '/types/list')
+      // 兼容 {types:[...]} / {items:[...]} / 直接数组
+      if (Array.isArray(data)) return data as string[]
+      if (Array.isArray(data?.types)) return data.types as string[]
+      if (Array.isArray(data?.items)) return data.items as string[]
+      return []
     },
     staleTime: 5 * 60 * 1000,
   })
 
-  // 若第一次打开且 base 为空，自动选第一个元素
+  // 排好序的元素列表（用于下拉与默认选中）
+  const elementsSorted = useMemo(
+    () => sortElementList(elements.data || []),
+    [elements.data]
+  )
+
+  // 首次打开时自动选中第一个（按固定顺序）
   useEffect(() => {
     if (!open) return
-    if (!base && elements.data && elements.data.length > 0) {
-      setBase(elements.data[0]!)
+    if (!base && elementsSorted.length > 0) {
+      setBase(elementsSorted[0]!)
     }
-  }, [open, base, elements.data])
+  }, [open, base, elementsSorted])
 
-  // 克制数据
-  const chart = useQuery<ChartDTO>({
-    queryKey: ['type_chart', perspective, base],
-    enabled: open && !!base,
-    queryFn: async () => {
-      const r = await api.get('/api/v1/types/chart', {
-        params: { perspective, base },
-      })
-      return r.data as ChartDTO
-    },
+  // 分别拉取“进攻视角/防守视角”矩阵
+  const matrixAttack = useQuery<MatrixDTO>({
+    queryKey: ['type_matrix', 'attack'],
+    enabled: open,
+    queryFn: async () =>
+      await getWithFallback<MatrixDTO>('/api/v1/types/matrix', '/types/matrix', {
+        perspective: 'attack',
+      }),
     refetchOnWindowFocus: false,
   })
 
-  const groups: ChartGroups = useMemo(() => normalizeChart(chart.data || {}), [chart.data])
+  const matrixDefense = useQuery<MatrixDTO>({
+    queryKey: ['type_matrix', 'defense'],
+    enabled: open,
+    queryFn: async () =>
+      await getWithFallback<MatrixDTO>('/api/v1/types/matrix', '/types/matrix', {
+        perspective: 'defense',
+      }),
+    refetchOnWindowFocus: false,
+  })
+
+  // 统一类型列表（两边取并集，通常应一致）
+  const { types: typesAtk, rows: rowsAtk } = useMemo(
+    () => normalizeMatrix(matrixAttack.data || {}),
+    [matrixAttack.data]
+  )
+  const { types: typesDef, rows: rowsDef } = useMemo(
+    () => normalizeMatrix(matrixDefense.data || {}),
+    [matrixDefense.data]
+  )
+
+  const allTypes = useMemo(() => {
+    const set = new Set<string>([...typesAtk, ...typesDef])
+    return sortElementList(Array.from(set))
+  }, [typesAtk, typesDef])
+
+  // 基于同一个 base，同时计算「进攻」与「防守」分组
+  const groupsAttack: ChartGroups = useMemo(
+    () => pickGroups(rowsAtk, allTypes, base, 'attack'),
+    [rowsAtk, allTypes, base]
+  )
+  const groupsDefense: ChartGroups = useMemo(
+    () => pickGroups(rowsDef, allTypes, base, 'defense'),
+    [rowsDef, allTypes, base]
+  )
+
+  const isLoading = elements.isLoading || matrixAttack.isLoading || matrixDefense.isLoading
+  const hasError = !!(elements.error || matrixAttack.error || matrixDefense.error)
+  const errorMsg =
+    (elements.error as any)?.message ||
+    (matrixAttack.error as any)?.message ||
+    (matrixDefense.error as any)?.message
 
   if (!open) return null
 
@@ -153,16 +266,15 @@ export default function TypeChartDialog({
       aria-modal="true"
       aria-label="属性克制表"
       onClick={(e) => {
-        // 点击遮罩关闭
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="w-[min(96vw,920px)] max-h-[88vh] overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div className="w-[min(96vw,1080px)] max-h-[88vh] overflow-hidden rounded-2xl bg-white shadow-2xl">
         {/* 头部 */}
-        <div className="flex items-center justify-between border-b px-4 py-3">
+        <div className="flex items-center justify-between border-b px-5 py-3">
           <div className="flex items-center gap-2">
             <div className="text-base font-semibold">属性克制表</div>
-            <div className="text-xs text-gray-500">（仅显示倍率，不着色）</div>
+            <div className="text-xs text-gray-500">（双视角同时展示｜仅显示倍率，不着色）</div>
           </div>
           <button
             className={`btn h-8 px-2 ${BTN_FX}`}
@@ -175,85 +287,82 @@ export default function TypeChartDialog({
         </div>
 
         {/* 控件区 */}
-        <div className="px-4 py-3 border-b bg-gray-50">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="px-5 py-3 border-b bg-gray-50">
+          <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <label className="text-sm text-gray-600 w-[5em]">视角</label>
-              <select
-                className="select"
-                value={perspective}
-                onChange={(e) => {
-                  const p = (e.target.value as Perspective) || 'attack'
-                  setPerspective(p)
-                }}
-              >
-                <option value="attack">进攻视角（我打别人）</option>
-                <option value="defense">防守视角（别人打我）</option>
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2 sm:col-span-2">
-              <label className="text-sm text-gray-600 w-[5em]">基准元素</label>
+              <label className="text-sm text-gray-600">基准元素</label>
               <select
                 className="select"
                 value={base}
                 onChange={(e) => setBase(e.target.value)}
                 disabled={elements.isLoading || !!elements.error}
               >
-                {!elements.data?.length && <option value="">加载中或无数据</option>}
-                {elements.data?.map((el) => (
+                {!elementsSorted.length && <option value="">加载中或无数据</option>}
+                {elementsSorted.map((el) => (
                   <option key={el} value={el}>
                     {el}
                   </option>
                 ))}
               </select>
+            </div>
 
-              <div className="text-xs text-gray-500">
-                {perspective === 'attack'
-                  ? `当前：${base || '—'} → 其它元素`
-                  : `当前：其它元素 → ${base || '—'}`}
-              </div>
+            <div className="text-xs text-gray-500">
+              <span className="mr-3">×1.0 = 正常</span>
+              <span className="mr-3">×&gt;1 = 加成</span>
+              <span>×&lt;1 = 减免</span>
             </div>
           </div>
         </div>
 
         {/* 内容区 */}
-        <div className="p-4 overflow-auto max-h-[calc(88vh-160px)]">
-          {/* 加载/错误/空态 */}
-          {chart.isLoading && (
-            <div className="text-sm text-gray-500">加载克制数据...</div>
+        <div className="p-5 overflow-auto max-h-[calc(88vh-170px)]">
+          {isLoading && <div className="text-sm text-gray-500">加载克制数据...</div>}
+
+          {hasError && (
+            <div className="text-sm text-red-600">加载失败：{errorMsg || '未知错误'}</div>
           )}
-          {chart.error && (
-            <div className="text-sm text-red-600">
-              加载失败：{(chart.error as any)?.message || '未知错误'}
+
+          {!isLoading && !hasError && (
+            <div className="grid gap-5 md:grid-cols-2">
+              {/* 进攻视角卡片 */}
+              <div className="rounded-xl border bg-white">
+                <div className="border-b px-4 py-3">
+                  <div className="text-sm font-semibold">
+                    进攻视角（我打别人）
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    当前：{base || '—'} → 其它元素
+                  </div>
+                </div>
+                <div className="p-4">
+                  <Section title="高倍率（> ×1.0）" items={groupsAttack.high} placeholder="（无）" />
+                  <Section title="普通（= ×1.0）" items={groupsAttack.ordinary} placeholder="（无）" />
+                  <Section title="低倍率（< ×1.0）" items={groupsAttack.low} placeholder="（无）" />
+                </div>
+              </div>
+
+              {/* 防守视角卡片 */}
+              <div className="rounded-xl border bg-white">
+                <div className="border-b px-4 py-3">
+                  <div className="text-sm font-semibold">
+                    防守视角（别人打我）
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    当前：其它元素 → {base || '—'}
+                  </div>
+                </div>
+                <div className="p-4">
+                  <Section title="高倍率（> ×1.0）" items={groupsDefense.high} placeholder="（无）" />
+                  <Section title="普通（= ×1.0）" items={groupsDefense.ordinary} placeholder="（无）" />
+                  <Section title="低倍率（< ×1.0）" items={groupsDefense.low} placeholder="（无）" />
+                </div>
+              </div>
             </div>
-          )}
-          {!chart.isLoading && !chart.error && (
-            <>
-              {/* 高倍率 */}
-              <Section
-                title="高倍率（> ×1.0）"
-                items={groups.high}
-                placeholder="（无）"
-              />
-              {/* 普通 */}
-              <Section
-                title="普通（= ×1.0）"
-                items={groups.ordinary}
-                placeholder="（无）"
-              />
-              {/* 低倍率 */}
-              <Section
-                title="低倍率（< ×1.0）"
-                items={groups.low}
-                placeholder="（无）"
-              />
-            </>
           )}
         </div>
 
         {/* 底部 */}
-        <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
           <button className={`btn ${BTN_FX}`} onClick={onClose}>
             关闭
           </button>
@@ -273,7 +382,7 @@ function Section({
   placeholder?: string
 }) {
   return (
-    <div className="mb-5">
+    <div className="mb-4">
       <div className="mb-2 text-sm font-semibold text-gray-700">{title}</div>
       {items.length === 0 ? (
         <div className="text-xs text-gray-400">{placeholder}</div>
