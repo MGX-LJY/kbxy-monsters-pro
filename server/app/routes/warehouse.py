@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Body
-from pydantic import BaseModel  # ← 提前导入 BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Body, Query  # ← 加入 Query
+
+from pydantic import BaseModel
 
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select
@@ -32,21 +33,33 @@ def get_db():
 # ---- 列表（仅仓库内）----
 @router.get("/warehouse", response_model=MonsterList)
 def warehouse_list(
-    q: Optional[str] = None,
-    element: Optional[str] = None,
-    role: Optional[str] = None,
-    tag: Optional[str] = None,
-    sort: Optional[str] = "updated_at",
-    order: Optional[str] = "desc",
-    page: int = 1,
-    page_size: int = 20,
+    q: Optional[str] = Query(None),
+    element: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    tag: Optional[str] = Query(None),
+    # ↓↓↓ 新增：多标签 AND + 获取渠道（兼容两个参数名）
+    tags_all: Optional[List[str]] = Query(None),
+    type: Optional[str] = Query(None),
+    acq_type: Optional[str] = Query(None),
+    sort: Optional[str] = Query("updated_at"),
+    order: Optional[str] = Query("desc"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
     items, total = list_warehouse(
         db,
-        q=q, element=element, role=role, tag=tag,
-        sort=sort or "updated_at", order=order or "desc",
-        page=page, page_size=page_size,
+        q=q,
+        element=element,
+        role=role,
+        tag=tag,
+        tags_all=tags_all,
+        type=type,
+        acq_type=acq_type,
+        sort=sort or "updated_at",
+        order=order or "desc",
+        page=page,
+        page_size=page_size,
     )
 
     # 预加载（避免 N+1）
@@ -58,7 +71,6 @@ def warehouse_list(
             .options(
                 selectinload(Monster.tags),
                 selectinload(Monster.derived),
-                # 显式走关系 Monster.monster_skills -> MonsterSkill.skill
                 selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
             )
         ).scalars().all()
@@ -86,7 +98,12 @@ def warehouse_list(
         )
 
     etag = f'W/"warehouse:{total}"'
-    return {"items": out, "total": total, "has_more": page * page_size < total, "etag": etag}
+    return {
+        "items": out,
+        "total": total,
+        "has_more": page * page_size < total,
+        "etag": etag,
+    }
 
 
 # ---- 入参模型 ----
