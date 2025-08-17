@@ -39,7 +39,7 @@ export default function TopBar({
             <kbd className="ml-2 hidden sm:inline rounded border bg-white px-1.5 py-0.5 text-[10px] leading-none text-gray-600">C</kbd>
           </button>
 
-          {/* 新增：属性克制表入口（由父组件控制弹框 & 调后端渲染） */}
+          {/* 新增：属性克制表入口 */}
           <button
             className="btn h-9 px-3 hover:bg-gray-100 transition"
             onClick={onOpenTypeChart}

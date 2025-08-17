@@ -1,5 +1,6 @@
 // client/src/components/TypeChartDialog.tsx
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import ReactDOM from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import api from '../api'
@@ -158,22 +159,44 @@ export default function TypeChartDialog({
   open: boolean
   onClose: () => void
 }) {
-  const [base, setBase] = useState<string>('')
+  // —— 与“一键匹配”完全一致的出入场策略：最短显示 1s + 500ms 柔和淡出 —— //
+  const MIN_VISIBLE_MS = 1000
+  const [mounted, setMounted] = useState(open)
+  const [closing, setClosing] = useState(false)
+  const shownAtRef = useRef<number>(0)
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      shownAtRef.current = Date.now()
+      const raf = requestAnimationFrame(() => setClosing(false))
+      return () => cancelAnimationFrame(raf)
+    } else if (mounted) {
+      const since = Date.now() - (shownAtRef.current || Date.now())
+      const wait = Math.max(0, MIN_VISIBLE_MS - since)
+      const t1 = window.setTimeout(() => {
+        setClosing(true)
+        const t2 = window.setTimeout(() => setMounted(false), 500) // 与 duration-500 对齐
+        return () => clearTimeout(t2)
+      }, wait)
+      return () => clearTimeout(t1)
+    }
+  }, [open, mounted])
 
   // Esc 关闭
   useEffect(() => {
-    if (!open) return
+    if (!mounted) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [mounted, onClose])
 
   // 读取元素列表（后端：/types/list；兼容 /api/v1 前缀）
   const elements = useQuery<string[]>({
     queryKey: ['type_elements'],
-    enabled: open,
+    enabled: mounted,              // 仅挂载时拉取，避免闪烁
     queryFn: async () => {
       const data = await getWithFallback<any>('/api/v1/types/list', '/types/list')
       if (Array.isArray(data)) return data as string[]
@@ -182,34 +205,38 @@ export default function TypeChartDialog({
       return []
     },
     staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
 
-  // 排好序的元素列表（用于下拉与默认选中）
+  // 排好序的元素列表
   const elementsSorted = useMemo(() => sortElementList(elements.data || []), [elements.data])
 
-  // 首次打开时自动选中第一个（按固定顺序）
+  // 选中的“基准元素”
+  const [base, setBase] = useState<string>('')
+  // 首次挂载或数据就绪时默认选择第一个
   useEffect(() => {
-    if (!open) return
-    if (!base && elementsSorted.length > 0) {
-      setBase(elementsSorted[0]!)
-    }
-  }, [open, base, elementsSorted])
+    if (!mounted) return
+    if (!base && elementsSorted.length) setBase(elementsSorted[0]!)
+  }, [mounted, base, elementsSorted])
 
-  // 只拉一次矩阵（使用进攻视角或后端默认）
+  // 矩阵（仅拉“进攻视角”；“防守视角”用列读取）
   const matrix = useQuery<MatrixDTO>({
     queryKey: ['type_matrix', 'attack_only'],
-    enabled: open,
+    enabled: mounted,
     queryFn: async () =>
       await getWithFallback<MatrixDTO>('/api/v1/types/matrix', '/types/matrix', {
         perspective: 'attack',
       }),
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: 10 * 60 * 1000,
   })
 
   const { types, rows } = useMemo(() => normalizeMatrix(matrix.data || {}), [matrix.data])
   const allTypes = useMemo(() => sortElementList(types), [types])
 
-  // 同一份矩阵：行→进攻；列→防守
+  // 分组（同一份矩阵：行=攻，列=守）
   const groupsAttack: ChartGroups = useMemo(
     () => pickGroups(rows, allTypes, base, 'attack'),
     [rows, allTypes, base]
@@ -219,15 +246,16 @@ export default function TypeChartDialog({
     [rows, allTypes, base]
   )
 
-  const isLoading = elements.isLoading || matrix.isLoading
+  const isLoading = (elements.isLoading || matrix.isLoading) && mounted
   const hasError = !!(elements.error || matrix.error)
   const errorMsg = (elements.error as any)?.message || (matrix.error as any)?.message
 
-  if (!open) return null
+  if (!mounted) return null
 
-  return (
+  return ReactDOM.createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+      className={`fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center
+                  transition-opacity duration-500 ${closing ? 'opacity-0' : 'opacity-100'}`}
       role="dialog"
       aria-modal="true"
       aria-label="属性克制表"
@@ -235,7 +263,11 @@ export default function TypeChartDialog({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="w-[min(96vw,1080px)] max-h-[88vh] overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div
+        className={`w-[min(96vw,1080px)] max-h-[88vh] overflow-hidden rounded-2xl bg-white shadow-xl
+                    transition-all duration-500 ${closing ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* 头部 */}
         <div className="flex items-center justify-between border-b px-5 py-3">
           <div className="flex items-center gap-2">
@@ -326,7 +358,8 @@ export default function TypeChartDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
