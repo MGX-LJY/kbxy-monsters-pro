@@ -164,10 +164,17 @@ export default function MonstersPage() {
   // —— 弹框“最短显示 + 淡出关闭” —— //
   const OVERLAY_MIN_VISIBLE_MS = 1000
   const overlayShownAtRef = useRef<number>(0)
+  const closingGuardRef = useRef(false)
 
   useEffect(() => {
-    if (overlay.show && !overlay.closing) {
-      overlayShownAtRef.current = Date.now()
+    if (!overlay.show) return
+    overlayShownAtRef.current = Date.now()
+    // 只有“不是在关闭流程里”的 closing: true 才视为入场淡入
+    if (overlay.closing && !closingGuardRef.current) {
+      const raf = requestAnimationFrame(() => {
+        setOverlay(prev => ({ ...prev, closing: false }))
+      })
+      return () => cancelAnimationFrame(raf)
     }
   }, [overlay.show, overlay.closing])
 
@@ -175,11 +182,14 @@ export default function MonstersPage() {
     const since = Date.now() - (overlayShownAtRef.current || Date.now())
     const wait = Math.max(0, OVERLAY_MIN_VISIBLE_MS - since)
     setTimeout(() => {
+      closingGuardRef.current = true
       setOverlay(prev => ({ ...prev, cancelable: false, closing: true }))
-      setTimeout(() => setOverlay({ show: false }), 500) // 与 JSX 的 duration-500 对齐
+      setTimeout(() => {
+        setOverlay({ show: false })
+        closingGuardRef.current = false
+      }, 500) // 与 JSX 的 duration-500 对齐
     }, wait)
   }
-
   // —— 一键爬取 —— //
   const [crawling, setCrawling] = useState(false)
 
@@ -840,7 +850,8 @@ export default function MonstersPage() {
       done: 0,
       ok: 0,
       fail: 0,
-      cancelable: true
+      cancelable: true,
+      closing: true
     })
 
     let cancelled = false
@@ -875,7 +886,8 @@ export default function MonstersPage() {
           show: true,
           title: '分析中…',
           sub: '正在计算派生维度与定位',
-          cancelable: false
+          cancelable: false,
+          closing: true
         })
         try {
           // 批量接口优先
@@ -921,7 +933,7 @@ export default function MonstersPage() {
     if (!ids.length && !items.length) return alert('当前没有可处理的记录')
 
     const showOverlay = ids.length > 1
-    if (showOverlay) setOverlay({ show: true, title: '计算中…', sub: '可爱的等等呦 (=^･ω･^=)' })
+      if (showOverlay) setOverlay({ show: true, title: '计算中…', sub: '可爱的等等呦 (=^･ω･^=)', closing: true })
     try {
       try {
         await api.post('/api/v1/derived/batch', { ids: ids.length ? ids : undefined })
