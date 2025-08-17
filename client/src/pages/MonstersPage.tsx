@@ -85,7 +85,7 @@ const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
   妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械', 特殊: '' // “特殊”不当作元素
 }
 
-// —— 进度弹框状态（新增 cancelable） —— //
+// —— 进度弹框状态（新增 cancelable + closing） —— //
 type OverlayState = {
   show: boolean
   title?: string
@@ -95,6 +95,7 @@ type OverlayState = {
   ok?: number
   fail?: number
   cancelable?: boolean
+  closing?: boolean
 }
 
 export default function MonstersPage() {
@@ -159,6 +160,25 @@ export default function MonstersPage() {
 
   // 全屏模糊等待弹框 + 真实进度（类型化 + 可取消）
   const [overlay, setOverlay] = useState<OverlayState>({ show: false })
+
+  // —— 弹框“最短显示 + 淡出关闭” —— //
+  const OVERLAY_MIN_VISIBLE_MS = 1000
+  const overlayShownAtRef = useRef<number>(0)
+
+  useEffect(() => {
+    if (overlay.show && !overlay.closing) {
+      overlayShownAtRef.current = Date.now()
+    }
+  }, [overlay.show, overlay.closing])
+
+  const smoothCloseOverlay = () => {
+    const since = Date.now() - (overlayShownAtRef.current || Date.now())
+    const wait = Math.max(0, OVERLAY_MIN_VISIBLE_MS - since)
+    setTimeout(() => {
+      setOverlay(prev => ({ ...prev, cancelable: false, closing: true }))
+      setTimeout(() => setOverlay({ show: false }), 500) // 与 JSX 的 duration-500 对齐
+    }, wait)
+  }
 
   // —— 一键爬取 —— //
   const [crawling, setCrawling] = useState(false)
@@ -801,98 +821,99 @@ export default function MonstersPage() {
   // —— “取消 AI 打标签”标记 —— //
   const cancelAITagRef = useRef(false)
 
-// —— 一键：打完标签后再统一分析（静默版：无 alert，完成后清除勾选） —— //
+  // —— 一键：打完标签后再统一分析（静默版：无 alert，完成后清除勾选） —— //
   const aiTagThenDeriveBatch = async () => {
-  const targetIds: number[] = selectedIds.size
-    ? Array.from(selectedIds)
-    : await collectAllTargetIds()
+    const targetIds: number[] = selectedIds.size
+      ? Array.from(selectedIds)
+      : await collectAllTargetIds()
 
-  // 静默：没有目标就直接返回（不弹窗）
-  if (!targetIds.length) return
+    // 静默：没有目标就直接返回（不弹窗）
+    if (!targetIds.length) return
 
-  // 阶段 1：AI 打标签（保留进度与取消）
-  cancelAITagRef.current = false
-  setOverlay({
-    show: true,
-    title: 'AI 打标签进行中…',
-    sub: '正在分析文本与技能',
-    total: targetIds.length,
-    done: 0,
-    ok: 0,
-    fail: 0,
-    cancelable: true
-  })
+    // 阶段 1：AI 打标签（保留进度与取消）
+    cancelAITagRef.current = false
+    setOverlay({
+      show: true,
+      title: 'AI 打标签进行中…',
+      sub: '正在分析文本与技能',
+      total: targetIds.length,
+      done: 0,
+      ok: 0,
+      fail: 0,
+      cancelable: true
+    })
 
-  let cancelled = false
+    let cancelled = false
 
-  try {
-    for (const id of targetIds) {
-      if (cancelAITagRef.current) { cancelled = true; break }
-      try {
-        // 优先 AI 接口，失败则回退规则接口
+    try {
+      for (const id of targetIds) {
+        if (cancelAITagRef.current) { cancelled = true; break }
         try {
-          await api.post(`/tags/monsters/${id}/retag_ai`)
+          // 优先 AI 接口，失败则回退规则接口
+          try {
+            await api.post(`/tags/monsters/${id}/retag_ai`)
+          } catch {
+            await api.post(`/tags/monsters/${id}/retag`)
+          }
+          setOverlay(prev => ({
+            ...prev,
+            done: (prev.done || 0) + 1,
+            ok: (prev.ok || 0) + 1
+          }))
         } catch {
-          await api.post(`/tags/monsters/${id}/retag`)
+          setOverlay(prev => ({
+            ...prev,
+            done: (prev.done || 0) + 1,
+            fail: (prev.fail || 0) + 1
+          }))
         }
-        setOverlay(prev => ({
-          ...prev,
-          done: (prev.done || 0) + 1,
-          ok: (prev.ok || 0) + 1
-        }))
-      } catch {
-        setOverlay(prev => ({
-          ...prev,
-          done: (prev.done || 0) + 1,
-          fail: (prev.fail || 0) + 1
-        }))
       }
-    }
 
-    // 阶段 2：仅在未取消时做“统一分析”（静默，不提示）
-    if (!cancelled) {
-      setOverlay({
-        show: true,
-        title: '分析中…',
-        sub: '正在计算派生维度与定位',
-        cancelable: false
-      })
-      try {
-        // 批量接口优先
-        await api.post('/api/v1/derived/batch', { ids: targetIds })
-      } catch {
+      // 阶段 2：仅在未取消时做“统一分析”（静默，不提示）
+      if (!cancelled) {
+        setOverlay({
+          show: true,
+          title: '分析中…',
+          sub: '正在计算派生维度与定位',
+          cancelable: false
+        })
         try {
-          await api.post('/derived/batch', { ids: targetIds })
+          // 批量接口优先
+          await api.post('/api/v1/derived/batch', { ids: targetIds })
         } catch {
-          // 兜底逐条
-          for (const id of targetIds) {
-            try { await api.get(`/monsters/${id}/derived`) } catch {}
+          try {
+            await api.post('/derived/batch', { ids: targetIds })
+          } catch {
+            // 兜底逐条
+            for (const id of targetIds) {
+              try { await api.get(`/monsters/${id}/derived`) } catch {}
+            }
           }
         }
       }
-    }
-  } finally {
-    // 刷新数据（静默）
-    try {
-      await Promise.all([
-        list.refetch(),
-        wstats.refetch(),
-        stats.refetch()
-      ])
-      if (selected) {
-        try {
-          const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
-          setSelected(fresh)
-        } catch {}
-      }
-    } catch {}
+    } finally {
+      // 刷新数据（静默）
+      try {
+        await Promise.all([
+          list.refetch(),
+          wstats.refetch(),
+          stats.refetch()
+        ])
+        if (selected) {
+          try {
+            const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
+            setSelected(fresh)
+          } catch {}
+        }
+      } catch {}
 
-    // 关键：完成或取消后，清除所有勾选；关闭进度；复位取消标记（静默）
-    setSelectedIds(new Set())
-    setOverlay({ show: false })
-    cancelAITagRef.current = false
+      // 关键：完成或取消后，清除所有勾选；关闭进度；复位取消标记（静默）
+      setSelectedIds(new Set())
+      smoothCloseOverlay()
+      cancelAITagRef.current = false
+    }
   }
-}
+
   // —— 一键全部分析（成功静默） —— //
   const deriveBatch = async () => {
     const items = (list.data?.items as any[]) || []
@@ -925,7 +946,7 @@ export default function MonstersPage() {
       // 仅失败时提示
       alert(e?.response?.data?.detail || '分析失败')
     } finally {
-      if (showOverlay) setOverlay({ show: false })
+      if (showOverlay) smoothCloseOverlay()
     }
   }
 
@@ -1605,10 +1626,16 @@ export default function MonstersPage() {
         )}
       </SideDrawer>
 
-      {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 + 取消按钮 */}
+      {/* 全屏模糊等待弹框：支持“确定进度”和“未知进度”两种 + 取消按钮（增加最短显示 + 柔和淡出） */}
       {overlay.show && (
-        <div className="fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center">
-          <div className="rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3">
+        <div
+          className={`fixed inset-0 z-50 backdrop-blur-sm bg-black/20 flex items-center justify-center
+                      transition-opacity duration-500 ${overlay.closing ? 'opacity-0' : 'opacity-100'}`}
+        >
+          <div
+            className={`rounded-2xl bg-white shadow-xl p-6 w-[min(92vw,420px)] text-center space-y-3
+                        transition-all duration-500 ${overlay.closing ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}`}
+          >
             <div className="text-2xl">🐱</div>
             <div className="text-lg font-semibold">{overlay.title || '处理中…'}</div>
             <div className="text-sm text-gray-600">{overlay.sub || '请稍候~'}</div>
