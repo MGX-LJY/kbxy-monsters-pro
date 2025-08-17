@@ -215,6 +215,15 @@ export default function MonstersPage() {
     }
   }
 
+    // === 新增：全局事件监听（TopBar 发出 kb:crawl 时，这里调用原有 startCrawl） ===
+  const startCrawlRef = useRef<() => void>(() => {})
+  useEffect(() => { startCrawlRef.current = startCrawl }, [startCrawl])
+  useEffect(() => {
+    const handler = () => startCrawlRef.current?.()
+    window.addEventListener('kb:crawl', handler)
+    return () => window.removeEventListener('kb:crawl', handler)
+  }, [])
+
   // ====== 标签 i18n（code -> 中文），无接口时兜底空对象 ======
   const tagI18n = useQuery({
     queryKey: ['tag_i18n'],
@@ -1143,10 +1152,6 @@ export default function MonstersPage() {
             >
               仓库妖怪
             </button>
-            <button className={`btn ${BTN_FX}`} onClick={startCrawl} disabled={crawling}>
-              {crawling ? '获取中…' : '获取图鉴'}
-            </button>
-
             {/* 新增：新增妖怪 */}
             <button className={`btn btn-primary ${BTN_FX}`} onClick={startCreate}>新增妖怪</button>
           </div>

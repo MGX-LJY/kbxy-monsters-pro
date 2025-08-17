@@ -1,5 +1,5 @@
 import React from 'react'
-import { Github, RefreshCw, Grid2x2 } from 'lucide-react'
+import { Github, RefreshCw, Grid2x2, Globe } from 'lucide-react'
 import SettingsButton from './SettingsButton'
 
 export default function TopBar({
@@ -28,6 +28,29 @@ export default function TopBar({
 
         {/* 右侧：操作 */}
         <div className="flex items-center gap-2">
+          {/* 属性克制表 */}
+          <button
+            className="btn h-9 px-3 hover:bg-gray-100 transition"
+            onClick={onOpenTypeChart}
+            title="查看属性克制表"
+            aria-label="属性克制表"
+          >
+            <Grid2x2 className="w-4 h-4 mr-2" />
+            <span className="hidden sm:inline">属性克制表</span>
+          </button>
+
+          {/* 新增：获取图鉴（触发全局事件，让 MonstersPage 来执行原有逻辑） */}
+          <button
+            className="btn h-9 px-3 hover:bg-gray-100 transition"
+            onClick={() => window.dispatchEvent(new Event('kb:crawl'))}
+            title="获取图鉴"
+            aria-label="获取图鉴"
+          >
+            <Globe className="w-4 h-4 mr-2" />
+            <span className="hidden sm:inline">获取图鉴</span>
+          </button>
+
+          {/* 刷新（快捷键 C） */}
           <button
             className="btn h-9 px-3 hover:bg-gray-100 transition"
             onClick={onRefresh}
@@ -37,17 +60,6 @@ export default function TopBar({
             <RefreshCw className="w-4 h-4 mr-2" />
             <span className="hidden sm:inline">刷新</span>
             <kbd className="ml-2 hidden sm:inline rounded border bg-white px-1.5 py-0.5 text-[10px] leading-none text-gray-600">C</kbd>
-          </button>
-
-          {/* 新增：属性克制表入口 */}
-          <button
-            className="btn h-9 px-3 hover:bg-gray-100 transition"
-            onClick={onOpenTypeChart}
-            title="查看属性克制表"
-            aria-label="属性克制表"
-          >
-            <Grid2x2 className="w-4 h-4 mr-2" />
-            <span className="hidden sm:inline">属性克制表</span>
           </button>
 
           {/* 设置 */}
