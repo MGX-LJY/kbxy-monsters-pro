@@ -1129,7 +1129,7 @@ export default function MonstersPage() {
               onClick={() => { setFixMode(v => !v); setPage(1) }}
               disabled={list.isLoading}
             >
-              {fixMode ? '修复' : '修复'}
+              {fixMode ? '修复妖怪' : '修复妖怪'}
             </button>
 
             {/* 文案精简 */}
@@ -1141,7 +1141,7 @@ export default function MonstersPage() {
               onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
               title="只显示仓库已有的宠物 / 再次点击还原"
             >
-              仓库
+              仓库妖怪
             </button>
             <button className={`btn ${BTN_FX}`} onClick={startCrawl} disabled={crawling}>
               {crawling ? '获取中…' : '获取图鉴'}
