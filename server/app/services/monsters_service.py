@@ -4,9 +4,7 @@ from __future__ import annotations
 from typing import List, Tuple, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
-from sqlalchemy import (
-    select, func, asc, desc, outerjoin, case, distinct, or_
-)
+from sqlalchemy import select, func, asc, desc, outerjoin, case, distinct, or_
 
 from ..models import Monster, Tag, MonsterDerived, MonsterSkill, Skill
 
@@ -32,6 +30,8 @@ def _get_sort_target(sort: str):
         return m.element, False
     if s == "role":
         return m.role, False
+    if s == "created_at":
+        return m.created_at, False
     return m.updated_at, False
 
 
@@ -39,7 +39,7 @@ def _get_sort_target(sort: str):
 def _subq_ids_for_multi_tags(
     tags_all: Optional[List[str]],
     tags_any: Optional[List[str]],
-) -> Optional[Any]:
+):
     """
     返回一个子查询（仅含一列 id），包含满足：
       - AND：必须同时包含 tags_all 里所有标签（distinct）
@@ -229,7 +229,7 @@ def list_monsters(
         )
 
     is_asc = (order or "desc").lower() == "asc"
-    rows_stmt = rows_stmt.order_by(asc(sort_col) if is_asc else desc(sort_col))
+    rows_stmt = rows_stmt.order_by(asc(sort_col) if is_asc else desc(sort_col), asc(Monster.id))
     rows_stmt = rows_stmt.offset((page - 1) * page_size).limit(page_size)
 
     rows = db.scalars(rows_stmt).unique().all()

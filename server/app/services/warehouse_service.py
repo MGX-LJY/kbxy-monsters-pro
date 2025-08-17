@@ -1,11 +1,12 @@
 # server/app/services/warehouse_service.py
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
-from sqlalchemy.orm import Session, selectinload, joinedload
-from sqlalchemy import select, func
+from typing import Iterable, List, Tuple, Optional
 
-from ..models import Monster, MonsterSkill, Tag
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import select, func, asc, desc, or_
+
+from ..models import Monster, MonsterSkill, Skill, Tag, MonsterDerived
 from ..services.derive_service import compute_derived_out, compute_and_persist
 
 
@@ -61,13 +62,13 @@ def warehouse_stats(db: Session) -> dict:
 def list_warehouse(
     db: Session,
     *,
-    q: str | None = None,
-    element: str | None = None,
-    role: str | None = None,
-    tag: str | None = None,
+    q: Optional[str] = None,
+    element: Optional[str] = None,
+    role: Optional[str] = None,
+    tag: Optional[str] = None,
     tags_all: Iterable[str] | None = None,  # 多标签 AND
-    type: str | None = None,                # 获取渠道（兼容）
-    acq_type: str | None = None,            # 获取渠道（兼容）
+    type: Optional[str] = None,             # 获取渠道（兼容）
+    acq_type: Optional[str] = None,         # 获取渠道（兼容）
     sort: str = "updated_at",
     order: str = "desc",
     page: int = 1,
@@ -77,80 +78,87 @@ def list_warehouse(
     仅返回在仓库中的怪（Monster.possess=True）。
 
     支持筛选：
-      - q                   : 模糊匹配 name / explain_json.skill_names
+      - q                   : 模糊匹配 name（可按需扩展到 explain_json.skill_names）
       - element / role      : 基础属性
       - tag                 : 单标签
       - tags_all            : 多标签 AND（每个都必须命中）
-      - type / acq_type     : 获取渠道（任取其一）
-    排序：
-      - updated_at / created_at 直接在 SQL 层排序
-      - offense/survive/control/tempo/pp_pressure：先按 updated_at 排序分页，再对当前页内存排序
+      - type / acq_type     : 获取渠道（包含匹配，ILIKE）
+    排序（全库 SQL 层）：
+      - updated_at / created_at / name / element / role
+      - offense / survive / control / tempo / pp_pressure（通过 OUTER JOIN MonsterDerived）
     """
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
+    direction = desc if (order or "").lower() == "desc" else asc
 
-    stmt = select(Monster).where(Monster.possess.is_(True))
+    # 过滤条件（基础：在仓库）
+    base = select(Monster).where(Monster.possess.is_(True))
 
-    # 关键词（轻量）
+    # 关键词
     if q:
         like = f"%{q.strip()}%"
-        stmt = stmt.where(
-            (Monster.name.ilike(like)) |
-            (Monster.explain_json["skill_names"].as_string().ilike(like))  # type: ignore
-        )
+        base = base.where(Monster.name.ilike(like))
+        # 如需联动技能名搜索，可按数据库类型开启下行之一
+        # Postgres:
+        # base = base.where(func.cast(Monster.explain_json["skill_names"].astext, String).ilike(like))
+        # SQLite:
+        # base = base.where(func.json_extract(Monster.explain_json, '$.skill_names').ilike(like))
 
     # 基础筛选
     if element:
-        stmt = stmt.where(Monster.element == element)
+        base = base.where(Monster.element == element)
     if role:
-        stmt = stmt.where(Monster.role == role)
+        base = base.where(Monster.role == role)
 
-    # 获取渠道（兼容 type / acq_type）
-    type_value = type or acq_type
+    # 获取渠道（兼容 type / acq_type），使用包含匹配
+    type_value = (type or acq_type or "").strip()
     if type_value:
-        stmt = stmt.where(Monster.type == type_value)
+        base = base.where(Monster.type.ilike(f"%{type_value}%"))
 
-    # 标签筛选（基于关系表，精确匹配）
+    # 标签筛选
     if tag:
-        stmt = stmt.where(Monster.tags.any(Tag.name == tag))
-
+        base = base.where(Monster.tags.any(Tag.name == tag))
     if tags_all:
         uniq = [t for t in {t for t in tags_all if t}]
         for t in uniq:
-            stmt = stmt.where(Monster.tags.any(Tag.name == t))
+            base = base.where(Monster.tags.any(Tag.name == t))
 
-    # 排序白名单
-    sort_whitelist = {"updated_at", "created_at", "offense", "survive", "control", "tempo", "pp_pressure"}
-    sort_key = sort if sort in sort_whitelist else "updated_at"
+    # ---- 排序键解析 ----
+    s = (sort or "updated_at").lower()
+    derived_map = {
+        "offense": MonsterDerived.offense,
+        "survive": MonsterDerived.survive,
+        "control": MonsterDerived.control,
+        "tempo": MonsterDerived.tempo,
+        "pp": MonsterDerived.pp_pressure,          # 别名
+        "pp_pressure": MonsterDerived.pp_pressure,
+    }
 
-    if sort_key in {"updated_at", "created_at"}:
-        col = getattr(Monster, sort_key)
-        stmt = stmt.order_by(col.desc() if order == "desc" else col.asc())
+    need_join = s in derived_map
+    if need_join:
+        # 派生排序：全库 OUTER JOIN 后 ORDER BY 派生列
+        sort_col = derived_map[s]
+        base = base.outerjoin(MonsterDerived, MonsterDerived.monster_id == Monster.id)
+        base = base.order_by(direction(sort_col), asc(Monster.id))
     else:
-        # 派生维度：按更新时间稳定分页
-        stmt = stmt.order_by(Monster.updated_at.desc())
+        # 普通列
+        if s not in {"updated_at", "created_at", "name", "element", "role"}:
+            s = "updated_at"
+        col = getattr(Monster, s)
+        base = base.order_by(direction(col), asc(Monster.id))
 
-    # 计数（对当前条件取子查询再 count）
-    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    # ---- 计数（先得出子查询，再 count）----
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
 
-    # 分页 + 预加载
-    stmt = stmt.limit(page_size).offset((page - 1) * page_size)
-    stmt = stmt.options(
+    # ---- 分页 + 预加载 ----
+    stmt = base.limit(page_size).offset((page - 1) * page_size).options(
         selectinload(Monster.tags),
         selectinload(Monster.derived),
-        selectinload(Monster.monster_skills).joinedload(MonsterSkill.skill),
+        selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
     )
-
     items = db.execute(stmt).scalars().all()
 
-    # 内存排序（派生维度）
-    if sort_key in {"offense", "survive", "control", "tempo", "pp_pressure"}:
-        def key_fn(m: Monster):
-            d = compute_derived_out(m)
-            return d.get(sort_key, 0)
-        items.sort(key=key_fn, reverse=(order == "desc"))
-
-    # 可选：确保派生落库最新
+    # 可选：确保派生落库最新（不会影响排序，因为排序已在 SQL 完成）
     changed = False
     for m in items:
         fresh = compute_derived_out(m)
