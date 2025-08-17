@@ -801,58 +801,98 @@ export default function MonstersPage() {
   // —— “取消 AI 打标签”标记 —— //
   const cancelAITagRef = useRef(false)
 
-  // —— 一键 AI 打标签（真实进度版 + 可取消） —— //
-  const aiTagBatch = async () => {
-    let targetIds: number[] = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
-    if (!targetIds.length) return alert('当前没有可处理的记录')
+// —— 一键：打完标签后再统一分析（静默版：无 alert，完成后清除勾选） —— //
+  const aiTagThenDeriveBatch = async () => {
+  const targetIds: number[] = selectedIds.size
+    ? Array.from(selectedIds)
+    : await collectAllTargetIds()
 
-    // 开始前重置取消标记，并打开允许取消的弹框
-    cancelAITagRef.current = false
-    setOverlay({
-      show: true,
-      title: 'AI 打标签进行中…',
-      sub: '正在分析',
-      total: targetIds.length,
-      done: 0,
-      ok: 0,
-      fail: 0,
-      cancelable: true
-    })
+  // 静默：没有目标就直接返回（不弹窗）
+  if (!targetIds.length) return
 
-    let okCount = 0
-    let failCount = 0
-    try {
-      for (const id of targetIds) {
-        if (cancelAITagRef.current) break
+  // 阶段 1：AI 打标签（保留进度与取消）
+  cancelAITagRef.current = false
+  setOverlay({
+    show: true,
+    title: 'AI 打标签进行中…',
+    sub: '正在分析文本与技能',
+    total: targetIds.length,
+    done: 0,
+    ok: 0,
+    fail: 0,
+    cancelable: true
+  })
+
+  let cancelled = false
+
+  try {
+    for (const id of targetIds) {
+      if (cancelAITagRef.current) { cancelled = true; break }
+      try {
+        // 优先 AI 接口，失败则回退规则接口
         try {
-          try {
-            await api.post(`/tags/monsters/${id}/retag_ai`)
-          } catch {
-            await api.post(`/tags/monsters/${id}/retag`)
-          }
-          okCount += 1
-          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, ok: (prev.ok || 0) + 1 }))
+          await api.post(`/tags/monsters/${id}/retag_ai`)
         } catch {
-          failCount += 1
-          setOverlay(prev => ({ ...prev, done: (prev.done || 0) + 1, fail: (prev.fail || 0) + 1 }))
+          await api.post(`/tags/monsters/${id}/retag`)
+        }
+        setOverlay(prev => ({
+          ...prev,
+          done: (prev.done || 0) + 1,
+          ok: (prev.ok || 0) + 1
+        }))
+      } catch {
+        setOverlay(prev => ({
+          ...prev,
+          done: (prev.done || 0) + 1,
+          fail: (prev.fail || 0) + 1
+        }))
+      }
+    }
+
+    // 阶段 2：仅在未取消时做“统一分析”（静默，不提示）
+    if (!cancelled) {
+      setOverlay({
+        show: true,
+        title: '分析中…',
+        sub: '正在计算派生维度与定位',
+        cancelable: false
+      })
+      try {
+        // 批量接口优先
+        await api.post('/api/v1/derived/batch', { ids: targetIds })
+      } catch {
+        try {
+          await api.post('/derived/batch', { ids: targetIds })
+        } catch {
+          // 兜底逐条
+          for (const id of targetIds) {
+            try { await api.get(`/monsters/${id}/derived`) } catch {}
+          }
         }
       }
-
-      // 完成后只刷新数据，静默不弹窗
-      await list.refetch()
-      if (selected) {
-        const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
-        setSelected(fresh)
-      }
-    } catch (e: any) {
-      // 仅失败时提示
-      alert(e?.response?.data?.detail || 'AI 打标签失败')
-    } finally {
-      setOverlay({ show: false })
-      cancelAITagRef.current = false
     }
-  }
+  } finally {
+    // 刷新数据（静默）
+    try {
+      await Promise.all([
+        list.refetch(),
+        wstats.refetch(),
+        stats.refetch()
+      ])
+      if (selected) {
+        try {
+          const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
+          setSelected(fresh)
+        } catch {}
+      }
+    } catch {}
 
+    // 关键：完成或取消后，清除所有勾选；关闭进度；复位取消标记（静默）
+    setSelectedIds(new Set())
+    setOverlay({ show: false })
+    cancelAITagRef.current = false
+  }
+}
   // —— 一键全部分析（成功静默） —— //
   const deriveBatch = async () => {
     const items = (list.data?.items as any[]) || []
@@ -1042,8 +1082,9 @@ export default function MonstersPage() {
         {/* 0 行：备份 / 恢复 */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
-            <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
+            <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
+              一键匹配
+            </button>
             <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden"
                    onChange={onRestoreFile}/>
           </div>
@@ -1060,11 +1101,11 @@ export default function MonstersPage() {
             </button>
 
             {/* 文案精简 */}
-            <button className={`btn ${BTN_FX}`} onClick={aiTagBatch}>标签</button>
-            <button className={`btn ${BTN_FX}`} onClick={deriveBatch}>分析</button>
-
+            <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
+              一键匹配
+            </button>
             <button
-              className={`btn ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
+                className={`btn ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
               onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
               title="只显示仓库已有的宠物 / 再次点击还原"
             >
