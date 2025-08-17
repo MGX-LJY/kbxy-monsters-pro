@@ -1115,9 +1115,8 @@ export default function MonstersPage() {
         {/* 0 行：备份 / 恢复 */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
-              一键匹配
-            </button>
+            <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
+            <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
             <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden"
                    onChange={onRestoreFile}/>
           </div>
