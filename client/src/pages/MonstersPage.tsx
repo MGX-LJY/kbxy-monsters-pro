@@ -23,7 +23,11 @@ type SkillDTO = {
 type StatsDTO = { total: number; with_skills?: number; tags_total?: number }
 type WarehouseStatsDTO = { warehouse_total?: number; total?: number }
 
-type SortKey = 'updated_at' | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure'
+// ✅ 扩充排序键：加入原生六维与六维总和
+type SortKey =
+  | 'updated_at'
+  | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure'
+  | 'hp' | 'speed' | 'attack' | 'defense' | 'magic' | 'resist' | 'raw_sum'
 
 const BTN_FX = 'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
 const LIMIT_TAGS_PER_CELL = 3
@@ -98,6 +102,24 @@ type OverlayState = {
   closing?: boolean
 }
 
+// ✅ 新增：模式相关的列定义
+const DERIVED_COLUMNS = [
+  { key: 'offense', label: '攻' },
+  { key: 'survive', label: '生' },
+  { key: 'control', label: '控' },
+  { key: 'tempo', label: '速' },
+  { key: 'pp_pressure', label: '压' },
+] as const
+
+const RAW_COLUMNS = [
+  { key: 'hp', label: '体' },
+  { key: 'attack', label: '攻' },
+  { key: 'defense', label: '防' },
+  { key: 'magic', label: '法' },
+  { key: 'speed', label: '速' },
+  { key: 'resist', label: '抗' },
+] as const
+
 export default function MonstersPage() {
   // 搜索 + 筛选
   const [q, setQ] = useState('')
@@ -117,6 +139,9 @@ export default function MonstersPage() {
   const [sort, setSort] = useState<SortKey>('updated_at')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库
+
+  // ✅ 新增：显示模式（false=派生五维，true=原生六维）
+  const [showRaw, setShowRaw] = useState(false)
 
   // “修复妖怪”后端筛选模式
   const [fixMode, setFixMode] = useState(false)
@@ -215,7 +240,7 @@ export default function MonstersPage() {
     }
   }
 
-    // === 新增：全局事件监听（TopBar 发出 kb:crawl 时，这里调用原有 startCrawl） ===
+  // === 新增：全局事件监听（TopBar 发出 kb:crawl 时，这里调用原有 startCrawl） ===
   const startCrawlRef = useRef<() => void>(() => {})
   useEffect(() => { startCrawlRef.current = startCrawl }, [startCrawl])
   useEffect(() => {
@@ -358,7 +383,6 @@ export default function MonstersPage() {
   // ======== 新增：百分比格式化（用于下拉文本显示“攻±X%/受±Y%”） ========
   const formatPct = (v: number) => {
     if (!Number.isFinite(v)) return '0%'
-    // 优先取整数，其次 1 位小数，再次 2 位小数
     const abs = Math.abs(v)
     let num: number
     if (Math.abs(v - Math.round(v)) < 1e-9) num = Math.round(v)
@@ -1117,6 +1141,30 @@ export default function MonstersPage() {
     return ids.length > 0 && ids.every(id => selectedIds.has(id))
   }, [filteredItems, selectedIds])
 
+  // ✅ 依据模式选择统计列、排序选项与骨架列数
+  const STAT_COLS = showRaw ? RAW_COLUMNS : DERIVED_COLUMNS
+  const totalCols = 5 /* 选择+ID+名称+元素+定位 */ + STAT_COLS.length + 3 /* 三组标签 */
+
+  const sortOptions = showRaw
+    ? ([
+        { value: 'updated_at', label: '更新时间' },
+        { value: 'raw_sum', label: '六维总和' },
+        { value: 'hp', label: '体力' },
+        { value: 'attack', label: '攻击' },
+        { value: 'defense', label: '防御' },
+        { value: 'magic', label: '法术' },
+        { value: 'speed', label: '速度' },
+        { value: 'resist', label: '抗性' },
+      ] as {value: SortKey, label: string}[])
+    : ([
+        { value: 'updated_at', label: '更新时间' },
+        { value: 'offense', label: '输出' },
+        { value: 'survive', label: '生存' },
+        { value: 'control', label: '控制' },
+        { value: 'tempo', label: '节奏' },
+        { value: 'pp_pressure', label: '压制' },
+      ] as {value: SortKey, label: string}[])
+
   return (
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
@@ -1145,13 +1193,35 @@ export default function MonstersPage() {
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
             </button>
+
+            {/* 仓库开关 */}
             <button
-                className={`btn ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
+              className={`btn ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
               onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
               title="只显示仓库已有的宠物 / 再次点击还原"
             >
               仓库妖怪
             </button>
+
+            {/* ✅ 新增：显示模式切换（恢复六维 / 派生五维） */}
+            <button
+              className={`btn ${showRaw ? 'btn-primary' : ''} ${BTN_FX}`}
+              title="切换为原始六维显示与排序"
+              onClick={() => {
+                setShowRaw(v => {
+                  const next = !v
+                  // 模式切换时，重置排序键以符合直觉
+                  if (next) setSort('raw_sum')
+                  else setSort('updated_at')
+                  setOrder('desc')
+                  return next
+                })
+                setPage(1)
+              }}
+            >
+              {showRaw ? '派生五维' : '恢复六维'}
+            </button>
+
             {/* 新增：新增妖怪 */}
             <button className={`btn btn-primary ${BTN_FX}`} onClick={startCreate}>新增妖怪</button>
           </div>
@@ -1223,17 +1293,15 @@ export default function MonstersPage() {
           </select>
 
           <div className="grid grid-cols-2 gap-3 col-span-2">
+            {/* ✅ 排序选项随模式切换 */}
             <select
               className="select"
               value={sort}
               onChange={(e) => setSort(e.target.value as SortKey)}
             >
-              <option value="updated_at">更新时间</option>
-              <option value="offense">输出</option>
-              <option value="survive">生存</option>
-              <option value="control">控制</option>
-              <option value="tempo">节奏</option>
-              <option value="pp_pressure">压制</option>
+              {sortOptions.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
             </select>
             <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
               <option value="desc">降序</option>
@@ -1291,20 +1359,19 @@ export default function MonstersPage() {
                 <th className="text-left">名称</th>
                 <th className="w-20 min-w-[64px] text-center">元素</th>
                 <th className="w-20 text-center">定位</th>
-                <th className="w-14 text-center">攻</th>
-                <th className="w-14 text-center">生</th>
-                <th className="w-14 text-center">控</th>
-                <th className="w-14 text-center">速</th>
-                <th className="w-14 text-center">压</th>
+                {/* ✅ 动态：派生五维 / 原生六维 表头 */}
+                {STAT_COLS.map(col => (
+                  <th key={col.key} className="w-14 text-center">{col.label}</th>
+                ))}
                 <th className="text-center">增强</th>
                 <th className="text-center">削弱</th>
                 <th className="text-center">特殊</th>
               </tr>
             </thead>
-            {list.isLoading && <SkeletonRows rows={8} cols={13} />}
+            {list.isLoading && <SkeletonRows rows={8} cols={totalCols} />}
             {!list.isLoading && (
               <tbody>
-                {filteredItems.map((m: any, idx: number) => {
+                {filteredItems.map((m: any) => {
                   const buckets = bucketizeTags(m.tags)
                   const chips = (arr: string[], prefixEmoji: string) =>
                     arr.slice(0, LIMIT_TAGS_PER_CELL).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
@@ -1332,11 +1399,24 @@ export default function MonstersPage() {
                         {m.element}
                       </td>
                       <td className="text-center align-middle py-2.5">{m.role || (m as any).derived?.role_suggested || ''}</td>
-                      <td className="text-center align-middle py-2.5">{m.derived?.offense ?? 0}</td>
-                      <td className="text-center align-middle py-2.5">{m.derived?.survive ?? 0}</td>
-                      <td className="text-center align-middle py-2.5">{m.derived?.control ?? 0}</td>
-                      <td className="text-center align-middle py-2.5">{m.derived?.tempo ?? 0}</td>
-                      <td className="text-center align-middle py-2.5">{(m.derived as any)?.pp_pressure ?? 0}</td>
+
+                      {/* ✅ 动态：派生五维 / 原生六维 单元格 */}
+                      {STAT_COLS.map(col => {
+                        let val: any = 0
+                        if (showRaw) {
+                          val = (m as any)[col.key] ?? 0
+                        } else {
+                          if (col.key === 'pp_pressure') {
+                            val = (m.derived as any)?.pp_pressure ?? 0
+                          } else {
+                            val = (m.derived as any)?.[col.key] ?? 0
+                          }
+                        }
+                        return (
+                          <td key={col.key} className="text-center align-middle py-2.5">{val}</td>
+                        )
+                      })}
+
                       <td className="text-center align-middle py-2.5">
                         <div className="inline-flex flex-wrap gap-1 justify-center">
                           {chips(buckets.buf, '🟢')}
@@ -1357,7 +1437,7 @@ export default function MonstersPage() {
                 })}
                 {filteredItems.length === 0 && (
                   <tr>
-                    <td colSpan={13} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON。</td>
+                    <td colSpan={totalCols} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON。</td>
                   </tr>
                 )}
               </tbody>

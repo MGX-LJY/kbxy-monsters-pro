@@ -83,9 +83,11 @@ def list_warehouse(
       - tag                 : 单标签
       - tags_all            : 多标签 AND（每个都必须命中）
       - type / acq_type     : 获取渠道（包含匹配，ILIKE）
+
     排序（全库 SQL 层）：
-      - updated_at / created_at / name / element / role
-      - offense / survive / control / tempo / pp_pressure（通过 OUTER JOIN MonsterDerived）
+      - 基础列：updated_at / created_at / name / element / role
+      - 原生六维：hp / speed / attack / defense / magic / resist / raw_sum（六维总和）
+      - 派生五维：offense / survive / control / tempo / pp_pressure（通过 OUTER JOIN MonsterDerived）
     """
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
@@ -125,6 +127,8 @@ def list_warehouse(
 
     # ---- 排序键解析 ----
     s = (sort or "updated_at").lower()
+
+    # 派生五维
     derived_map = {
         "offense": MonsterDerived.offense,
         "survive": MonsterDerived.survive,
@@ -134,12 +138,34 @@ def list_warehouse(
         "pp_pressure": MonsterDerived.pp_pressure,
     }
 
-    need_join = s in derived_map
-    if need_join:
+    # 原生六维
+    raw_map = {
+        "hp": Monster.hp,
+        "speed": Monster.speed,
+        "attack": Monster.attack,
+        "defense": Monster.defense,
+        "magic": Monster.magic,
+        "resist": Monster.resist,
+    }
+    raw_sum_expr = (
+        func.coalesce(Monster.hp, 0)
+        + func.coalesce(Monster.speed, 0)
+        + func.coalesce(Monster.attack, 0)
+        + func.coalesce(Monster.defense, 0)
+        + func.coalesce(Monster.magic, 0)
+        + func.coalesce(Monster.resist, 0)
+    )
+
+    if s in derived_map:
         # 派生排序：全库 OUTER JOIN 后 ORDER BY 派生列
-        sort_col = derived_map[s]
         base = base.outerjoin(MonsterDerived, MonsterDerived.monster_id == Monster.id)
-        base = base.order_by(direction(sort_col), asc(Monster.id))
+        base = base.order_by(direction(derived_map[s]), asc(Monster.id))
+    elif s in raw_map:
+        # 原生单列
+        base = base.order_by(direction(raw_map[s]), asc(Monster.id))
+    elif s == "raw_sum":
+        # 六维总和
+        base = base.order_by(direction(raw_sum_expr), asc(Monster.id))
     else:
         # 普通列
         if s not in {"updated_at", "created_at", "name", "element", "role"}:

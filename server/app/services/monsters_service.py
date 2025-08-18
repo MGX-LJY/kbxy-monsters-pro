@@ -9,7 +9,7 @@ from sqlalchemy import select, func, asc, desc, outerjoin, case, distinct, or_
 from ..models import Monster, Tag, MonsterDerived, MonsterSkill, Skill
 
 
-# ---- 排序字段解析：支持派生五维（pp / pp_pressure 都支持） ----
+# ---- 排序字段解析：支持派生五维 + 原始六维 + 六维总和（pp / pp_pressure 都支持） ----
 def _get_sort_target(sort: str):
     s = (sort or "updated_at").lower()
     md = MonsterDerived
@@ -23,7 +23,33 @@ def _get_sort_target(sort: str):
         "pp": md.pp_pressure,  # 别名
     }
     if s in derived_map:
+        # 需要派生表参与排序 -> 需要 join
         return derived_map[s], True
+
+    # ✅ 新增：原始六维排序（不需要 join）
+    raw_map = {
+        "hp": m.hp,
+        "speed": m.speed,
+        "attack": m.attack,
+        "defense": m.defense,
+        "magic": m.magic,
+        "resist": m.resist,
+    }
+    if s in raw_map:
+        return raw_map[s], False
+
+    # ✅ 新增：六维总和排序（多个别名）
+    if s in {"raw_sum", "sum", "stats_sum"}:
+        sum_expr = (
+            func.coalesce(m.hp, 0)
+            + func.coalesce(m.speed, 0)
+            + func.coalesce(m.attack, 0)
+            + func.coalesce(m.defense, 0)
+            + func.coalesce(m.magic, 0)
+            + func.coalesce(m.resist, 0)
+        )
+        return sum_expr, False
+
     if s == "name":
         return m.name, False
     if s == "element":
@@ -99,7 +125,7 @@ def _subq_skill_count_nonempty():
     )
 
 
-# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取/是否需修复 过滤；按派生或更新时间排序 ----
+# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取/是否需修复 过滤；按派生/六维/更新时间排序 ----
 def list_monsters(
     db: Session,
     *,
@@ -131,7 +157,7 @@ def list_monsters(
       - 若提供了 tags_all/any，则忽略旧参数 tag（向后兼容）。
       - 获取途径（acq_type/type_）为包含匹配（ILIKE），更宽松。
       - need_fix=True：筛选出“技能名非空的技能数为 0 或 >5”的怪。
-      - 排序字段支持派生五维；分页/计数在过滤后执行。
+      - 排序字段：支持派生五维、原始六维与六维总和 raw_sum；分页/计数在过滤后执行。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
