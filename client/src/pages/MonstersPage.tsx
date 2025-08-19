@@ -114,10 +114,10 @@ const DERIVED_COLUMNS = [
 const RAW_COLUMNS = [
   { key: 'hp', label: '体' },
   { key: 'attack', label: '攻' },
-  { key: 'defense', label: '防' },
   { key: 'magic', label: '法' },
-  { key: 'speed', label: '速' },
+  { key: 'defense', label: '防' },
   { key: 'resist', label: '抗' },
+  { key: 'speed', label: '速' },
 ] as const
 
 export default function MonstersPage() {
@@ -1151,10 +1151,10 @@ export default function MonstersPage() {
         { value: 'raw_sum', label: '六维总和' },
         { value: 'hp', label: '体力' },
         { value: 'attack', label: '攻击' },
-        { value: 'defense', label: '防御' },
         { value: 'magic', label: '法术' },
-        { value: 'speed', label: '速度' },
+        { value: 'defense', label: '防御' },
         { value: 'resist', label: '抗性' },
+        { value: 'speed', label: '速度' },
       ] as {value: SortKey, label: string}[])
     : ([
         { value: 'updated_at', label: '更新时间' },
