@@ -1,6 +1,6 @@
 // client/src/pages/MonstersPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
@@ -126,10 +126,15 @@ const RAW_COLUMNS = [
 ] as const
 
 export default function MonstersPage() {
+  const queryClient = useQueryClient()
+
   // 搜索 + 筛选
   const [q, setQ] = useState('')
   const [element, setElement] = useState('')           // 元素筛选（中文）
   const [acqType, setAcqType] = useState('')           // 获取途径
+
+  // === 新增：收藏分组筛选 ===
+  const [collectionId, setCollectionId] = useState<number | ''>('')
 
   // === 新增：对面属性（vs）用于标注倍率（仅文本，不着色） ===
   const [vsElement, setVsElement] = useState('')       // 对面属性（中文，空则不启用）
@@ -188,6 +193,15 @@ export default function MonstersPage() {
 
   // 全屏模糊等待弹框 + 真实进度（类型化 + 可取消）
   const [overlay, setOverlay] = useState<OverlayState>({ show: false })
+
+  // —— “加入收藏”弹框 —— //
+  const [collectionDialogOpen, setCollectionDialogOpen] = useState(false)
+  const [collectionForm, setCollectionForm] = useState<{
+    mode: 'existing' | 'new',
+    selectedId: string,
+    name: string,
+    color: string
+  }>({ mode: 'existing', selectedId: '', name: '', color: '' })
 
   // —— 弹框“最短显示 + 淡出关闭” —— //
   const OVERLAY_MIN_VISIBLE_MS = 1000
@@ -290,6 +304,17 @@ export default function MonstersPage() {
         return [] as TagCount[]
       }
     }
+  })
+
+  // =============== 收藏夹列表（用于筛选和加入弹框） ===============
+  const collections = useQuery({
+    queryKey: ['collections'],
+    queryFn: async () => {
+      const d = (await api.get('/collections')).data
+      // 兼容 { items: [...] } 或直接数组
+      return Array.isArray(d?.items) ? d.items : (Array.isArray(d) ? d : [])
+    },
+    staleTime: 2 * 60 * 1000
   })
 
   // =============== 对面属性倍率：分别按“我打他(attack)”和“他打我(defense)”取数，并合并成对显示 ===============
@@ -434,7 +459,7 @@ export default function MonstersPage() {
   const list = useQuery({
   queryKey: ['monsters', {
     q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
-    page, pageSize, warehouseOnly, notOwnedOnly,   // ← 增加 notOwnedOnly
+    page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
   }],
   queryFn: async () => {
     const baseParams: any = {
@@ -446,6 +471,7 @@ export default function MonstersPage() {
       sort, order,
       page,
       page_size: pageSize,
+      collection_id: collectionId || undefined,  // ← 收藏筛选
     }
     if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
     else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
@@ -830,42 +856,43 @@ export default function MonstersPage() {
 
   // —— 工具：根据当前筛选收集“全部要处理的 IDs”（未勾选时用它） —— //
   const collectAllTargetIds = async (): Promise<number[]> => {
-  const useWarehouse = warehouseOnly || notOwnedOnly
-  const endpoint = useWarehouse ? '/warehouse' : '/monsters'
-  const pageSizeFetch = 200
-  let pageNo = 1
-  let total = 0
-  const ids: number[] = []
+    const useWarehouse = warehouseOnly || notOwnedOnly
+    const endpoint = useWarehouse ? '/warehouse' : '/monsters'
+    const pageSizeFetch = 200
+    let pageNo = 1
+    let total = 0
+    const ids: number[] = []
 
-  while (true) {
-    const params: any = {
-      q: q || undefined,
-      element: element || undefined,
-      role: role || undefined,
-      type: acqType || undefined,
-      acq_type: acqType || undefined,
-      sort, order,
-      page: pageNo,
-      page_size: pageSizeFetch
+    while (true) {
+      const params: any = {
+        q: q || undefined,
+        element: element || undefined,
+        role: role || undefined,
+        type: acqType || undefined,
+        acq_type: acqType || undefined,
+        sort, order,
+        page: pageNo,
+        page_size: pageSizeFetch,
+        collection_id: collectionId || undefined, // ← 收藏筛选透传
+      }
+      if (selectedTags.length >= 2) params.tags_all = selectedTags
+      else if (selectedTags.length === 1) params.tag = selectedTags[0]
+
+      if (useWarehouse) {
+        if (warehouseOnly) params.possess = true
+        if (notOwnedOnly)  params.possess = false
+      }
+
+      const resp = await api.get(endpoint, { params: toURLParams(params) })
+      const data = resp.data as MonsterListResp
+      const arr = (data.items as any[]) || []
+      ids.push(...arr.map(x => x.id))
+      total = data.total || ids.length
+      if (arr.length === 0 || ids.length >= total) break
+      pageNo += 1
     }
-    if (selectedTags.length >= 2) params.tags_all = selectedTags
-    else if (selectedTags.length === 1) params.tag = selectedTags[0]
-
-    if (useWarehouse) {
-      if (warehouseOnly) params.possess = true
-      if (notOwnedOnly)  params.possess = false
-    }
-
-    const resp = await api.get(endpoint, { params: toURLParams(params) })
-    const data = resp.data as MonsterListResp
-    const arr = (data.items as any[]) || []
-    ids.push(...arr.map(x => x.id))
-    total = data.total || ids.length
-    if (arr.length === 0 || ids.length >= total) break
-    pageNo += 1
+    return Array.from(new Set(ids))
   }
-  return Array.from(new Set(ids))
-}
 
   // —— “取消 AI 打标签”标记 —— //
   const cancelAITagRef = useRef(false)
@@ -966,7 +993,7 @@ export default function MonstersPage() {
     if (!ids.length && !items.length) return alert('当前没有可处理的记录')
 
     const showOverlay = ids.length > 1
-      if (showOverlay) setOverlay({ show: true, title: '计算中…', sub: '可爱的等等呦 (=^･ω･^=)', closing: true })
+    if (showOverlay) setOverlay({ show: true, title: '计算中…', sub: '可爱的等等呦 (=^･ω･^=)', closing: true })
     try {
       try {
         await api.post('/api/v1/derived/batch', { ids: ids.length ? ids : undefined })
@@ -1005,6 +1032,47 @@ export default function MonstersPage() {
     clearSelection()
     list.refetch()
     wstats.refetch()
+  }
+
+  // —— 批量加入收藏 —— //
+  const openAddToCollection = () => {
+    if (!selectedIds.size) return
+    setCollectionDialogOpen(true)
+  }
+
+  const submitAddToCollection = async () => {
+    if (!selectedIds.size) { setCollectionDialogOpen(false); return }
+    try {
+      let targetId: number | null = null
+
+      if (collectionForm.mode === 'existing') {
+        if (!collectionForm.selectedId) {
+          alert('请选择一个已有分组，或切换到“新建分组”。')
+          return
+        }
+        targetId = Number(collectionForm.selectedId)
+      } else {
+        const name = (collectionForm.name || '').trim()
+        if (!name) { alert('请填写新分组名称'); return }
+        const created = (await api.post('/collections', { name, color: collectionForm.color || undefined })).data
+        // 兼容 {id} 或 { data: {id} } 或 { item: {id} }
+        targetId = created?.id ?? created?.data?.id ?? created?.item?.id
+        if (!targetId) throw new Error('创建分组成功但未返回 ID')
+      }
+
+      const ids = Array.from(selectedIds)
+      await api.post(`/collections/${targetId}/add`, { ids }, { headers: { 'Content-Type': 'application/json' } })
+
+      alert(`已加入收藏（${ids.length} 项）`)
+      setCollectionDialogOpen(false)
+      setCollectionForm({ mode: 'existing', selectedId: '', name: '', color: '' })
+      setSelectedIds(new Set())
+      // 刷新收藏计数 & 列表
+      queryClient.invalidateQueries({ queryKey: ['collections'] })
+      list.refetch()
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || '加入收藏失败')
+    }
   }
 
   // 小工具：更新/增删技能
@@ -1230,8 +1298,8 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签（多选） + 定位 + 排序 */}
-        <div className="grid grid-cols-2 md:grid-cols-9 gap-3">
+        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签（多选） + 定位 + 收藏分组 + 排序 */}
+        <div className="grid grid-cols-2 md:grid-cols-10 gap-3">
           {/* 对面属性——仅用于给“元素下拉”标注百分比并排序 */}
           <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
             <option value="">对面属性</option>
@@ -1282,6 +1350,21 @@ export default function MonstersPage() {
             {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
           </select>
 
+          {/* 收藏分组筛选 */}
+          <select
+            className="select"
+            value={collectionId === '' ? '' : String(collectionId)}
+            onChange={(e) => { const v = e.target.value; setCollectionId(v ? Number(v) as number : ''); setPage(1) }}
+            title="按收藏分组筛选"
+          >
+            <option value="">全部收藏</option>
+            {collections.data?.map((c: any) => (
+              <option key={c.id} value={String(c.id)}>
+                {c.name}{typeof c.items_count === 'number' ? `（${c.items_count}）` : ''}
+              </option>
+            ))}
+          </select>
+
           <div className="grid grid-cols-2 gap-3 col-span-2">
             {/* ✅ 排序选项随模式切换 */}
             <select
@@ -1327,6 +1410,15 @@ export default function MonstersPage() {
             <button className={`btn ${BTN_FX}`} onClick={() => setSelectedIds(new Set())}>清除选择</button>
             <button className={`btn ${BTN_FX}`} onClick={() => bulkSetWarehouse(true)}>加入仓库</button>
             <button className={`btn ${BTN_FX}`} onClick={() => bulkSetWarehouse(false)}>移出仓库</button>
+            {/* 新增：加入收藏 */}
+            <button
+              className={`btn ${BTN_FX}`}
+              onClick={openAddToCollection}
+              disabled={selectedIds.size === 0}
+              title={selectedIds.size === 0 ? '勾选一些后再加入收藏' : '加入收藏分组'}
+            >
+              加入收藏
+            </button>
             <button className={`btn btn-primary ${BTN_FX}`} onClick={bulkDelete}>批量删除</button>
           </div>
         </div>
@@ -1755,6 +1847,77 @@ export default function MonstersPage() {
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 简易的“加入收藏”选择/新建弹框 */}
+      {collectionDialogOpen && (
+        <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center">
+          <div className="bg-white rounded-2xl shadow-xl w-[min(92vw,520px)] p-5 space-y-4">
+            <div className="text-lg font-semibold">加入收藏</div>
+
+            <div className="space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="col-mode"
+                  className="h-4 w-4"
+                  checked={collectionForm.mode === 'existing'}
+                  onChange={() => setCollectionForm(s => ({ ...s, mode: 'existing' }))}
+                />
+                <span>选择已有分组</span>
+              </label>
+              <select
+                className="select w-full"
+                disabled={collectionForm.mode !== 'existing'}
+                value={collectionForm.selectedId}
+                onChange={e => setCollectionForm(s => ({ ...s, selectedId: e.target.value }))}
+              >
+                <option value="">请选择分组</option>
+                {collections.data?.map((c: any) => (
+                  <option key={c.id} value={String(c.id)}>{c.name}{typeof c.items_count === 'number' ? `（${c.items_count}）` : ''}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="col-mode"
+                  className="h-4 w-4"
+                  checked={collectionForm.mode === 'new'}
+                  onChange={() => setCollectionForm(s => ({ ...s, mode: 'new' }))}
+                />
+                <span>新建分组</span>
+              </label>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input
+                  className="input md:col-span-2"
+                  placeholder="分组名称（必填）"
+                  disabled={collectionForm.mode !== 'new'}
+                  value={collectionForm.name}
+                  onChange={e => setCollectionForm(s => ({ ...s, name: e.target.value }))}
+                />
+                <input
+                  className="input"
+                  placeholder="颜色（可选）"
+                  disabled={collectionForm.mode !== 'new'}
+                  value={collectionForm.color}
+                  onChange={e => setCollectionForm(s => ({ ...s, color: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button className={`btn ${BTN_FX}`} onClick={() => { setCollectionDialogOpen(false); setCollectionForm({ mode: 'existing', selectedId: '', name: '', color: '' }) }}>
+                取消
+              </button>
+              <button className={`btn btn-primary ${BTN_FX}`} onClick={submitAddToCollection}>
+                确定
+              </button>
+            </div>
           </div>
         </div>
       )}

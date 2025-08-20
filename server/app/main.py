@@ -1,4 +1,3 @@
-# server/app/main.py
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,9 +6,10 @@ from .config import settings
 from .db import Base, engine
 from .middleware import TraceIDMiddleware
 
-# 常规路由
-from .routes import health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl, warehouse, types
-
+from .routes import (
+    health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl, warehouse, types,
+    collections,  # ← 新增：收藏夹
+)
 
 # 可选路由（不存在也不报错）
 try:
@@ -39,7 +39,6 @@ app.add_middleware(
 # 追踪ID中间件
 app.add_middleware(TraceIDMiddleware)
 
-# 初始化表
 Base.metadata.create_all(bind=engine)
 
 # 注册路由
@@ -53,9 +52,8 @@ app.include_router(recalc.router)
 app.include_router(derive.router)
 app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])
-# 任务相关（如存在则使用）
-app.include_router(tasks.router)
 app.include_router(types.router)
+app.include_router(collections.router, prefix="", tags=["collections"])  # ← 新增：收藏夹
 
 # 可选：tags、roles
 if HAS_TAGS:

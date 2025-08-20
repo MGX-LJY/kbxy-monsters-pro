@@ -68,6 +68,15 @@ class Monster(Base):
     # 1:1 派生五维
     derived = relationship("MonsterDerived", back_populates="monster", uselist=False, cascade="all, delete-orphan")
 
+    # —— 新增：收藏关系（关联对象 + 代理至 Collection）——
+    collection_links = relationship(
+        "CollectionItem",
+        back_populates="monster",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    collections = association_proxy("collection_links", "collection")
+
     def __repr__(self) -> str:
         return f"<Monster id={self.id} name={self.name!r} element={self.element!r}>"
 
@@ -176,6 +185,64 @@ class MonsterSkill(Base):
     def __repr__(self) -> str:
         return f"<MonsterSkill monster_id={self.monster_id} skill_id={self.skill_id} selected={self.selected}>"
 
+
+# ===================== 新增：收藏夹 =====================
+
+class Collection(Base):
+    """
+    收藏夹：按名称唯一（单用户场景）；多用户时再加 user_id 并改为 (user_id, name) 唯一。
+    """
+    __tablename__ = "collections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    color: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    items_count: Mapped[int] = mapped_column(Integer, default=0)  # 冗余计数，批量增删时维护（可选）
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # 关联对象：Collection <-> CollectionItem <-> Monster
+    items = relationship(
+        "CollectionItem",
+        back_populates="collection",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    monsters = association_proxy("items", "monster")
+
+    def __repr__(self) -> str:
+        return f"<Collection id={self.id} name={self.name!r} count={self.items_count}>"
+
+
+class CollectionItem(Base):
+    """
+    关联对象：收藏夹-怪物 多对多
+    复合主键确保唯一：每个怪在同一收藏夹里只能出现一次。
+    """
+    __tablename__ = "collection_items"
+
+    collection_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    monster_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("monsters.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    collection = relationship("Collection", back_populates="items")
+    monster = relationship("Monster", back_populates="collection_links")
+
+    __table_args__ = (
+        Index("ix_collection_items_monster_id", "monster_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<CollectionItem collection_id={self.collection_id} monster_id={self.monster_id}>"
+
+
 # —— 任务/导入作业：保持不变 —— #
 
 class ImportJob(Base):
@@ -202,3 +269,17 @@ class Task(Base):
 
     def __repr__(self) -> str:
         return f"<Task id={self.id} type={self.type!r} status={self.status!r}>"
+
+
+# ===================== 惰性建表工具 =====================
+
+def ensure_collections_tables(bind) -> None:
+    """
+    在首次使用收藏夹能力前调用：
+        ensure_collections_tables(db.get_bind())
+    将仅为 Collection / CollectionItem 两张表执行 create_all（幂等）。
+    """
+    Base.metadata.create_all(
+        bind,
+        tables=[Collection.__table__, CollectionItem.__table__],
+    )

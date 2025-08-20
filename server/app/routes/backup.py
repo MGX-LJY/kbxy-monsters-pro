@@ -1,4 +1,3 @@
-# server/app/routes/backup.py
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Body, HTTPException
@@ -16,6 +15,8 @@ from ..models import (
     Tag,
     MonsterSkill,   # 关系表
     Skill,          # 技能主表：用于五元组唯一
+    Collection,     # ← 新增：收藏夹
+    CollectionItem, # ← 新增：收藏夹成员
 )
 from ..services.monsters_service import list_monsters
 
@@ -55,6 +56,9 @@ def parse_dt_or_none(s: Any) -> Optional[datetime]:
         return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except Exception:
         return None
+
+def dt_to_iso(dt: Optional[datetime]) -> Optional[str]:
+    return dt.isoformat() if isinstance(dt, datetime) else None
 
 def valid_tag(code: str) -> bool:
     return isinstance(code, str) and (
@@ -136,6 +140,7 @@ def backup_json(db: Session = Depends(get_db)):
     备份 JSON（适配新库结构）
     - 怪物字段：id/name/element/role/possess/new_type/type/method/六维/explain_json.raw_stats
     - 技能字段：按新唯一键导出 name/element/kind/power/description
+    - 收藏夹：id/name/color,last_used_at,created_at,updated_at,items:[monster_id...]
     - 不导出派生表；如有需要可在客户端或恢复后重算
     """
     monsters = db.execute(
@@ -145,7 +150,7 @@ def backup_json(db: Session = Depends(get_db)):
         )
     ).scalars().all()
 
-    payload = []
+    monsters_payload = []
     for m in monsters:
         raw = (m.explain_json or {}).get("raw_stats") or {}
         skills_out = []
@@ -161,7 +166,7 @@ def backup_json(db: Session = Depends(get_db)):
                 "description": s.description or "",
             })
 
-        payload.append({
+        monsters_payload.append({
             "id": m.id,
             "name": getattr(m, "name", None),
             "element": m.element,
@@ -179,11 +184,31 @@ def backup_json(db: Session = Depends(get_db)):
             "raw_stats": raw,
             "tags": [t.name for t in (m.tags or [])],
             "skills": skills_out,
-            "created_at": getattr(m, "created_at", None).isoformat() if getattr(m, "created_at", None) else None,
-            "updated_at": getattr(m, "updated_at", None).isoformat() if getattr(m, "updated_at", None) else None,
+            "created_at": dt_to_iso(getattr(m, "created_at", None)),
+            "updated_at": dt_to_iso(getattr(m, "updated_at", None)),
         })
 
-    data = json.dumps({"monsters": payload}, ensure_ascii=False, indent=2)
+    # 收藏夹导出
+    collections = db.execute(
+        select(Collection).options(selectinload(Collection.items))
+    ).scalars().all()
+
+    collections_payload = []
+    for c in collections:
+        collections_payload.append({
+            "id": c.id,
+            "name": c.name,
+            "color": c.color,
+            "last_used_at": dt_to_iso(getattr(c, "last_used_at", None)),
+            "created_at": dt_to_iso(getattr(c, "created_at", None)),
+            "updated_at": dt_to_iso(getattr(c, "updated_at", None)),
+            "items": [ci.monster_id for ci in (c.items or [])],
+        })
+
+    data = json.dumps(
+        {"monsters": monsters_payload, "collections": collections_payload},
+        ensure_ascii=False, indent=2
+    )
     return StreamingResponse(
         iter([data]),
         media_type="application/json",
@@ -215,22 +240,28 @@ def bulk_delete_post(payload: BulkDeleteIn = Body(...), db: Session = Depends(ge
 # ---------- 恢复 / 导入 JSON ----------
 @router.post("/backup/restore_json")
 def restore_json(
-    payload: Any = Body(..., description="支持 {\"monsters\": [...]} 或直接 [...]."),
-    replace_links: bool = True,  # True：替换原有 tags/skills 关联；False：追加合并
+    payload: Any = Body(..., description="支持 {\"monsters\": [...], \"collections\": [...]} 或直接 [...](仅怪物)。"),
+    replace_links: bool = True,  # True：替换原有 tags/skills/收藏夹成员；False：追加合并
     db: Session = Depends(get_db)
 ):
     """
     从备份 JSON 恢复（兼容你的示例结构）：
-    - id 存在则按 id upsert；否则按 (name, element) 兜底匹配
+    - 怪物：id 存在则按 id upsert；否则按 (name, element) 兜底匹配
     - 仅接受 buf_/deb_/util_ 标签；其余忽略
     - 技能按 (name, element, kind, power, description) 五元组去重，自动建 Skill，并用 MonsterSkill 关联
+    - 收藏夹：按 id 或 name upsert，可选择替换/合并成员（默认替换）
     - 默认**替换**原有关联（replace_links=True）
     - 返回导入汇总
     """
-    # 解析 monsters 数组
-    monsters_list: List[Dict[str, Any]]
-    if isinstance(payload, dict) and "monsters" in payload and isinstance(payload["monsters"], list):
-        monsters_list = payload["monsters"]
+    # 解析 monsters / collections 数组
+    monsters_list: List[Dict[str, Any]] = []
+    collections_list: List[Dict[str, Any]] = []
+
+    if isinstance(payload, dict):
+        if isinstance(payload.get("monsters"), list):
+            monsters_list = payload["monsters"]
+        if isinstance(payload.get("collections"), list):
+            collections_list = payload["collections"]
     elif isinstance(payload, list):
         monsters_list = payload
     else:
@@ -241,7 +272,12 @@ def restore_json(
     linked_skills = 0
     linked_tags = 0
 
+    coll_created = 0
+    coll_updated = 0
+    coll_members_linked = 0
+
     with db.begin():
+        # ===== 怪物部分 =====
         for raw_m in monsters_list:
             if not isinstance(raw_m, dict):
                 continue
@@ -405,12 +441,104 @@ def restore_json(
             else:
                 updated_cnt += 1
 
+        # ===== 收藏夹部分（可选）=====
+        for raw_c in collections_list:
+            if not isinstance(raw_c, dict):
+                continue
+
+            cid = to_int_or_none(raw_c.get("id"))
+            cname = clean_text(raw_c.get("name"))
+            ccolor = clean_text(raw_c.get("color"))
+            last_used_at = parse_dt_or_none(raw_c.get("last_used_at"))
+            created_at = parse_dt_or_none(raw_c.get("created_at"))
+            updated_at = parse_dt_or_none(raw_c.get("updated_at"))
+            items = raw_c.get("items") or []
+
+            # 定位收藏夹：优先 id，其次 name
+            col: Optional[Collection] = None
+            if cid:
+                col = db.get(Collection, cid)
+            if not col and cname:
+                col = db.scalar(select(Collection).where(Collection.name == cname))
+
+            is_new = False
+            if not col:
+                col = Collection(name=cname or (cname or f"收藏夹-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"))
+                if cid:
+                    try:
+                        col.id = cid
+                    except Exception:
+                        pass
+                is_new = True
+                db.add(col)
+                db.flush()
+
+            # 更新基本信息
+            if cname:
+                col.name = cname
+            col.color = ccolor or col.color
+            if last_used_at:
+                col.last_used_at = last_used_at
+            if created_at:
+                col.created_at = created_at
+            if updated_at:
+                col.updated_at = updated_at
+
+            db.flush()
+
+            # 成员处理
+            ids_unique = []
+            seen_ids = set()
+            for v in items:
+                iv = to_int_or_none(v)
+                if iv and iv not in seen_ids:
+                    seen_ids.add(iv)
+                    ids_unique.append(iv)
+
+            if replace_links:
+                # 清空原成员
+                db.execute(delete(CollectionItem).where(CollectionItem.collection_id == col.id))
+                db.flush()
+
+            # 逐个关联（存在即跳过）
+            for mid in ids_unique:
+                if not db.get(Monster, mid):
+                    continue
+                existed_rel = db.scalar(
+                    select(CollectionItem).where(
+                        CollectionItem.collection_id == col.id,
+                        CollectionItem.monster_id == mid,
+                    )
+                )
+                if not existed_rel:
+                    db.add(CollectionItem(collection_id=col.id, monster_id=mid))
+                    coll_members_linked += 1
+
+            if is_new:
+                coll_created += 1
+            else:
+                coll_updated += 1
+
     return {
         "ok": True,
-        "received": len(monsters_list),
-        "created": created_cnt,
-        "updated": updated_cnt,
-        "linked_tags": linked_tags,
-        "linked_skills": linked_skills,
-        "note": "按 id 优先 upsert；未提供 id 时按 (name, element) 匹配；tags 仅导入 buf_/deb_/util_*；技能用五元组唯一。",
+        "received": {
+            "monsters": len(monsters_list),
+            "collections": len(collections_list),
+        },
+        "monsters": {
+            "created": created_cnt,
+            "updated": updated_cnt,
+            "linked_tags": linked_tags,
+            "linked_skills": linked_skills,
+        },
+        "collections": {
+            "created": coll_created,
+            "updated": coll_updated,
+            "members_linked": coll_members_linked,
+        },
+        "note": (
+            "按 id 优先 upsert；未提供 id 时按 (name, element) 匹配；"
+            "tags 仅导入 buf_/deb_/util_*；技能用五元组唯一；"
+            "收藏夹按 id 或 name upsert，成员默认替换（可用 replace_links=False 合并）。"
+        ),
     }
