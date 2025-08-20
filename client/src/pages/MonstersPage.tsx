@@ -1264,7 +1264,7 @@ export default function MonstersPage() {
 
             {/* 显示模式切换（原始六维 / 派生五维） */}
             <button
-              className={`btn ${showRaw ? 'btn-primary' : ''} ${BTN_FX}`}
+              className={`btn ${!showRaw ? 'btn-primary' : ''} ${BTN_FX}`}
               title="切换显示：原始六维 / 派生五维"
               onClick={() => {
                 setShowRaw(v => {
@@ -1281,7 +1281,7 @@ export default function MonstersPage() {
             </button>
 
             {/* 新增：新增妖怪 */}
-            <button className={`btn btn-primary ${BTN_FX}`} onClick={startCreate}>新增妖怪</button>
+            <button className={`btn ${BTN_FX}`} onClick={startCreate}>新增妖怪</button>
           </div>
         </div>
 
