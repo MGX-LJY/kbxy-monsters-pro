@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Body, Query  # ← 加入 Query
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
 
 from pydantic import BaseModel
 
@@ -30,14 +30,15 @@ def get_db():
         db.close()
 
 
-# ---- 列表（仅仓库内）----
+# ---- 列表（拥有过滤：possess=True/False/None）----
 @router.get("/warehouse", response_model=MonsterList)
 def warehouse_list(
+    possess: Optional[bool] = Query(True, description="True=仅已拥有；False=仅未拥有；None=全部"),
     q: Optional[str] = Query(None),
     element: Optional[str] = Query(None),
     role: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
-    # ↓↓↓ 新增：多标签 AND + 获取渠道（兼容两个参数名）
+    # 多标签 AND + 获取渠道（兼容两个参数名）
     tags_all: Optional[List[str]] = Query(None),
     type: Optional[str] = Query(None),
     acq_type: Optional[str] = Query(None),
@@ -49,6 +50,7 @@ def warehouse_list(
 ):
     items, total = list_warehouse(
         db,
+        possess=possess,
         q=q,
         element=element,
         role=role,
@@ -97,7 +99,7 @@ def warehouse_list(
             )
         )
 
-    etag = f'W/"warehouse:{total}"'
+    etag = f'W:"warehouse:{total}:{possess}"'
     return {
         "items": out,
         "total": total,
@@ -147,4 +149,5 @@ def api_bulk_set(payload: BulkSetIn = Body(...), db: Session = Depends(get_db)):
 # ---- 仓库统计 ----
 @router.get("/warehouse/stats")
 def api_warehouse_stats(db: Session = Depends(get_db)):
+    # 返回 {total, owned_total, not_owned_total, in_warehouse}
     return warehouse_stats(db)

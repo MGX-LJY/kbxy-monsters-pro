@@ -21,7 +21,12 @@ type SkillDTO = {
 }
 
 type StatsDTO = { total: number; with_skills?: number; tags_total?: number }
-type WarehouseStatsDTO = { warehouse_total?: number; total?: number }
+type WarehouseStatsDTO = {
+  total?: number
+  owned_total?: number
+  not_owned_total?: number
+  in_warehouse?: number // 兼容字段
+}
 
 // ✅ 扩充排序键：加入原生六维与六维总和
 type SortKey =
@@ -136,15 +141,13 @@ export default function MonstersPage() {
   const selectedTags = useMemo(() => [tagBuf, tagDeb, tagUtil].filter(Boolean) as string[], [tagBuf, tagDeb, tagUtil])
 
   const [role, setRole] = useState('')
-  const [sort, setSort] = useState<SortKey>('updated_at')
+  // ✅ 原始六维默认展示 + 默认按六维总和排序
+  const [showRaw, setShowRaw] = useState(true)
+  const [sort, setSort] = useState<SortKey>('raw_sum')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
-  const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库
 
-  // ✅ 新增：显示模式（false=派生五维，true=原生六维）
-  const [showRaw, setShowRaw] = useState(false)
-
-  // “修复妖怪”后端筛选模式
-  const [fixMode, setFixMode] = useState(false)
+  const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库（已拥有）
+  const [notOwnedOnly, setNotOwnedOnly] = useState(false)   // 仅看未获取
 
   // 分页
   const [page, setPage] = useState(1)
@@ -414,9 +417,7 @@ export default function MonstersPage() {
         return { value, text, group, advMag, disadvMag }
       })
 
-      // 排序规则：
-      // 组别优先：攻优+受优(0) > 受优(1) > 攻优(2) > 中立(3) > 攻劣(4) > 受劣(5) > 全劣(6)
-      // 同组内：前3组按优势强度降序；中立按名称拼音；后三组按劣势强度升序（越不差越靠前）
+      // 排序规则
       opts.sort((a, b) => {
         if (a.group !== b.group) return a.group - b.group
         if (a.group <= 2) return b.advMag - a.advMag
@@ -426,43 +427,42 @@ export default function MonstersPage() {
 
       return opts.map(({ value, text }) => ({ value, text }))
     }
-    // 无 vs 或请求失败时，使用原始列表
     return elementOptionsFull.map(el => ({ value: el, text: el }))
   }, [vsElement, effectsPairByType])
 
-  // —— 这里替换 MonstersPage.tsx 中的 list = useQuery({...}) 的 queryFn —— //
+  // —— 列表数据 —— //
   const list = useQuery({
-    queryKey: ['monsters', {
-      q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
-      page, pageSize, warehouseOnly, fixMode
-    }],
-    queryFn: async () => {
-      const baseParams: any = {
-        q: q || undefined,
-        element: element || undefined,
-        role: role || undefined,
-        type: acqType || undefined,
-        acq_type: acqType || undefined,
-        sort, order,
-        page,
-        page_size: pageSize,
-        need_fix: fixMode ? true : undefined,
-      }
-      if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
-      else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
+  queryKey: ['monsters', {
+    q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
+    page, pageSize, warehouseOnly, notOwnedOnly,   // ← 增加 notOwnedOnly
+  }],
+  queryFn: async () => {
+    const baseParams: any = {
+      q: q || undefined,
+      element: element || undefined,
+      role: role || undefined,
+      type: acqType || undefined,
+      acq_type: acqType || undefined,
+      sort, order,
+      page,
+      page_size: pageSize,
+    }
+    if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
+    else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
 
-      if (warehouseOnly) {
-        // ✅ 仓库模式：总是走 /warehouse（支持多标签 AND / 获取渠道等）
-        return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
-      }
+    // ✅ 只要“仓库”或“未获取”任一开启，就走 /warehouse
+    if (warehouseOnly || notOwnedOnly) {
+      if (warehouseOnly) baseParams.possess = true
+      if (notOwnedOnly)  baseParams.possess = false
+      return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
+    }
 
-      // 非仓库模式
-      return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
-    },
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  })
-
+    // 默认：全库
+    return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
+  },
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+})
   // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
     if (tags.data && tags.data.length > 0) return tags.data
@@ -509,10 +509,9 @@ export default function MonstersPage() {
   })
   // 仓库数量（严格以 /warehouse 的 total 为准）
   const wstats = useQuery({
-    queryKey: ['warehouse_stats_total_only'],
+    queryKey: ['warehouse_stats_v2'],
     queryFn: async () => {
-      const d = (await api.get('/warehouse', { params: { page: 1, page_size: 1 } })).data as MonsterListResp
-      return { warehouse_total: d?.total ?? 0 } as WarehouseStatsDTO
+      return (await api.get('/warehouse/stats')).data as WarehouseStatsDTO
     }
   })
 
@@ -831,35 +830,42 @@ export default function MonstersPage() {
 
   // —— 工具：根据当前筛选收集“全部要处理的 IDs”（未勾选时用它） —— //
   const collectAllTargetIds = async (): Promise<number[]> => {
-    const endpoint = warehouseOnly ? '/warehouse' : '/monsters'
-    const pageSizeFetch = 200
-    let pageNo = 1
-    let total = 0
-    const ids: number[] = []
-    while (true) {
-      const params: any = {
-        q: q || undefined,
-        element: element || undefined,
-        role: role || undefined,
-        type: acqType || undefined,
-        acq_type: acqType || undefined,
-        sort, order,
-        page: pageNo,
-        page_size: pageSizeFetch
-      }
-      if (selectedTags.length >= 2) params.tags_all = selectedTags
-      else if (selectedTags.length === 1) params.tag = selectedTags[0]
+  const useWarehouse = warehouseOnly || notOwnedOnly
+  const endpoint = useWarehouse ? '/warehouse' : '/monsters'
+  const pageSizeFetch = 200
+  let pageNo = 1
+  let total = 0
+  const ids: number[] = []
 
-      const resp = await api.get(endpoint, { params })
-      const data = resp.data as MonsterListResp
-      const arr = (data.items as any[]) || []
-      ids.push(...arr.map(x => x.id))
-      total = data.total || ids.length
-      if (arr.length === 0 || ids.length >= total) break
-      pageNo += 1
+  while (true) {
+    const params: any = {
+      q: q || undefined,
+      element: element || undefined,
+      role: role || undefined,
+      type: acqType || undefined,
+      acq_type: acqType || undefined,
+      sort, order,
+      page: pageNo,
+      page_size: pageSizeFetch
     }
-    return Array.from(new Set(ids))
+    if (selectedTags.length >= 2) params.tags_all = selectedTags
+    else if (selectedTags.length === 1) params.tag = selectedTags[0]
+
+    if (useWarehouse) {
+      if (warehouseOnly) params.possess = true
+      if (notOwnedOnly)  params.possess = false
+    }
+
+    const resp = await api.get(endpoint, { params: toURLParams(params) })
+    const data = resp.data as MonsterListResp
+    const arr = (data.items as any[]) || []
+    ids.push(...arr.map(x => x.id))
+    total = data.total || ids.length
+    if (arr.length === 0 || ids.length >= total) break
+    pageNo += 1
   }
+  return Array.from(new Set(ids))
+}
 
   // —— “取消 AI 打标签”标记 —— //
   const cancelAITagRef = useRef(false)
@@ -870,10 +876,9 @@ export default function MonstersPage() {
       ? Array.from(selectedIds)
       : await collectAllTargetIds()
 
-    // 静默：没有目标就直接返回（不弹窗）
     if (!targetIds.length) return
 
-    // 阶段 1：AI 打标签（保留进度与取消）
+    // 阶段 1：AI 打标签
     cancelAITagRef.current = false
     setOverlay({
       show: true,
@@ -893,7 +898,6 @@ export default function MonstersPage() {
       for (const id of targetIds) {
         if (cancelAITagRef.current) { cancelled = true; break }
         try {
-          // 优先 AI 接口，失败则回退规则接口
           try {
             await api.post(`/tags/monsters/${id}/retag_ai`)
           } catch {
@@ -913,7 +917,7 @@ export default function MonstersPage() {
         }
       }
 
-      // 阶段 2：仅在未取消时做“统一分析”（静默，不提示）
+      // 阶段 2：统一分析
       if (!cancelled) {
         setOverlay({
           show: true,
@@ -923,13 +927,11 @@ export default function MonstersPage() {
           closing: true
         })
         try {
-          // 批量接口优先
           await api.post('/api/v1/derived/batch', { ids: targetIds })
         } catch {
           try {
             await api.post('/derived/batch', { ids: targetIds })
           } catch {
-            // 兜底逐条
             for (const id of targetIds) {
               try { await api.get(`/monsters/${id}/derived`) } catch {}
             }
@@ -937,7 +939,6 @@ export default function MonstersPage() {
         }
       }
     } finally {
-      // 刷新数据（静默）
       try {
         await Promise.all([
           list.refetch(),
@@ -952,7 +953,6 @@ export default function MonstersPage() {
         }
       } catch {}
 
-      // 关键：完成或取消后，清除所有勾选；关闭进度；复位取消标记（静默）
       setSelectedIds(new Set())
       smoothCloseOverlay()
       cancelAITagRef.current = false
@@ -981,14 +981,12 @@ export default function MonstersPage() {
         }
       }
 
-      // 成功后静默，仅刷新数据
       await list.refetch()
       if (selected) {
         const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
         setSelected(fresh)
       }
     } catch (e:any) {
-      // 仅失败时提示
       alert(e?.response?.data?.detail || '分析失败')
     } finally {
       if (showOverlay) smoothCloseOverlay()
@@ -1030,12 +1028,7 @@ export default function MonstersPage() {
   const filteredItems = useMemo(() => {
     let arr = (list.data?.items as any[]) || []
 
-    // 仓库开关：只有当数据里真的带 possess 字段时才做本地兜底；否则相信服务端分页
-    if (warehouseOnly && arr.some(m => typeof m?.possess === 'boolean')) {
-      arr = arr.filter(m => m.possess === true)
-    }
-
-    // 多标签 AND：不再用 every(...) 早退；用 (m.tags || []) 兜底
+    // 多标签 AND：用 (m.tags || []) 兜底
     if (selectedTags.length > 0) {
       arr = arr.filter(m => {
         const mtags: string[] = Array.isArray(m.tags) ? m.tags : []
@@ -1044,7 +1037,7 @@ export default function MonstersPage() {
     }
 
     return arr
-  }, [list.data, warehouseOnly, selectedTags])
+  }, [list.data, warehouseOnly, notOwnedOnly, selectedTags])
 
   // —— 新建：初始化清空并打开编辑抽屉 —— //
   const startCreate = () => {
@@ -1178,41 +1171,38 @@ export default function MonstersPage() {
                    onChange={onRestoreFile}/>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {/* 修复妖怪（走后端 need_fix） */}
-            <button
-              className={`btn ${BTN_FX} ${fixMode ? 'btn-primary' : ''}`}
-              title="筛选出需要修复的妖怪（后端分页）"
-              aria-pressed={fixMode}
-              onClick={() => { setFixMode(v => !v); setPage(1) }}
-              disabled={list.isLoading}
-            >
-              {fixMode ? '修复妖怪' : '修复妖怪'}
-            </button>
 
-            {/* 文案精简 */}
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
             </button>
 
-            {/* 仓库开关 */}
+            {/* 仓库开关（已拥有） */}
             <button
               className={`btn ${warehouseOnly ? 'btn-primary' : ''} ${BTN_FX}`}
-              onClick={() => { setWarehouseOnly(v => !v); setPage(1) }}
+              onClick={() => { setWarehouseOnly(v => { const next = !v; if (next) setNotOwnedOnly(false); return next }); setPage(1) }}
               title="只显示仓库已有的宠物 / 再次点击还原"
             >
               仓库妖怪
             </button>
 
-            {/* ✅ 新增：显示模式切换（恢复六维 / 派生五维） */}
+            {/* 未获取妖怪（未拥有） */}
+            <button
+              className={`btn ${notOwnedOnly ? 'btn-primary' : ''} ${BTN_FX}`}
+              onClick={() => { setNotOwnedOnly(v => { const next = !v; if (next) setWarehouseOnly(false); return next }); setPage(1) }}
+              title="只显示未拥有的宠物 / 再次点击还原"
+            >
+              未获取妖怪
+            </button>
+
+            {/* 显示模式切换（原始六维 / 派生五维） */}
             <button
               className={`btn ${showRaw ? 'btn-primary' : ''} ${BTN_FX}`}
-              title="切换为原始六维显示与排序"
+              title="切换显示：原始六维 / 派生五维"
               onClick={() => {
                 setShowRaw(v => {
                   const next = !v
-                  // 模式切换时，重置排序键以符合直觉
-                  if (next) setSort('raw_sum')
-                  else setSort('updated_at')
+                  if (next) setSort('raw_sum')   // 切到原始六维：默认六维总和
+                  else setSort('updated_at')     // 切到派生五维：默认更新时间
                   setOrder('desc')
                   return next
                 })
@@ -1240,9 +1230,9 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签 + 定位 + 排序 */}
+        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签（多选） + 定位 + 排序 */}
         <div className="grid grid-cols-2 md:grid-cols-9 gap-3">
-          {/* 新增：对面属性——仅用于给“元素下拉”标注百分比并排序 */}
+          {/* 对面属性——仅用于给“元素下拉”标注百分比并排序 */}
           <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
             <option value="">对面属性</option>
             {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
@@ -1317,7 +1307,9 @@ export default function MonstersPage() {
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
             <div className="text-xs text-gray-500">仓库妖怪数量</div>
             <div className="text-xl font-semibold">
-              {typeof wstats.data?.warehouse_total === 'number' ? wstats.data.warehouse_total : '—'}
+              {typeof wstats.data?.owned_total === 'number'
+                  ? wstats.data.owned_total
+                  : (typeof wstats.data?.in_warehouse === 'number' ? wstats.data.in_warehouse : '—')}
             </div>
           </div>
           <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 text-center">
