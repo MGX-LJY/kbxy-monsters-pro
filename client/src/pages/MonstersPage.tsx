@@ -8,7 +8,6 @@ import Pagination from '../components/Pagination'
 import SideDrawer from '../components/SideDrawer'
 import { useSettings } from '../context/SettingsContext'
 
-type RoleCount = { name: string, count: number }
 
 // 适配新后端：技能带 element/kind/power/description
 type SkillDTO = {
@@ -145,7 +144,6 @@ export default function MonstersPage() {
   const [tagUtil, setTagUtil] = useState('')
   const selectedTags = useMemo(() => [tagBuf, tagDeb, tagUtil].filter(Boolean) as string[], [tagBuf, tagDeb, tagUtil])
 
-  const [role, setRole] = useState('')
   // ✅ 原始六维默认展示 + 默认按六维总和排序
   const [showRaw, setShowRaw] = useState(true)
   const [sort, setSort] = useState<SortKey>('raw_sum')
@@ -458,14 +456,13 @@ export default function MonstersPage() {
   // —— 列表数据 —— //
   const list = useQuery({
   queryKey: ['monsters', {
-    q, element, tagBuf, tagDeb, tagUtil, role, acqType, sort, order,
+    q, element, tagBuf, tagDeb, tagUtil, acqType, sort, order,
     page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
   }],
   queryFn: async () => {
     const baseParams: any = {
       q: q || undefined,
       element: element || undefined,
-      role: role || undefined,
       type: acqType || undefined,
       acq_type: acqType || undefined,
       sort, order,
@@ -516,17 +513,6 @@ export default function MonstersPage() {
     const util = source.filter(t => t.name.startsWith('util_')).sort(sortFn)
     return { bufCounts: buf, debCounts: deb, utilCounts: util }
   }, [tags.data, localTagCounts, tagI18n.data])
-
-  const roles = useQuery({
-    queryKey: ['roles'],
-    queryFn: async () => {
-      try {
-        return (await api.get('/roles')).data as RoleCount[]
-      } catch {
-        return [] as RoleCount[]
-      }
-    }
-  })
 
   // 总数（统计栏保留原样）
   const stats = useQuery({
@@ -867,7 +853,6 @@ export default function MonstersPage() {
       const params: any = {
         q: q || undefined,
         element: element || undefined,
-        role: role || undefined,
         type: acqType || undefined,
         acq_type: acqType || undefined,
         sort, order,
@@ -1075,6 +1060,57 @@ export default function MonstersPage() {
     }
   }
 
+  // —— 批量从当前收藏组移除（新增） —— //
+  const removeSelectedFromCollection = async () => {
+    if (!collectionId) return
+    const ids = Array.from(selectedIds)
+    if (!ids.length) return
+    if (!window.confirm(`从当前收藏组移除 ${ids.length} 项？`)) return
+    try {
+      await api.post(`/collections/${collectionId}/remove`, { ids }, { headers: { 'Content-Type': 'application/json' } })
+      setSelectedIds(new Set())
+      await Promise.all([
+        list.refetch(),
+        queryClient.invalidateQueries({ queryKey: ['collections'] }),
+      ])
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || '移出失败')
+    }
+  }
+
+  // —— 删除当前收藏组（新增） —— //
+  const deleteCurrentCollection = async () => {
+    if (!collectionId) return
+    if (!window.confirm('删除该收藏组？组内关联会被清空（妖怪不会删除）。')) return
+    try {
+      await api.delete(`/collections/${collectionId}`)
+      setCollectionId('')
+      setSelectedIds(new Set())
+      await Promise.all([
+        list.refetch(),
+        queryClient.invalidateQueries({ queryKey: ['collections'] }),
+      ])
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || '删除失败')
+    }
+  }
+
+  // —— 重命名当前收藏组（新增） —— //
+  const openRenameCollection = async () => {
+    if (!collectionId) return
+    const cur = collections.data?.find((c:any) => String(c.id) === String(collectionId))
+    const name = window.prompt('输入新的分组名称：', cur?.name || '')
+    if (name == null) return
+    const trimmed = name.trim()
+    if (!trimmed) { alert('名称不能为空'); return }
+    try {
+      await api.patch(`/collections/${collectionId}`, { name: trimmed })
+      await queryClient.invalidateQueries({ queryKey: ['collections'] })
+    } catch (e:any) {
+      alert(e?.response?.data?.detail || e?.message || '重命名失败')
+    }
+  }
+
   // 小工具：更新/增删技能
   const updateSkill = (idx: number, patch: Partial<SkillDTO>) => {
     setEditSkills(prev => prev.map((s, i) => i === idx ? { ...s, ...patch } : s))
@@ -1204,7 +1240,7 @@ export default function MonstersPage() {
 
   // ✅ 依据模式选择统计列、排序选项与骨架列数
   const STAT_COLS = showRaw ? RAW_COLUMNS : DERIVED_COLUMNS
-  const totalCols = 5 /* 选择+ID+名称+元素+定位 */ + STAT_COLS.length + 3 /* 三组标签 */
+  const totalCols = 4 /* 选择+ID+名称+元素 */ + STAT_COLS.length + 3 /* 三组标签 */
 
   const sortOptions = showRaw
     ? ([
@@ -1345,11 +1381,6 @@ export default function MonstersPage() {
             )}
           </select>
 
-          <select className="select" value={role} onChange={e => { setRole(e.target.value); setPage(1) }}>
-            <option value="">定位</option>
-            {roles.data?.map(r => <option key={r.name} value={r.name}>{r.count ? `${r.name}（${r.count}）` : r.name}</option>)}
-          </select>
-
           {/* 收藏分组筛选 */}
           <select
             className="select"
@@ -1364,6 +1395,14 @@ export default function MonstersPage() {
               </option>
             ))}
           </select>
+
+          {/* 新增：收藏组管理按钮（仅在选择了分组时显示） */}
+          {collectionId && (
+            <div className="flex items-center gap-2 col-span-2 md:col-span-2">
+              <button className={`btn ${BTN_FX}`} onClick={openRenameCollection} title="重命名当前收藏组">重命名收藏组</button>
+              <button className={`btn ${BTN_FX}`} onClick={deleteCurrentCollection} title="删除当前收藏组">删除收藏组</button>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3 col-span-2">
             {/* ✅ 排序选项随模式切换 */}
@@ -1419,6 +1458,16 @@ export default function MonstersPage() {
             >
               加入收藏
             </button>
+            {/* 新增：从当前收藏组移除（仅当已选择收藏组时显示） */}
+            {collectionId && selectedIds.size > 0 && (
+              <button
+                className={`btn ${BTN_FX}`}
+                onClick={removeSelectedFromCollection}
+                title="从当前收藏组移除选中的妖怪"
+              >
+                从收藏移除
+              </button>
+            )}
             <button className={`btn btn-primary ${BTN_FX}`} onClick={bulkDelete}>批量删除</button>
           </div>
         </div>
@@ -1442,7 +1491,6 @@ export default function MonstersPage() {
                 <th className="w-16 text-center">ID</th>
                 <th className="text-left">名称</th>
                 <th className="w-20 min-w-[64px] text-center">元素</th>
-                <th className="w-20 text-center">定位</th>
                 {/* ✅ 动态：派生五维 / 原生六维 表头 */}
                 {STAT_COLS.map(col => (
                   <th key={col.key} className="w-14 text-center">{col.label}</th>
@@ -1482,8 +1530,6 @@ export default function MonstersPage() {
                       <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
                         {m.element}
                       </td>
-                      <td className="text-center align-middle py-2.5">{m.role || (m as any).derived?.role_suggested || ''}</td>
-
                       {/* ✅ 动态：派生五维 / 原生六维 单元格 */}
                       {STAT_COLS.map(col => {
                         let val: any = 0
@@ -1559,7 +1605,6 @@ export default function MonstersPage() {
                       const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
                         role_suggested?: string, tags?: string[]
                       }
-                      if (typeof d?.role_suggested === 'string') setEditRole(d.role_suggested)
                       if (Array.isArray(d?.tags)) {
                         const filtered = d.tags.filter(t => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
                         setEditTags(filtered.join(' '))
@@ -1604,14 +1649,6 @@ export default function MonstersPage() {
                       <select className="select" value={editElement} onChange={e => setEditElement(e.target.value)}>
                         <option value="">未设置</option>
                         {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="label">定位</label>
-                      <select className="select" value={editRole} onChange={e => setEditRole(e.target.value)}>
-                        <option value="">未设置</option>
-                        <option value="主攻">主攻</option><option value="控制">控制</option>
-                        <option value="辅助">辅助</option><option value="坦克">坦克</option><option value="通用">通用</option>
                       </select>
                     </div>
 
@@ -1854,7 +1891,7 @@ export default function MonstersPage() {
       {/* 简易的“加入收藏”选择/新建弹框 */}
       {collectionDialogOpen && (
         <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center">
-          <div className="bg-white rounded-2xl shadow-xl w-[min(92vw,520px)] p-5 space-y-4">
+          <div className="bg白 rounded-2xl shadow-xl w-[min(92vw,520px)] p-5 space-y-4">
             <div className="text-lg font-semibold">加入收藏</div>
 
             <div className="space-y-3">
