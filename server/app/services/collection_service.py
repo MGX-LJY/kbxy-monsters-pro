@@ -20,7 +20,7 @@ def _direction(order: str):
 
 
 def _uniq_int_ids(ids: Iterable[int]) -> List[int]:
-    return list({int(i) for i in (ids or []) if isinstance(i, (int,)) or str(i).isdigit()})
+    return list({int(i) for i in (ids or []) if isinstance(i, int) or str(i).isdigit()})
 
 
 def _now() -> datetime:
@@ -114,18 +114,16 @@ def list_collections(
     )
 
     # 过滤
+    like = None
     if q:
         like = f"%{q.strip()}%"
         base = base.where(Collection.name.ilike(like))
 
-    # 总数
-    total = db.scalar(
-        select(func.count(Collection.id)).select_from(
-            select(Collection.id).where(
-                Collection.name.ilike(f"%{q.strip()}%") if q else True
-            ).subquery()
-        )
-    ) or 0
+    # —— 修复总数的笛卡尔积问题：对“仅含过滤条件的 id 列”做子查询，再对其 COUNT(*) —— #
+    total_sub = select(Collection.id)
+    if like:
+        total_sub = total_sub.where(Collection.name.ilike(like))
+    total = db.scalar(select(func.count()).select_from(total_sub.subquery())) or 0
 
     # 排序
     s = (sort or "updated_at").lower()

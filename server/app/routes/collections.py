@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import SessionLocal
@@ -113,11 +114,10 @@ def api_update_collection(
         raise HTTPException(status_code=404, detail="collection not found")
     db.commit()
 
-    # 统计当前 items_count
-    cnt = db.scalar(
-        select(CollectionItem).where(CollectionItem.collection_id == collection_id).count()
-    )
-    items_count = int(cnt or 0)
+    # 统计当前 items_count —— 使用 SQLAlchemy 2.x 正确计数方式
+    items_count = db.scalar(
+        select(func.count()).select_from(CollectionItem).where(CollectionItem.collection_id == collection_id)
+    ) or 0
 
     return CollectionOut(
         id=col.id,
@@ -126,7 +126,7 @@ def api_update_collection(
         created_at=getattr(col, "created_at", None),
         updated_at=getattr(col, "updated_at", None),
         last_used_at=getattr(col, "last_used_at", None),
-        items_count=items_count,
+        items_count=int(items_count),
     )
 
 
@@ -143,7 +143,7 @@ def api_delete_collection(collection_id: int, db: Session = Depends(get_db)):
 
 
 # -----------------------------
-# 收藏夹：批量加入/移出/覆盖 成员
+# 收藏夹：批量加入/移出/覆盖 成员（推荐）
 # -----------------------------
 @router.post("/bulk_set", response_model=BulkSetMembersOut)
 def api_bulk_set_members(
@@ -173,6 +173,45 @@ def api_bulk_set_members(
 
 
 # -----------------------------
+# 兼容旧接口：/collections/{id}/add|remove|set
+# Body: {"ids":[1,2,3]}
+# -----------------------------
+class IdsIn(BaseModel):
+    ids: List[int]
+
+
+def _legacy_return(res: dict) -> BulkSetMembersOut:
+    return {
+        "collection_id": int(res["collection_id"]),
+        "added": int(res["added"]),
+        "removed": int(res["removed"]),
+        "skipped": int(res["skipped"]),
+        "missing_monsters": list(res["missing_monsters"]),
+    }
+
+
+@router.post("/{collection_id}/add", response_model=BulkSetMembersOut)
+def api_add_members_legacy(collection_id: int, payload: IdsIn = Body(...), db: Session = Depends(get_db)):
+    res = bulk_set_members(db, collection_id=collection_id, name=None, ids=payload.ids, action="add")
+    db.commit()
+    return _legacy_return(res)
+
+
+@router.post("/{collection_id}/remove", response_model=BulkSetMembersOut)
+def api_remove_members_legacy(collection_id: int, payload: IdsIn = Body(...), db: Session = Depends(get_db)):
+    res = bulk_set_members(db, collection_id=collection_id, name=None, ids=payload.ids, action="remove")
+    db.commit()
+    return _legacy_return(res)
+
+
+@router.post("/{collection_id}/set", response_model=BulkSetMembersOut)
+def api_set_members_legacy(collection_id: int, payload: IdsIn = Body(...), db: Session = Depends(get_db)):
+    res = bulk_set_members(db, collection_id=collection_id, name=None, ids=payload.ids, action="set")
+    db.commit()
+    return _legacy_return(res)
+
+
+# -----------------------------
 # （可选）收藏夹详情：返回收藏夹元信息
 # -----------------------------
 @router.get("/{collection_id}", response_model=CollectionOut)
@@ -181,10 +220,11 @@ def api_get_collection(collection_id: int, db: Session = Depends(get_db)):
     if not col:
         raise HTTPException(status_code=404, detail="collection not found")
 
-    # 统计 items_count
+    # 统计 items_count —— 使用 SQLAlchemy 2.x 正确计数方式
     total_items = db.scalar(
-        select(CollectionItem).where(CollectionItem.collection_id == collection_id).count()
-    )
+        select(func.count()).select_from(CollectionItem).where(CollectionItem.collection_id == collection_id)
+    ) or 0
+
     return CollectionOut(
         id=col.id,
         name=col.name,
@@ -192,7 +232,7 @@ def api_get_collection(collection_id: int, db: Session = Depends(get_db)):
         created_at=getattr(col, "created_at", None),
         updated_at=getattr(col, "updated_at", None),
         last_used_at=getattr(col, "last_used_at", None),
-        items_count=int(total_items or 0),
+        items_count=int(total_items),
     )
 
 

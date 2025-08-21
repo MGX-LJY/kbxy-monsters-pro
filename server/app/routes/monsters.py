@@ -3,10 +3,10 @@ from typing import Optional, List, Tuple, Dict
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, and_
 
 from ..db import SessionLocal
-from ..models import Monster, MonsterSkill, Skill, Tag
+from ..models import Monster, MonsterSkill, Skill, Tag, CollectionItem
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
@@ -84,6 +84,8 @@ def list_api(
     acq_type: Optional[str] = Query(None, description="获取途径（包含匹配）"),
     type_: Optional[str] = Query(None, alias="type", description="获取途径别名（与 acq_type 等价）"),
     new_type: Optional[bool] = Query(None, description="是否当前可获取"),
+    # ✅ 新增：按收藏分组筛选
+    collection_id: Optional[int] = Query(None, description="收藏分组 ID"),
     sort: Optional[str] = "updated_at",
     order: Optional[str] = "desc",
     page: int = 1,
@@ -93,14 +95,16 @@ def list_api(
     db: Session = Depends(get_db),
 ):
     """
-    支持三种方式：
-    1) 旧参数：tag=xxx（单标签）
-    2) 新参数：tags_all=...（可重复，AND）/ tags_any=...（OR）
-    3) 组合/分组：buf_tags_* / deb_tags_* / util_tags_*；以及 tags[]=... + tag_mode=and|or
-    另外：
-    - 获取途径支持 acq_type 或 type（等价，包含匹配）
+    支持三种标签方式：
+    1) 旧：tag=xxx（单标签）
+    2) 新：tags_all（AND，可重复） / tags_any（OR）
+    3) 分组：buf_/deb_/util_ 的 *_all / *_any；以及 tags[]=... + tag_mode=and|or
+
+    其他：
+    - 获取途径 acq_type 或 type（等价，包含匹配）
     - new_type=true/false 过滤“当前可获取”
-    - need_fix=true 时筛选“技能数为 0 或 >5”的怪物（只统计名字非空技能）
+    - collection_id 过滤收藏分组（JOIN CollectionItem）
+    - need_fix=true 时筛“技能名非空”的技能数为 0 或 >5
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
@@ -150,13 +154,23 @@ def list_api(
         base_kwargs["new_type"] = new_type
     if need_fix is not None:
         base_kwargs["need_fix"] = need_fix
+    if collection_id is not None:
+        base_kwargs["collection_id"] = int(collection_id)
 
     # —— 优先调用服务层；若签名较旧则回退到本地实现 —— #
     try:
-        items, total = list_monsters(**base_kwargs)
+        items, total = list_monsters(**base_kwargs)  # 若服务层支持 collection_id，会直接生效
     except TypeError:
-        # 服务层较旧：本地实现（含获取途径 / new_type / need_fix）
+        # 服务层较旧：本地实现（含获取途径 / new_type / need_fix / collection_id）
         query = db.query(Monster)
+
+        # 按收藏分组过滤（JOIN + DISTINCT 防重复）
+        if collection_id:
+            query = (
+                query.join(CollectionItem, CollectionItem.monster_id == Monster.id)
+                     .filter(CollectionItem.collection_id == int(collection_id))
+                     .distinct(Monster.id)
+            )
 
         # 基础筛选
         if q:
@@ -205,7 +219,8 @@ def list_api(
             sort_col = getattr(Monster, "updated_at")
         query = query.order_by(sort_col.asc() if (order or "").lower() == "asc" else sort_col.desc())
 
-        total = query.count()
+        # 计数需与查询同条件；若 join 过，distinct 防重复
+        total = query.order_by(None).count()
         items = (
             query
             .offset((page - 1) * page_size)
