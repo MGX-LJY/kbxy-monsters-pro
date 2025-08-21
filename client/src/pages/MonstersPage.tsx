@@ -1276,6 +1276,28 @@ export default function MonstersPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
 
+          {/* ← 新增：收藏组管理，放在“一键匹配”左侧 */}
+          {collectionId && (
+            <>
+              <button
+                className={`btn ${BTN_FX}`}
+                onClick={openRenameCollection}
+                title="重命名当前收藏组"
+              >
+                重命名收藏组
+              </button>
+              <button
+                className={`btn ${BTN_FX}`}
+                onClick={deleteCurrentCollection}
+                title="删除当前收藏组"
+              >
+                删除收藏组
+              </button>
+              {/* 可选：分隔线，让分组管理与其它操作区隔开 */}
+              <span className="hidden md:inline-block w-px h-5 bg-gray-200 mx-1" aria-hidden />
+            </>
+          )}
+
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
             </button>
@@ -1395,14 +1417,6 @@ export default function MonstersPage() {
               </option>
             ))}
           </select>
-
-          {/* 新增：收藏组管理按钮（仅在选择了分组时显示） */}
-          {collectionId && (
-            <div className="flex items-center gap-2 col-span-2 md:col-span-2">
-              <button className={`btn ${BTN_FX}`} onClick={openRenameCollection} title="重命名当前收藏组">重命名收藏组</button>
-              <button className={`btn ${BTN_FX}`} onClick={deleteCurrentCollection} title="删除当前收藏组">删除收藏组</button>
-            </div>
-          )}
 
           <div className="grid grid-cols-2 gap-3 col-span-2">
             {/* ✅ 排序选项随模式切换 */}
