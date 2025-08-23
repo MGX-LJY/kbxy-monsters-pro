@@ -81,13 +81,6 @@ exposes: [Monster, MonsterDerived, Tag, Skill, MonsterSkill, Collection, Collect
 - 关系：`collection`、`monster`
 - 索引：`ix_collection_items_monster_id`（加速按怪物反查）
 
-### ImportJob（导入作业）
-- 主键：`id`
-- 唯一：`key`（幂等用）
-- 状态：`status`（done/processing/failed）
-- 结果：`result_json`（JSON）
-- 时间：`created_at`
-
 ### Task（异步任务）
 - 主键：`id`（uuid）
 - 类型/状态：`type`、`status`（pending/running/done/failed）

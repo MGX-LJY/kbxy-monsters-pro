@@ -116,21 +116,6 @@ class MonsterList(BaseModel):
     etag: str
 
 
-# —— 导入（保持不变，如有需要再扩展） —— #
-class ImportPreview(BaseModel):
-    columns: List[str]
-    total_rows: int
-    sample: List[dict]
-    hints: List[str] = Field(default_factory=list)
-
-
-class ImportResult(BaseModel):
-    inserted: int
-    updated: int
-    skipped: int
-    errors: List[dict] = Field(default_factory=list)
-
-
 class ProblemDetail(BaseModel):
     type: str = "about:blank"
     title: str = "Bad Request"
