@@ -5,45 +5,76 @@ owner: backend
 updated: 2025-08-23
 stability: stable
 deps: [server/app/config.py, SQLAlchemy]
-exposes: [DATABASE_URL, engine, SessionLocal, Base]
+exposes: [engine, SessionLocal, Base, startup_db_report_lines]
 ---
 
-# db.py · 快速卡片
-
 ## TL;DR（30 秒）
-- **职责**：集中创建 SQLAlchemy `engine`、`SessionLocal` 和 `Base`，并为 SQLite 设置关键 PRAGMA。
-- **存储**：SQLite（pysqlite 驱动），数据库路径来自 `settings.db_path` → 组装为 `sqlite+pysqlite:///{path}`。
-- **SQLite 优化**：连接时设置 `journal_mode=WAL`、`synchronous=NORMAL`、`foreign_keys=ON`。
-- **常见坑**
-  1. **相对路径**导致 DB 落盘位置不一致（取决于进程工作目录）。
-  2. 并发写入仍可能触发 `database is locked`（可考虑 `busy_timeout`；见“变更指南”）。
-  3. 当前文件**未读取 `DATABASE_URL` 环境变量**，只使用 `settings.db_path`。
+- **职责**：集中创建 SQLAlchemy `engine`、`SessionLocal` 与 `Base`，并在连接建立时设置 SQLite 关键 `PRAGMA`。  
+- **存储选择优先级**：`DATABASE_URL` > 本地 SQLite 文件（由 `settings.resolved_local_db_path()` 解析到 `<project>/data/…` 的**绝对路径**）。  
+- **连接与并发**：`check_same_thread=False`，连接打开超时 `timeout = settings.sqlite_connect_timeout_s`（秒）；每个连接设置 `PRAGMA busy_timeout = settings.sqlite_busy_timeout_ms`（毫秒）以缓解写锁冲突。  
+- **启动可观测性**：提供 `startup_db_report_lines()`；日志包含：DB 绝对路径、父目录、可写性、`busy_timeout(ms)`、`connect_timeout(s)`、以及「是否使用了 `DATABASE_URL`」。  
+
+---
 
 ## 职责与边界
-- **做什么**：初始化 Engine/Session/Base；为每个新连接配置 SQLite PRAGMA。
-- **不做什么**：不做模型建表（`Base.metadata.create_all` 应在应用启动处执行）；不做迁移与种子数据。
+- **做什么**  
+  - 解析最终数据库连接（环境变量优先）。  
+  - 创建 Engine / Session / Base。  
+  - 在 `connect` 事件中为新连接设置：`journal_mode=WAL`、`synchronous=NORMAL`、`foreign_keys=ON`、`busy_timeout=<ms>`。  
+  - 汇总并输出启动时的 DB 信息（供 `main.py` 在 `startup` 钩子里打印）。  
+- **不做什么**  
+  - 不做模型迁移（后续由 Alembic 接管）。  
+  - 不在模块顶层建表（避免 `--reload` 时的并发竞态；建表应在 `main.py` 的受控启动流程里执行）。
+
+---
 
 ## 公开接口
-- `DATABASE_URL: str` —— 形如 `sqlite+pysqlite:///kbxy-dev.db`。
-- `engine` —— `create_engine(..., future=True, connect_args={"check_same_thread": False})`
-- `SessionLocal` —— `sessionmaker(autoflush=False, autocommit=False, future=True)`
-- `Base` —— `declarative_base()`，供模型继承。
+- `engine: sqlalchemy.Engine` —— 已带 `check_same_thread=False` 与 `timeout=<connect_timeout_s>`。  
+- `SessionLocal: sessionmaker` —— `autoflush=False`、`autocommit=False`、`future=True`。  
+- `Base: DeclarativeMeta` —— 供模型继承。  
+- `startup_db_report_lines() -> list[str]` —— 返回用于启动日志的多行状态文本（路径/权限/超时等）。  
 
-## 依赖与数据流
-- **上游输入**：`settings.db_path`（由 `config.py` 提供）。
-- **下游使用者**：`models.py`（继承 `Base`）、`services/*` 与 `routes/*`（请求级打开会话）。
-- **连接生命周期**：每个 DB 连接 `connect` 事件时执行一次 PRAGMA；对所有连接生效。
+> 说明：内部还有 `DB_INFO`（启动信息缓存）与 `FINAL_DATABASE_URL`（最终连接串）等内部字段，默认不直接对外使用。
 
-## SQLite 配置（PRAGMA）
-- `journal_mode=WAL`：提高并发读写能力，生成 `*.db-wal/*.db-shm` 文件（**勿手删**）。
-- `synchronous=NORMAL`：在 WAL 下的推荐取值，减少 fsync 次数，性能与可靠性折中。
-- `foreign_keys=ON`：开启外键约束（SQLite 默认关闭）。
+---
 
-## 会话与线程
-- `check_same_thread=False`：允许跨线程使用同一连接对象（FastAPI/uvicorn 场景常用）。
-- `SessionLocal`：**非自动提交/刷新**；需显式 `commit()`/`rollback()`/`close()`。
-- **推荐依赖（FastAPI）**：
+## 连接与 PRAGMA（SQLite）
+- `journal_mode=WAL`：提高并发读写能力（会生成 `*.db-wal`/`*.db-shm`）。  
+- `synchronous=NORMAL`：在 WAL 场景的推荐值，可靠性/性能折中。  
+- `foreign_keys=ON`：开启外键约束。  
+- `busy_timeout = settings.sqlite_busy_timeout_ms`（默认 4000ms，可通过环境变量调至 3000–5000ms）。  
+- `timeout = settings.sqlite_connect_timeout_s`（默认 5s，控制**打开连接**时等待锁的时间）。  
+
+---
+
+## 存储路径与优先级
+1. 若设置 **`DATABASE_URL`**：直接使用该连接串（并在启动日志标注“使用 DATABASE_URL，本地文件被忽略”）。  
+2. 否则使用本地 SQLite：`settings.resolved_local_db_path()` → `<project>/data/<env 默认名或 KBXY_DB_PATH>`；启动时会**确保父目录存在**并检查可写性。  
+
+---
+
+## 常见坑 & 提示
+- `busy_timeout` 不是“银弹”：它能显著降低并发写入的锁冲突，但仍应避免**长事务/大批量单事务**、减少“读-写”竞争。  
+- 若设置了 `KBXY_DB_PATH` 为统一文件名，`dev/test` 将共用同一 DB；如需隔离，请删除该变量或分别指定。  
+- 使用 `uvicorn --reload` 时，**不要**在模块顶层调用 `Base.metadata.create_all()`；应在 `main.py` 的 `startup` 中加锁/受控执行（你已按此实践改造）。  
+
+---
+
+## 示例
 ```py
+# main.py（片段）：启动时打印 DB 状态
+from server.app.db import engine, Base, startup_db_report_lines
+
+@app.on_event("startup")
+async def _startup_logs():
+    for line in startup_db_report_lines():
+        logger.info(f"[startup] {line}")
+    # 如需初始化 schema，请在此执行受控 create_all（避免 reload 竞态）
+    # Base.metadata.create_all(bind=engine, checkfirst=True)
+```
+
+```py
+# 依赖注入（FastAPI）
 from contextlib import contextmanager
 from server.app.db import SessionLocal
 
@@ -60,46 +91,17 @@ def get_db():
         db.close()
 ```
 
-## 错误与可观测性
-- **锁冲突**：`sqlite3.OperationalError: database is locked`  
-  - 缓解：WAL 已开启；仍可考虑 `PRAGMA busy_timeout`、减小长事务、避免大批量写入与读竞争。
-- **外键失败**：`sqlite3.IntegrityError: FOREIGN KEY constraint failed`（已启用外键约束）。
-- **调试日志**：将 `create_engine(..., echo=True)` 暂时开启以追踪 SQL。
-
-## 示例（最常用 1–2 个）
-```py
-# 定义模型
-from sqlalchemy import Column, Integer, String
-from server.app.db import Base
-
-class Demo(Base):
-    __tablename__ = "demo"
-    id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True, nullable=False)
-```
-
-```py
-# 应用启动时一次性建表（如在 main.py 中）
-from server.app.db import Base, engine
-Base.metadata.create_all(bind=engine)
-```
-
-## 变更指南（How to change safely）
-- **支持 `DATABASE_URL` 优先级**（推荐）  
-  将 `DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite+pysqlite:///{settings.db_path}"`，对接未来的 Postgres 等。
-- **降低锁冲突**  
-  在 `connect` 事件中追加：`PRAGMA busy_timeout=3000;`（毫秒）；对大量写入接口，拆分批次并缩短事务。
-- **可观测性增强**  
-  - 增加启动日志打印 `engine.url` 与 `journal_mode`（查询 `PRAGMA journal_mode;`）。
-  - 为关键写入点打点并关联 `x-trace-id`。
-- **测试可注入**  
-  - 将 Engine/Session 封装为 `get_engine(url=...)` 与 `get_session(bind)`，测试时传入临时文件或内存库（`sqlite+pysqlite:///:memory:`）。
-- **迁移到 Postgres（未来）**  
-  - 替换驱动与 URL；删除 SQLite 特有 PRAGMA；配置连接池/超时；引入 Alembic 迁移。
+---
 
 ## 自测清单
-- [ ] 默认配置可启动，`Base.metadata.create_all()` 正常建表。
-- [ ] 显式设置 `KBXY_DB_PATH="$(pwd)/kbxy-dev.db"` 后，DB 实际落在项目根目录。
-- [ ] 高并发 GET 与适度 POST 场景下无频繁 `database is locked`。
-- [ ] 外键约束可被触发并按预期报错。
-- [ ] 打开 `echo=True` 时能看到完整 SQL 输出（调试后关闭）。
+- [ ] 未设置 `DATABASE_URL`，日志显示本地 SQLite 的**绝对路径**、父目录、`Writable=OK`、并打印 `Busy timeout` 与 `Connect timeout`。  
+- [ ] 设置 `DATABASE_URL=...` 启动，日志出现 “DB in use: DATABASE_URL (local file ignored)”。  
+- [ ] 将 `SQLITE_BUSY_TIMEOUT_MS` 分别设为 `0 / 5000` 跑 `scripts/sqlite_stress_write.py`，验证 `locked` 明显下降。  
+- [ ] `uvicorn --reload` 多进程下无“重复建索引/表”的报错（建表逻辑在受控的 `startup` 中）。  
+
+---
+
+## 变更指南（How to change safely）
+- **切换外部数据库**：设置 `DATABASE_URL`（如 Postgres/MySQL），并在 `connect` 事件中移除 SQLite 特有 `PRAGMA`。  
+- **调整并发策略**：可通过环境变量微调 `SQLITE_BUSY_TIMEOUT_MS` 与 `SQLITE_CONNECT_TIMEOUT_S`；如并发继续提升，考虑迁移到 PG/MySQL 并配合连接池/隔离级别。  
+- **可观测性增强**：需要时可在 `startup_db_report_lines()` 中补充 `engine.url`（脱敏）或读取 `PRAGMA journal_mode` 的回读值用于日志核对。
