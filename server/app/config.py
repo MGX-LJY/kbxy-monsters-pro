@@ -18,8 +18,15 @@ class Settings(BaseModel):
     # 仅支持 dev / test，其他值一律回落到 dev
     app_env: str = os.getenv("APP_ENV", "dev").lower()
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
     # 兼容历史：如果设置了 KBXY_DB_PATH（文件名或路径），作为本地文件名/路径覆盖
     kbxy_db_path: str | None = os.getenv("KBXY_DB_PATH")
+
+    # 新增：SQLite 忙等待（毫秒）与连接超时（秒）
+    # - busy_timeout_ms：当遇到写锁时，SQLite 在本连接上最多等待多久（毫秒）
+    # - connect_timeout_s：sqlite3.connect 的“打开连接时等待锁”超时（秒）
+    sqlite_busy_timeout_ms: int = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "4000"))
+    sqlite_connect_timeout_s: float = float(os.getenv("SQLITE_CONNECT_TIMEOUT_S", "5"))
 
     def normalized_env(self) -> str:
         return "test" if self.app_env == "test" else "dev"
