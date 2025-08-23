@@ -3,7 +3,14 @@
 **/.DS_Store
 
 # ===== SQLite（本地开发库 + WAL/SHM）=====
-#（避免把本地开发库和写前日志提交）
+# 显式忽略项目内数据库与备份目录
+/data/*.db
+/data/*.db-wal
+/data/*.db-shm
+/backups/
+.schema.init.lock
+
+# 兜底（如有其它 .db/.sqlite3 文件也一并忽略）
 *.sqlite3
 *.db
 *.db-wal
@@ -11,6 +18,9 @@
 kbxy-dev.db
 kbxy-dev.db-wal
 kbxy-dev.db-shm
+kbxy-test.db
+kbxy-test.db-wal
+kbxy-test.db-shm
 
 # ===== 日志与 PID =====
 .logs/
@@ -36,6 +46,8 @@ node_modules/
 client/node_modules/
 dist/
 client/dist/
+.vite/
+client/.vite/
 *.local
 npm-debug.log*
 yarn-debug.log*
@@ -60,6 +72,9 @@ coverage/
 *.iml
 *.ipr
 *.iws
+
+# ===== 可选：导出数据（不想入库就取消注释）=====
+# /exports/
 
 # ===== 其他系统文件 =====
 Thumbs.db
