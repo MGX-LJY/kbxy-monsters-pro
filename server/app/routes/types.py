@@ -1,4 +1,4 @@
-# server/app/routes/type.py 片段示例
+# server/app/routes/type.py
 from fastapi import APIRouter, Query, HTTPException
 from ..services.types_service import (
     get_chart, get_effects, get_card, get_matrix, list_types

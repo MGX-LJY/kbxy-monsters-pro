@@ -1,3 +1,4 @@
+# server/app/middleware.py
 import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
