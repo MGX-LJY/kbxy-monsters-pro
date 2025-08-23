@@ -1,14 +1,20 @@
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import settings
-from .db import Base, engine
+from .db import Base, engine, startup_db_report_lines, DB_INFO
 from .middleware import TraceIDMiddleware
 
 from .routes import (
-    health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl, warehouse, types,
-    collections,  # ← 新增：收藏夹
+    health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl,
+    warehouse, types, collections,
 )
 
 # 可选路由（不存在也不报错）
@@ -24,6 +30,7 @@ try:
 except Exception:
     HAS_ROLES = False
 
+logger = logging.getLogger("kbxy")
 
 app = FastAPI(title=settings.app_name)
 
@@ -39,12 +46,13 @@ app.add_middleware(
 # 追踪ID中间件
 app.add_middleware(TraceIDMiddleware)
 
-Base.metadata.create_all(bind=engine)
+# ⚠️ 移除：不要在模块顶层执行 create_all（会与 --reload 竞态）
+# Base.metadata.create_all(bind=engine)
 
 # 注册路由
 app.include_router(health.router)
 app.include_router(monsters.router)
-app.include_router(importing.router)  # 导入与爬虫相关接口（含 4399 测试/导入）
+app.include_router(importing.router)   # 导入与爬虫相关接口（含 4399 测试/导入）
 app.include_router(backup.router)
 app.include_router(utils.router)
 app.include_router(skills.router)
@@ -53,7 +61,7 @@ app.include_router(derive.router)
 app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])
 app.include_router(types.router)
-app.include_router(collections.router, prefix="", tags=["collections"])  # ← 新增：收藏夹
+app.include_router(collections.router, prefix="", tags=["collections"])
 
 # 可选：tags、roles
 if HAS_TAGS:
@@ -61,12 +69,63 @@ if HAS_TAGS:
 if HAS_ROLES:
     app.include_router(roles.router)
 
+def _init_schema_once_with_lock():
+    """
+    只在 dev/test 环境做一次 schema 初始化（create_all, checkfirst=True），
+    用文件锁避免 uvicorn --reload 进程/多次导入的竞态。
+    """
+    if settings.app_env not in ("dev", "test"):
+        return
+
+    parent_dir = DB_INFO.get("db_parent_dir")
+    if not parent_dir:
+        # 非本地 SQLite（例如 DATABASE_URL 指向外部库），直接按 checkfirst 执行一次即可
+        try:
+            Base.metadata.create_all(bind=engine, checkfirst=True)
+            logger.info("[startup] schema create_all (DATABASE_URL) executed.")
+        except Exception:
+            logger.exception("[startup] schema init failed (DATABASE_URL).")
+        return
+
+    lock_dir = Path(str(parent_dir))
+    lock_file = lock_dir / ".schema.init.lock"
+
+    acquired = False
+    try:
+        # 原子创建锁文件；存在即代表其它进程在初始化
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        acquired = True
+    except FileExistsError:
+        acquired = False
+
+    if acquired:
+        try:
+            Base.metadata.create_all(bind=engine, checkfirst=True)
+            logger.info("[startup] schema create_all executed (checkfirst=True).")
+        except Exception:
+            logger.exception("[startup] schema init failed.")
+        finally:
+            try:
+                os.remove(lock_file)
+            except Exception:
+                # 如果删除失败，不影响运行；必要时手动清理
+                pass
+    else:
+        logger.info("[startup] another process is initializing schema or it already exists; skip create_all.")
+
+# 启动日志：环境 + DB 路径三件套 +（受控的）schema 初始化
+@app.on_event("startup")
+async def _startup_logs_and_schema():
+    logger.info(f"[startup] APP_ENV={settings.app_env} APP_NAME={settings.app_name}")
+    for line in startup_db_report_lines():
+        logger.info(f"[startup] {line}")
+    _init_schema_once_with_lock()
 
 # 全局异常处理
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
