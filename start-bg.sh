@@ -16,9 +16,22 @@ FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 LOG_DIR="${LOG_DIR:-$ROOT/.logs}"
 PKG_MGR="${PKG_MGR:-}"   # 可指定：pnpm / yarn / npm / bun
 
+# === 备份守护相关（默认开启） ===
+BACKUP_WATCH="${BACKUP_WATCH:-1}"              # 1=开启，0=关闭
+BACKUP_CHANGE_KEEP_MAX="${BACKUP_CHANGE_KEEP_MAX:-20}"  # 仅保留最近 N 份“变更备份”
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"    # “每日备份”保留天数
+BACKUP_POLL_INTERVAL="${BACKUP_POLL_INTERVAL:-2.0}"     # 轮询间隔（秒）
+BACKUP_MIN_CHANGE_INTERVAL="${BACKUP_MIN_CHANGE_INTERVAL:-2.0}" # 变更备份防抖（秒）
+
 mkdir -p "$LOG_DIR"
 
 echo "[INFO] 项目根目录：$ROOT"
+
+# === 选 Python 解释器 ===
+PYTHON_BIN="python"
+if [[ -x "$VENV_DIR/bin/python" ]]; then
+  PYTHON_BIN="$VENV_DIR/bin/python"
+fi
 
 # === 激活虚拟环境（如果存在） ===
 if [[ -f "$VENV_DIR/bin/activate" ]]; then
@@ -62,6 +75,51 @@ choose_env() {
   echo "[INFO] 已选择环境：${APP_ENV:-dev}"
 }
 
+load_env_file() {
+  # 将 .env.<env> 中的变量导入当前 shell（便于本脚本判断 DATABASE_URL 等）
+  local env_file="$ROOT/.env.${APP_ENV:-dev}"
+  if [[ -f "$env_file" ]]; then
+    # shellcheck disable=SC1090,SC2046
+    set -a
+    source "$env_file"
+    set +a
+    echo "[INFO] 已加载环境文件到当前会话：$env_file"
+  else
+    echo "[WARN] 未找到环境文件：$env_file（将仅使用当前环境变量 APP_ENV=${APP_ENV:-dev}）"
+  fi
+}
+
+start_backup_watch() {
+  if [[ "${BACKUP_WATCH}" != "1" ]]; then
+    echo "[INFO] 备份守护已关闭（BACKUP_WATCH=0），跳过。"
+    return 0
+  fi
+
+  local pidf="$LOG_DIR/backup.pid"
+  if running "$pidf"; then
+    echo "[INFO] 备份守护已在运行中 (PID $(cat "$pidf"))，跳过启动。"
+    return 0
+  fi
+
+  # 如果设置了 DATABASE_URL，当前备份脚本（只支持本地 SQLite）将无法工作：跳过
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    echo "[WARN] 检测到 DATABASE_URL 已设置：当前备份守护仅支持本地 SQLite，已跳过启动。"
+    return 0
+  fi
+
+  echo "[INFO] 启动备份守护（变更即备份 + 每日备份）..."
+  nohup env \
+    APP_ENV="${APP_ENV:-dev}" \
+    BACKUP_CHANGE_KEEP_MAX="${BACKUP_CHANGE_KEEP_MAX}" \
+    BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS}" \
+    BACKUP_POLL_INTERVAL="${BACKUP_POLL_INTERVAL}" \
+    BACKUP_MIN_CHANGE_INTERVAL="${BACKUP_MIN_CHANGE_INTERVAL}" \
+    "$PYTHON_BIN" "$ROOT/scripts/backup_sqlite.py" --watch \
+    >"$LOG_DIR/backup.log" 2>&1 &
+  echo $! > "$pidf"
+  echo "[OK] 备份守护 PID $(cat "$pidf")，日志：$LOG_DIR/backup.log"
+}
+
 start_backend() {
   cd "$ROOT"
   local pidf="$LOG_DIR/backend.pid"
@@ -82,12 +140,9 @@ start_backend() {
   if [[ -f "$env_file" ]]; then
     cmd+=(--env-file "$env_file")
     echo "[INFO] 使用环境文件：$env_file"
-  else
-    echo "[WARN] 未找到环境文件：$env_file（将仅使用当前环境变量 APP_ENV=${APP_ENV:-dev}）"
   fi
 
   echo "[INFO] 启动后端（${APP_ENV:-dev}）：${cmd[*]}"
-  # 用 env 注入，给默认值，避免 set -u 因空变量报错
   nohup env APP_ENV="${APP_ENV:-dev}" "${cmd[@]}" >"$LOG_DIR/backend.log" 2>&1 &
   echo $! > "$pidf"
   echo "[OK] 后端 PID $(cat "$pidf")，日志：$LOG_DIR/backend.log"
@@ -117,6 +172,8 @@ start_frontend() {
 
 # === 执行 ===
 choose_env
+load_env_file
+start_backup_watch   # 先启动备份守护（它会等待 DB 文件出现）
 start_backend
 start_frontend
 
@@ -125,4 +182,7 @@ echo "[INFO] 已在后台启动完成。"
 echo "       环境：${APP_ENV:-dev}"
 echo "       后端：http://$BACKEND_HOST:$BACKEND_PORT"
 echo "       前端：http://localhost:$FRONTEND_PORT"
-echo "       查看日志：tail -f $LOG_DIR/backend.log  或  tail -f $LOG_DIR/frontend.log"
+echo "       查看日志："
+echo "         tail -f $LOG_DIR/backend.log"
+echo "         tail -f $LOG_DIR/backup.log"
+echo "         tail -f $LOG_DIR/frontend.log"
