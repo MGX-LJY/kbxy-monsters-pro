@@ -13,7 +13,7 @@ from .tags_service import extract_signals, suggest_tags_for_monster  # 仅用于
 from .monsters_service import upsert_tags
 
 
-# ============ 基础读取 ============
+# ===================== 基础读取 =====================
 
 def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float]:
     hp      = float(getattr(monster, "hp", 0) or 0)
@@ -58,27 +58,6 @@ def _skills_text(monster: Monster) -> str:
     return " ".join(parts)
 
 
-def _skill_powers(monster: Monster) -> List[int]:
-    out: List[int] = []
-    # skills
-    for item in (getattr(monster, "skills", None) or []):
-        skill = getattr(item, "skill", None)
-        power: Optional[int] = getattr(skill, "power", None) if skill is not None else None
-        if power is None:
-            power = getattr(item, "power", None)
-        if isinstance(power, (int, float)) and power > 0:
-            out.append(int(power))
-    # monster_skills
-    for ms in (getattr(monster, "monster_skills", None) or []):
-        skill = getattr(ms, "skill", None)
-        power: Optional[int] = getattr(skill, "power", None) if skill is not None else None
-        if power is None:
-            power = getattr(ms, "power", None)
-        if isinstance(power, (int, float)) and power > 0:
-            out.append(int(power))
-    return out
-
-
 def _round_int_clip(v: float, hi: int = 120) -> int:
     return int(min(hi, max(0, round(v))))
 
@@ -96,229 +75,179 @@ def _tag_codes_from_monster(monster: Monster) -> List[str]:
     return codes
 
 
-# ============ v2 信号抽取（对齐最新三大类标签） ============
+# ===================== 信号抽取（在 tags_service 基础上补充“毒/自爆”等） =====================
 
-def _detect_v2_signals(monster: Monster) -> Dict[str, float]:
+def _detect_signals_v3(monster: Monster) -> Dict[str, float]:
     """
-    以 tags_service.extract_signals 为基础补充新标签信号：
-    - Offense: crit/guaranteed_crit, penetrate, armor_break, def_down, res_down, mark/vulnerable, multi_hit, guaranteed_hit, charge_next
-    - Survive: heal, shield/dmg_cut, cleanse_self, (status) immunity, phys/mag immunity, life_steal, def_up, res_up, evasion_up, reflect
-    - Control: hard/soft CC, 以及 atk/mag/spd/acc down
-    - Tempo: first_strike, speed_up, extra_turn, action_bar, taunt(更多偏坦克取嘲)
-    - PP 压制: pp_hits/any, dispel_enemy, skill_seal, buff_steal, invert_buffs, transfer_debuff, heal_block, fatigue, mark_expose
+    统一信号面向新五轴：
+      - 生存：heal/shield/dmg_reduce/reflect/物免/法免/异常免疫/净化/def_up/res_up/evasion_up
+      - 抑制：def_down/res_down/armor_break/atk_down/mag_down/acc_down/spd_down/skill_seal/mark_expose
+      - 资源&非常规：pp_any/pp_hits/poison/toxic/self_destruct/heal_block/fatigue/（可选）dispel/transfer/invert
     """
-    sig = extract_signals(monster)  # 兼容旧字段
+    sig = extract_signals(monster)  # 由 tags_service 产出的一组基础布尔/计数信号
     text = _skills_text(monster)
     codes = set(_tag_codes_from_monster(monster))
 
     def has(patterns: List[str]) -> bool:
         return any(re.search(p, text) for p in patterns)
 
-    # --- Offense ---
-    crit_up = ("buf_crit_up" in codes) or ("buf_guaranteed_crit" in codes) or \
-              has([r"必定暴击", r"命中时必定暴击", r"暴击(率|几率|概率)?(提升|提高|上升|增加|增强)"])
-    ignore_def  = ("util_penetrate" in codes) or has([r"无视防御", r"穿透(防御|护盾)"])
-    armor_break = has([r"破防", r"护甲破坏"])
-    def_down    = ("deb_def_down" in codes)
-    res_down    = ("deb_res_down" in codes)
-    marked      = ("deb_marked" in codes) or ("deb_vulnerable" in codes) or \
-                  has([r"标记", r"易伤", r"(暴|曝)露", r"破绽"])
-    multi_hit   = bool(sig.get("has_multi_hit", False)) or ("util_multi" in codes) or has([r"[二两三四五六七八九十]+连", r"\d+[-~–]\d+次"])
-    guaranteed_hit = ("util_guaranteed_hit" in codes) or has([r"必定命中|必中|必命中"])
-    charge_next = ("util_charge_next" in codes) or has([r"(下一回合|下回合).*?(伤害|威力).*?加倍", r"蓄力.*?(加倍|倍增)"])
-
-    # --- Survive / Support ---
+    # —— 生存/辅助 —— #
     heal        = ("buf_heal" in codes) or has([r"(回复|治疗|恢复)"])
     shield      = ("buf_shield" in codes) or has([r"护盾|结界|护体|庇护|保护"])
     dmg_reduce  = ("buf_dmg_cut_all" in codes) or ("buf_phys_cut" in codes) or ("buf_mag_cut" in codes) or \
                   has([r"(所受|受到).*(伤害).*(减少|降低|减半|减免)", r"伤害(减少|降低|减半|减免)"])
+    reflect     = ("util_reflect" in codes) or has([r"反击|反伤|反弹|反射伤害"])
     cleanse_self= ("buf_purify" in codes) or has([r"(净化|清除|消除|解除).*(自身|自我|本方).*?(负面|异常|减益|不良)"])
-    # 状态免疫
     immunity    = ("buf_immunity" in codes) or has([r"免疫(异常|控制|不良)状态?"])
-    # 物理/法术免疫（更强）
     phys_immu   = ("buf_phys_immunity" in codes) or has([r"免疫.*?(物理|物理攻击)"])
     mag_immu    = ("buf_mag_immunity" in codes) or has([r"免疫.*?(法术|魔法|法术攻击|魔法攻击)"])
-    life_steal  = has([r"吸血", r"造成.*?伤害.*?(回复|恢复).*(HP|生命|体力)"])
     def_up      = ("buf_def_up" in codes)
     res_up      = ("buf_res_up" in codes)
     evasion_up  = ("buf_evasion_up" in codes) or has([r"(闪避|回避|躲避)(率)?(提升|提高|上升|增加|增强)"])
-    reflect     = ("util_reflect" in codes) or has([r"反击|反伤|反弹|反射伤害"])
 
-    # --- Control ---
-    hard_cc = sum(1 for c in ("deb_stun","deb_bind","deb_sleep","deb_freeze","deb_suffocate") if c in codes) \
-              or (1 if has([r"眩晕|昏迷|定身|麻痹|无法行动|失去行动能力"]) else 0)
-    soft_cc = 1 if ("deb_confuse_seal" in codes) or has([r"混乱|封印|禁技|无法使用技能|禁止使用技能"]) else 0
-    acc_down = ("deb_acc_down" in codes)
-    spd_down = ("deb_spd_down" in codes)
-    atk_down = ("deb_atk_down" in codes)
-    mag_down = ("deb_mag_down" in codes)
+    # —— 抑制（对敌方） —— #
+    armor_break = has([r"破防", r"护甲破坏"])
+    def_down    = ("deb_def_down" in codes)
+    res_down    = ("deb_res_down" in codes)
+    atk_down    = ("deb_atk_down" in codes)
+    mag_down    = ("deb_mag_down" in codes)
+    acc_down    = ("deb_acc_down" in codes)
+    spd_down    = ("deb_spd_down" in codes)
+    skill_seal  = ("deb_confuse_seal" in codes) or has([r"封印|禁技|无法使用技能|禁止使用技能"])
+    mark_expose = ("deb_marked" in codes) or ("deb_vulnerable" in codes) or has([r"标记|易伤|(暴|曝)露|破绽"])
 
-    # --- Tempo / Aggro ---
-    first_strike = bool(sig.get("first_strike", False)) or ("util_first" in codes) or has([r"先手|先制|抢先|先于对手"])
-    speed_up     = bool(sig.get("speed_up", False)) or ("buf_spd_up" in codes)
-    extra_turn   = has([r"(追加|额外|再度|再动|再次|连续).*(行动|回合)|再行动(一次)?|额外回合"])
-    action_bar   = has([r"行动条|行动值|(推进|提升|增加|降低|减少).*?行动(条|值)|(推条|拉条)"])
-    taunt        = ("util_taunt" in codes) or has([r"嘲讽|挑衅|吸引仇恨|强制.*?(攻击|优先).*?(自身|自我|我方|本方)"])
-
-    # --- PP 压制 / 资源博弈 ---
+    # —— 资源/非常规 —— #
     pp_hits      = int(sig.get("pp_hits", 0))
     pp_any       = (pp_hits > 0) or ("util_pp_drain" in codes) or has([r"扣\s*PP", r"减少.*?技能.*?次数"])
-    dispel_enemy = ("deb_dispel" in codes) or has([r"(消除|驱散|清除).*(对方|对手|敌方).*(增益|强化|状态)"])
-    skill_seal   = ("deb_confuse_seal" in codes) or has([r"封印|禁技|无法使用技能|禁止使用技能"])
-    buff_steal   = ("util_steal_buff" in codes) or has([r"(偷取|夺取|窃取|转移).*(增益|强化|护盾)"])
-    invert_buffs = ("util_invert_buffs" in codes) or has([r"(将|使).*(增益|强化).*(转变|变为).*(减益|负面)"])
-    transfer_debuff = ("util_transfer_debuff" in codes) or has([r"(将|把).*(自身|自我).*(负面|异常|减益).*(转移|移交).*(对方|对手|敌方)"])
+    poison       = has([r"中毒|毒伤"]) and not has([r"解毒|祛毒"])
+    toxic        = has([r"剧毒|猛毒|强毒"])
+    self_destruct= has([r"自爆|自毁|同归于尽|玉石俱焚"])
     heal_block   = ("deb_heal_block" in codes) or has([r"无法(回复|治疗|恢复)", r"(治疗|回复|恢复).*(降低|减少|减半|抑制)"])
     fatigue      = ("deb_fatigue" in codes) or has([r"疲劳|乏力|疲倦"])
-    mark_or_exp  = marked
+    dispel_enemy = ("deb_dispel" in codes) or has([r"(消除|驱散|清除).*(对方|对手|敌方).*(增益|强化|状态)"])
+    transfer_debuff = ("util_transfer_debuff" in codes) or has([r"(将|把).*(自身|自我).*(负面|异常|减益).*(转移|移交).*(对方|对手|敌方)"])
+    invert_buffs = ("util_invert_buffs" in codes) or has([r"(将|使).*(增益|强化).*(转变|变为).*(减益|负面)"])
 
     return {
-        # Offense
-        "crit_up": float(crit_up),
-        "ignore_def": float(ignore_def),
-        "armor_break": float(armor_break),
-        "def_down": float(def_down),
-        "res_down": float(res_down),
-        "mark": float(marked),
-        "multi_hit": float(multi_hit),
-        "guaranteed_hit": float(guaranteed_hit),
-        "charge_next": float(charge_next),
-
-        # Survive
+        # 生存
         "heal": float(heal),
         "shield": float(shield),
         "dmg_reduce": float(dmg_reduce),
+        "reflect": float(reflect),
         "cleanse_self": float(cleanse_self),
         "immunity": float(immunity),
         "phys_immunity": float(phys_immu),
         "mag_immunity": float(mag_immu),
-        "life_steal": float(life_steal),
         "def_up": float(def_up),
         "res_up": float(res_up),
         "evasion_up": float(evasion_up),
-        "reflect": float(reflect),
 
-        # Control
-        "hard_cc": float(hard_cc),
-        "soft_cc": float(soft_cc),
-        "acc_down": float(acc_down),
-        "spd_down": float(spd_down),
+        # 抑制
+        "armor_break": float(armor_break),
+        "def_down": float(def_down),
+        "res_down": float(res_down),
         "atk_down": float(atk_down),
         "mag_down": float(mag_down),
-
-        # Tempo / Aggro
-        "first_strike": float(first_strike),
-        "extra_turn": float(extra_turn),
-        "speed_up": float(speed_up),
-        "action_bar": float(action_bar),
-        "taunt": float(taunt),
-
-        # PP
-        "pp_hits": float(pp_hits),
-        "pp_any": float(pp_any),
-        "dispel_enemy": float(dispel_enemy),
+        "acc_down": float(acc_down),
+        "spd_down": float(spd_down),
         "skill_seal": float(skill_seal),
-        "buff_steal": float(buff_steal),
-        "invert_buffs": float(invert_buffs),
-        "transfer_debuff": float(transfer_debuff),
+        "mark_expose": float(mark_expose),
+
+        # 资源/非常规
+        "pp_any": float(pp_any),
+        "pp_hits": float(pp_hits),
+        "poison": float(poison),
+        "toxic": float(toxic),
+        "self_destruct": float(self_destruct),
         "heal_block": float(heal_block),
         "fatigue": float(fatigue),
-        "mark_expose": float(mark_or_exp),
+        "dispel_enemy": float(dispel_enemy),
+        "transfer_debuff": float(transfer_debuff),
+        "invert_buffs": float(invert_buffs),
     }
 
 
-# ============ v2 计算公式（派生五系：输出 0~120） ============
+# ===================== 新五轴计算（输出 0~120） =====================
 
-def _offense_power_bonus(powers: List[int]) -> float:
-    if not powers:
-        return 0.0
-    top3 = sorted(powers, reverse=True)[:3]
-    avg_top3 = sum(top3) / len(top3)
-    if avg_top3 >= 160:
-        return 6.0
-    if avg_top3 >= 150:
-        return 3.0
-    return 0.0
+NEW_KEYS = ["body_defense", "body_resist", "debuff_def_res", "debuff_atk_mag", "special_tactics"]
 
 
 def compute_derived(monster: Monster) -> Dict[str, float]:
-    hp, speed, attack, defense, magic, resist = _raw_six(monster)
-    s = _detect_v2_signals(monster)
-    offense_power = _offense_power_bonus(_skill_powers(monster))
+    """
+    计算“体防/体抗/削防抗/削攻法/特殊”的原始浮点值（未裁剪）。
+    """
+    hp, _speed, _attack, defense, _magic, resist = _raw_six(monster)
+    s = _detect_signals_v3(monster)
 
-    atk_hi = max(attack, magic)
-    atk_lo = min(attack, magic)
-    offense_base = 0.55 * atk_hi + 0.15 * atk_lo + 0.20 * speed
-    offense_sig = (
-        10.0 * s["crit_up"] +
-        12.0 * s["ignore_def"] +
-        8.0  * s["multi_hit"] +
-        6.0  * s["guaranteed_hit"] +
-        5.0  * s["charge_next"] +
-        6.0  * s["armor_break"] +
-        4.0  * s["def_down"] +
-        4.0  * s["res_down"] +
-        3.0  * s["mark"]
-    )
-    offense_raw = offense_base + offense_sig + offense_power
-    offense_capped = min(130.0, offense_raw)
-
-    survive_base = 0.45 * hp + 0.30 * defense + 0.25 * resist
-    survive_sig = (
+    # 体防：硬生存（体力/防御为主，少量抗性权重）
+    body_defense_base = 0.45 * hp + 0.35 * defense + 0.10 * resist
+    body_defense_sig = (
         10.0 * s["heal"] +
         10.0 * s["shield"] +
         8.0  * s["dmg_reduce"] +
         6.0  * s["reflect"] +
-        5.0  * s["phys_immunity"] +
-        5.0  * s["mag_immunity"] +
-        5.0  * s["cleanse_self"] +
-        4.0  * s["immunity"] +
-        3.0  * s["life_steal"] +
-        2.0  * s["def_up"] +
-        2.0  * s["res_up"] +
-        2.0  * s["evasion_up"]
+        6.0  * s["phys_immunity"] +
+        6.0  * s["mag_immunity"] +
+        3.0  * s["def_up"] +
+        2.0  * s["evasion_up"] +
+        2.0  * s["cleanse_self"]
     )
-    survive_raw = survive_base + survive_sig
+    body_defense_raw = body_defense_base + body_defense_sig
 
-    control_raw = (
-        14.0 * s["hard_cc"] +
-        8.0  * s["soft_cc"] +
-        6.0  * s["acc_down"] +
-        4.0  * s["spd_down"] +
-        3.0  * s["atk_down"] +
-        3.0  * s["mag_down"] +
-        3.0  * s["skill_seal"] +
-        0.10 * speed
+    # 体抗：抗异常（体力/抗性为主，少量防御权重）
+    body_resist_base = 0.45 * hp + 0.35 * resist + 0.10 * defense
+    body_resist_sig = (
+        10.0 * s["immunity"] +
+        6.0  * s["cleanse_self"] +
+        4.0  * s["res_up"] +
+        3.0  * s["mag_immunity"]
+    )
+    body_resist_raw = body_resist_base + body_resist_sig
+
+    # 削防抗：降防/降抗/破甲 + 联合奖励（降速/易伤小额）
+    debuff_def_res_sig = (
+        8.0  * s["armor_break"] +
+        6.0  * s["def_down"] +
+        6.0  * s["res_down"] +
+        2.0  * s["spd_down"] +
+        2.0  * s["mark_expose"]
+    )
+    # 联合命中加成
+    if s["def_down"] and s["res_down"]:
+        debuff_def_res_sig += 4.0
+    if s["def_down"] and s["armor_break"]:
+        debuff_def_res_sig += 3.0
+    debuff_def_res_raw = debuff_def_res_sig  # 该轴以信号为主，不叠加六维
+
+    # 削攻法：降攻/降法/封技为主；降命中次之；降速小额
+    debuff_atk_mag_raw = (
+        8.0  * s["atk_down"] +
+        8.0  * s["mag_down"] +
+        6.0  * s["skill_seal"] +
+        4.0  * s["acc_down"] +
+        2.0  * s["spd_down"]
     )
 
-    tempo_raw = (
-        1.0  * speed +
-        15.0 * s["first_strike"] +
-        10.0 * s["extra_turn"] +
-        8.0  * s["speed_up"] +
-        6.0  * s["action_bar"] +
-        4.0  * s["taunt"]
-    )
-
-    pp_pressure_raw = (
-        18.0 * s["pp_any"] +
-        5.0  * s["pp_hits"] +
-        8.0  * s["dispel_enemy"] +
-        10.0 * s["skill_seal"] +
-        6.0  * s["buff_steal"] +
-        5.0  * s["invert_buffs"] +
-        5.0  * s["transfer_debuff"] +
-        6.0  * s["heal_block"] +
+    # 特殊：PP 压制/中毒(剧毒)/自爆/禁疗/疲劳/（可选）驱散/转移/反转
+    special_tactics_raw = (
+        12.0 * s["pp_any"] +
+        4.0  * s["pp_hits"] +
+        8.0  * s["toxic"] +
+        6.0  * s["poison"] +
+        10.0 * s["self_destruct"] +
+        7.0  * s["heal_block"] +
         6.0  * s["fatigue"] +
-        3.0  * s["mark_expose"]
+        3.0  * s["dispel_enemy"] +
+        3.0  * s["transfer_debuff"] +
+        3.0  * s["invert_buffs"]
     )
 
     return {
-        "offense": offense_capped,
-        "survive": survive_raw,
-        "control": control_raw,
-        "tempo": tempo_raw,
-        "pp_pressure": pp_pressure_raw,
+        "body_defense": body_defense_raw,
+        "body_resist": body_resist_raw,
+        "debuff_def_res": debuff_def_res_raw,
+        "debuff_atk_mag": debuff_atk_mag_raw,
+        "special_tactics": special_tactics_raw,
     }
 
 
@@ -327,7 +256,7 @@ def compute_derived_out(monster: Monster) -> Dict[str, int]:
     return {k: _round_int_clip(v, hi=120) for k, v in vals.items()}
 
 
-# ============ 标准化/分位上下文（基于 MonsterDerived 样本） ============
+# ===================== 分位（可选，用于展示，不参与任何定位） =====================
 
 def _percentile_rank(sorted_vals: List[int], v: float) -> float:
     """
@@ -344,24 +273,24 @@ def _percentile_rank(sorted_vals: List[int], v: float) -> float:
 
 def _build_norm_ctx(db: Optional[Session]) -> Dict[str, List[int]]:
     """
-    从数据库汇总五系有序样本，用于计算分位。db 缺失时返回空上下文（走兜底线性缩放）。
+    从数据库汇总新五轴有序样本，用于计算分位。db 缺失时返回空上下文（走兜底线性缩放）。
     """
     if not isinstance(db, Session):
-        return {k: [] for k in ["offense", "survive", "control", "tempo", "pp_pressure"]}
-    vals = {k: [] for k in ["offense", "survive", "control", "tempo", "pp_pressure"]}
+        return {k: [] for k in NEW_KEYS}
+    vals = {k: [] for k in NEW_KEYS}
     rows = db.execute(select(
-        MonsterDerived.offense,
-        MonsterDerived.survive,
-        MonsterDerived.control,
-        MonsterDerived.tempo,
-        MonsterDerived.pp_pressure,
+        MonsterDerived.body_defense,
+        MonsterDerived.body_resist,
+        MonsterDerived.debuff_def_res,
+        MonsterDerived.debuff_atk_mag,
+        MonsterDerived.special_tactics,
     )).all()
-    for off, sur, ctl, tmp, pp in rows:
-        if off is not None: vals["offense"].append(int(off))
-        if sur is not None: vals["survive"].append(int(sur))
-        if ctl is not None: vals["control"].append(int(ctl))
-        if tmp is not None: vals["tempo"].append(int(tmp))
-        if pp  is not None: vals["pp_pressure"].append(int(pp))
+    for bd, br, ddr, dam, sp in rows:
+        if bd is not None: vals["body_defense"].append(int(bd))
+        if br is not None: vals["body_resist"].append(int(br))
+        if ddr is not None: vals["debuff_def_res"].append(int(ddr))
+        if dam is not None: vals["debuff_atk_mag"].append(int(dam))
+        if sp is not None: vals["special_tactics"].append(int(sp))
     for k in vals:
         vals[k].sort()
     return vals
@@ -378,146 +307,28 @@ def _normalize_derived(derived_int: Dict[str, int], norm_ctx: Dict[str, List[int
     return out
 
 
-# ============ 定位（用分位后的五系 + 信号 + 六维） ============
-
-def _category_scores(
-    monster: Monster,
-    derived_pctl: Dict[str, float],   # 注意：这里使用分位后的 0~100
-    sig: Dict[str, float],
-) -> Dict[str, float]:
-    hp, _speed, _attack, _defense, _magic, resist = _raw_six(monster)
-
-    offense  = float(derived_pctl.get("offense", 0.0))
-    survive  = float(derived_pctl.get("survive", 0.0))
-    control  = float(derived_pctl.get("control", 0.0))
-    tempo    = float(derived_pctl.get("tempo", 0.0))
-    pp_press = float(derived_pctl.get("pp_pressure", 0.0))
-
-    dps_sig   = (2.0*sig["crit_up"] + 2.0*sig["ignore_def"] + 1.5*sig["multi_hit"]
-                 + 1.2*sig["def_down"] + 1.2*sig["res_down"] + 1.2*sig["armor_break"]
-                 + 1.0*sig["mark"] + 1.0*sig["guaranteed_hit"] + 0.8*sig["charge_next"])
-    ctrl_sig  = (4.0*sig["hard_cc"] + 2.5*sig["soft_cc"] + 2.0*sig["spd_down"] + 2.0*sig["acc_down"]
-                 + 1.2*sig["atk_down"] + 1.2*sig["mag_down"] + 1.2*sig["skill_seal"])
-    supp_sig  = (3.5*sig["heal"] + 3.5*sig["shield"] + 2.5*sig["cleanse_self"] + 2.5*sig["immunity"]
-                 + 1.2*sig["def_up"] + 1.2*sig["res_up"] + 1.2*sig["dmg_reduce"]
-                 + 1.0*sig["evasion_up"] + 1.0*sig["reflect"])
-
-    # 在“分位空间”的综合得分
-    score_offense = 1.00*offense + 0.35*tempo + 8.0*dps_sig - 0.15*control - 0.10*supp_sig
-    score_control = 1.05*control + 0.20*tempo + 10.0*sig["hard_cc"] + 3.5*sig["soft_cc"] + 2.0*(sig["spd_down"]+sig["acc_down"]) - 0.10*offense
-    score_support = 0.95*survive + 0.20*tempo + 8.0*(sig["heal"]+sig["shield"]) + 5.0*(sig["cleanse_self"]+sig["immunity"]) + 1.5*(sig["def_up"]+sig["res_up"]) \
-                    + 1.0*(sig["transfer_debuff"]+sig["invert_buffs"]) - 0.20*offense
-    score_tank    = 1.00*survive + 0.10*tempo + 5.0*(sig["shield"]+sig["dmg_reduce"]) + 2.0*sig["immunity"] \
-                    + (3.5 if hp >= 115 else 0.0) + (3.5 if resist >= 115 else 0.0) - 0.30*offense \
-                    + 0.4*pp_press + 2.5*sig["taunt"]
-
-    return {
-        "主攻": score_offense,
-        "控制": score_control,
-        "辅助": score_support,
-        "坦克": score_tank,
-    }
-
-
-def _decide_role(
-    scores: Dict[str, float],
-    derived_pctl: Dict[str, float],
-    sig: Dict[str, float]
-) -> Tuple[str, float, str]:
-    """
-    在分位空间决策最终定位，返回 (role, confidence, reason)。
-    强规则（更鲜明） > 常规比较 > 小差距优先级。
-    """
-    # 强规则（分位阈值避免固定偏置）
-    if sig["hard_cc"] >= 1 and derived_pctl.get("control", 0.0) >= 75.0:
-        return "控制", 0.9, "硬控存在且控制分位≥P75"
-
-    support_trigger = (sig["heal"] + sig["shield"] + sig["cleanse_self"] + sig["immunity"]) >= 2 \
-                      and derived_pctl.get("survive", 0.0) >= 70.0
-    if support_trigger:
-        conf = 0.8 if derived_pctl.get("offense", 0.0) < 85.0 else 0.7
-        return "辅助", conf, "奶辅信号≥2 且生存分位≥P70"
-
-    # 常规比较
-    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    (r1, s1), (r2, s2) = ordered[0], (ordered[1] if len(ordered) > 1 else ("通用", 0.0))
-    margin = s1 - s2
-
-    # 分数太平、均衡 → 通用
-    if s1 < 55 and margin < 10:
-        return "通用", 0.55, "各项分位与信号均不够突出"
-
-    # 小差距：按优先级打破（强控 > 强辅 > 主攻 > 坦克）
-    tie_break_order = ["控制", "辅助", "主攻", "坦克"]
-    if margin < 6:
-        for cat in tie_break_order:
-            if cat in (r1, r2):
-                return cat, 0.62, f"分差小（{round(margin,2)}），按优先级判定为{cat}"
-
-    # 正常：差距越大，置信度越高（保守裁剪）
-    confidence = max(0.6, min(0.95, margin / max(1.0, abs(s1))))
-    return r1, confidence, f"类别分对比：{r1}={round(s1,1)} 高于 {r2}={round(s2,1)}（Δ={round(margin,1)}）"
-
-
-def infer_role_for_monster(monster: Monster, db: Optional[Session] = None) -> str:
-    """
-    对外主函数：仅返回角色字符串（兼容旧签名，可不传 db）。
-    若提供 db，则先基于 MonsterDerived 样本做分位标准化。
-    """
-    d_int = compute_derived_out(monster)
-    sig = _detect_v2_signals(monster)
-    norm = _build_norm_ctx(db)
-    d_p = _normalize_derived(d_int, norm)
-    scores = _category_scores(monster, d_p, sig)
-    role, _conf, _reason = _decide_role(scores, d_p, sig)
-    return role
-
-
-def infer_role_details(monster: Monster, db: Optional[Session] = None) -> Dict[str, object]:
-    """
-    扩展版：返回 role / confidence / reason / scores，并包含派生分位。
-    """
-    d_int = compute_derived_out(monster)
-    sig = _detect_v2_signals(monster)
-    norm = _build_norm_ctx(db)
-    d_p = _normalize_derived(d_int, norm)
-    scores = _category_scores(monster, d_p, sig)
-    role, conf, reason = _decide_role(scores, d_p, sig)
-    return {
-        "role": role,
-        "confidence": round(float(conf), 3),
-        "reason": reason,
-        "scores": {k: round(float(v), 1) for k, v in scores.items()},
-        "derived_percentile": d_p,   # 0~100
-    }
-
-
-# ============ 持久化派生 ============
+# ===================== 持久化派生 =====================
 
 def compute_and_persist(db: Session, monster: Monster) -> MonsterDerived:
     vals = compute_derived_out(monster)
     md = monster.derived
     if not md:
-        md = MonsterDerived(
-            monster_id=monster.id,
-            offense=vals["offense"],
-            survive=vals["survive"],
-            control=vals["control"],
-            tempo=vals["tempo"],
-            pp_pressure=vals["pp_pressure"],
-        )
+        md = MonsterDerived(monster_id=monster.id)
         db.add(md)
         monster.derived = md
-    else:
-        md.offense = vals["offense"]
-        md.survive = vals["survive"]
-        md.control = vals["control"]
-        md.tempo = vals["tempo"]
-        md.pp_pressure = vals["pp_pressure"]
+
+    md.body_defense    = vals["body_defense"]
+    md.body_resist     = vals["body_resist"]
+    md.debuff_def_res  = vals["debuff_def_res"]
+    md.debuff_atk_mag  = vals["debuff_atk_mag"]
+    md.special_tactics = vals["special_tactics"]
     return md
 
 
 def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
+    """
+    可选：若缺少 buf_/deb_/util_ 前缀标签，则用正则建议补齐，不覆盖已有非前缀。
+    """
     cur = [getattr(t, "name", None) or (t if isinstance(t, str) else None) for t in (monster.tags or [])]
     cur = [c for c in cur if isinstance(c, str)]
     has_prefix = any(c.startswith(("buf_", "deb_", "util_")) for c in cur)
@@ -531,32 +342,28 @@ def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
     monster.tags = upsert_tags(db, preserved_non_prefix + new_prefix)
 
 
-# ============ 统一：派生 + 自动定位 + （可选）补标签 ============
+# ===================== 统一：仅派生（可选补标签） =====================
 
-def recompute_and_autolabel(db: Session, monster: Monster) -> MonsterDerived:
+def recompute_derived_only(db: Session, monster: Monster, *, ensure_prefix_tags: bool = False) -> MonsterDerived:
     """
     1) 计算派生 0~120（写 MonsterDerived）
-    2) 若缺新前缀标签，用正则补齐并写库（不覆盖已有非前缀）
-    3) 基于“分位后的五系 + 信号 + 六维”做定位，写回 monster.role
-    4) 将建议定位附到 md 的动态属性供前端读取（role_suggested / role_confidence / role_reason）
+    2) （可选）若缺新前缀标签，用正则补齐并写库（不覆盖已有非前缀）
+    不再写回 monster.role，也不提供任何定位相关输出。
     """
     md = compute_and_persist(db, monster)
-    _ensure_prefix_tags(db, monster)
-
-    details = infer_role_details(monster, db=db)   # <—— 传入 db 以启用分位标准化
-    monster.role = details["role"]
-
-    setattr(md, "role_suggested", details["role"])
-    setattr(md, "role_confidence", details.get("confidence"))
-    setattr(md, "role_reason", details.get("reason"))
+    if ensure_prefix_tags:
+        _ensure_prefix_tags(db, monster)
     return md
 
 
 def recompute_all(db: Session) -> int:
+    """
+    全库重算，仅落新五轴。
+    """
     mons: List[Monster] = db.scalars(select(Monster)).all()
     n = 0
     for m in mons:
-        recompute_and_autolabel(db, m)
+        recompute_derived_only(db, m, ensure_prefix_tags=False)
         n += 1
     return n
 
@@ -565,8 +372,6 @@ __all__ = [
     "compute_derived",
     "compute_derived_out",
     "compute_and_persist",
-    "infer_role_for_monster",
-    "infer_role_details",
-    "recompute_and_autolabel",
+    "recompute_derived_only",
     "recompute_all",
 ]

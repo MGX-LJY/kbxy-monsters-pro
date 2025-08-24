@@ -65,7 +65,7 @@ class Monster(Base):
     # 便捷代理：仍可通过 m.skills 直接拿到 Skill 列表（兼容读取）
     skills = association_proxy("monster_skills", "skill")
 
-    # 1:1 派生五维
+    # 1:1 派生（新五轴）
     derived = relationship("MonsterDerived", back_populates="monster", uselist=False, cascade="all, delete-orphan")
 
     # —— 新增：收藏关系（关联对象 + 代理至 Collection）——
@@ -88,15 +88,20 @@ class MonsterDerived(Base):
         Integer, ForeignKey("monsters.id", ondelete="CASCADE"), primary_key=True
     )
 
-    # 派生五维
-    offense: Mapped[int] = mapped_column(Integer, default=0)
-    survive: Mapped[int] = mapped_column(Integer, default=0)
-    control: Mapped[int] = mapped_column(Integer, default=0)
-    tempo: Mapped[int] = mapped_column(Integer, default=0)
-    pp_pressure: Mapped[int] = mapped_column(Integer, default=0)
+    # —— 新五轴（0~120）——
+    # 体防：体力/防御 + 护盾/治疗/减伤/反伤/免疫 等硬生存能力
+    body_defense: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    # 体抗：体力/抗性 + 净化/状态免疫/抗性提升 等抗异常能力
+    body_resist: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    # 削防抗：降防/降抗/破甲，联合命中时加成
+    debuff_def_res: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    # 削攻法：降攻/降法/降命中/封技 抑制输出
+    debuff_atk_mag: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    # 特殊：PP 压制/中毒(剧毒)/自爆/禁疗/疲劳 等非常规博弈
+    special_tactics: Mapped[int] = mapped_column(Integer, default=0, index=True)
 
     # 追踪信息（按需保留）
-    formula: Mapped[str] = mapped_column(String(64), default="kw@v2025-08-12")
+    formula: Mapped[str] = mapped_column(String(64), default="kbxy@v2025-08-24")
     inputs: Mapped[dict] = mapped_column(JSON, default=dict)
     weights: Mapped[dict] = mapped_column(JSON, default=dict)
     signals: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -106,7 +111,7 @@ class MonsterDerived(Base):
     monster = relationship("Monster", back_populates="derived")
 
     def __repr__(self) -> str:
-        return f"<MonsterDerived monster_id={self.monster_id} offense={self.offense}>"
+        return f"<MonsterDerived monster_id={self.monster_id} body_defense={self.body_defense}>"
 
 
 class Tag(Base):

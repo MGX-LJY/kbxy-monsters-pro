@@ -27,11 +27,26 @@ type WarehouseStatsDTO = {
   in_warehouse?: number // 兼容字段
 }
 
-// ✅ 扩充排序键：加入原生六维与六维总和
+// ===== 新增：排序键类型（含新五轴 + 旧键兼容） =====
+type NewDerivedKey =
+  | 'body_defense' | 'body_resist' | 'debuff_def_res' | 'debuff_atk_mag' | 'special_tactics'
+type LegacyDerivedKey =
+  | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure' | 'pp'
+
+// ✅ 扩充排序键：加入原生六维与六维总和 + 新五轴（兼容旧键）
 type SortKey =
   | 'updated_at'
-  | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure'
+  | NewDerivedKey | LegacyDerivedKey
   | 'hp' | 'speed' | 'attack' | 'defense' | 'magic' | 'resist' | 'raw_sum'
+
+// —— 派生值兜底（后端未完全回填新五轴时，用老值应急） —— //
+const getDerivedValue = (m: any, key: string): number => {
+  const d = (m?.derived ?? {}) as Record<string, any>
+  if (typeof d[key] === 'number') return d[key]!
+  if (key === 'body_defense' && typeof d['survive'] === 'number') return d['survive']!
+  if (key === 'special_tactics' && typeof d['pp_pressure'] === 'number') return d['pp_pressure']!
+  return 0
+}
 
 const BTN_FX = 'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
 const LIMIT_TAGS_PER_CELL = 3
@@ -106,13 +121,13 @@ type OverlayState = {
   closing?: boolean
 }
 
-// ✅ 新增：模式相关的列定义
+// ✅ 新增：模式相关的列定义（改为新五轴）
 const DERIVED_COLUMNS = [
-  { key: 'offense', label: '攻' },
-  { key: 'survive', label: '生' },
-  { key: 'control', label: '控' },
-  { key: 'tempo', label: '速' },
-  { key: 'pp_pressure', label: '压' },
+  { key: 'body_defense',    label: '体防' },
+  { key: 'body_resist',     label: '体抗' },
+  { key: 'debuff_def_res',  label: '防抗' },
+  { key: 'debuff_atk_mag',  label: '攻法' },
+  { key: 'special_tactics', label: '特殊' },
 ] as const
 
 const RAW_COLUMNS = [
@@ -148,7 +163,7 @@ export default function MonstersPage() {
   const [showRaw, setShowRaw] = useState(true)
   const [sort, setSort] = useState<SortKey>('raw_sum')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
-
+  const sortForApi = sort
   const [warehouseOnly, setWarehouseOnly] = useState(false) // 仅看仓库（已拥有）
   const [notOwnedOnly, setNotOwnedOnly] = useState(false)   // 仅看未获取
 
@@ -456,7 +471,7 @@ export default function MonstersPage() {
   // —— 列表数据 —— //
   const list = useQuery({
   queryKey: ['monsters', {
-    q, element, tagBuf, tagDeb, tagUtil, acqType, sort, order,
+    q, element, tagBuf, tagDeb, tagUtil, acqType, sort: sortForApi, order,
     page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
   }],
   queryFn: async () => {
@@ -465,7 +480,7 @@ export default function MonstersPage() {
       element: element || undefined,
       type: acqType || undefined,
       acq_type: acqType || undefined,
-      sort, order,
+      sort: sortForApi, order,
       page,
       page_size: pageSize,
       collection_id: collectionId || undefined,  // ← 收藏筛选
@@ -855,7 +870,7 @@ export default function MonstersPage() {
         element: element || undefined,
         type: acqType || undefined,
         acq_type: acqType || undefined,
-        sort, order,
+        sort: sortForApi, order,
         page: pageNo,
         page_size: pageSizeFetch,
         collection_id: collectionId || undefined, // ← 收藏筛选透传
@@ -1254,12 +1269,12 @@ export default function MonstersPage() {
         { value: 'speed', label: '速度' },
       ] as {value: SortKey, label: string}[])
     : ([
-        { value: 'updated_at', label: '更新时间' },
-        { value: 'offense', label: '输出' },
-        { value: 'survive', label: '生存' },
-        { value: 'control', label: '控制' },
-        { value: 'tempo', label: '节奏' },
-        { value: 'pp_pressure', label: '压制' },
+        { value: 'updated_at',      label: '更新时间' },
+        { value: 'body_defense',    label: '体防' },
+        { value: 'body_resist',     label: '体抗' },
+        { value: 'debuff_def_res',  label: '防抗' },
+        { value: 'debuff_atk_mag',  label: '攻法' },
+        { value: 'special_tactics', label: '特殊' },
       ] as {value: SortKey, label: string}[])
 
   return (
@@ -1327,8 +1342,8 @@ export default function MonstersPage() {
               onClick={() => {
                 setShowRaw(v => {
                   const next = !v
-                  if (next) setSort('raw_sum')   // 切到原始六维：默认六维总和
-                  else setSort('updated_at')     // 切到派生五维：默认更新时间
+                  if (next) setSort('raw_sum')
+                  else setSort('body_defense')
                   setOrder('desc')
                   return next
                 })
@@ -1544,18 +1559,9 @@ export default function MonstersPage() {
                       <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
                         {m.element}
                       </td>
-                      {/* ✅ 动态：派生五维 / 原生六维 单元格 */}
+                      {/* ✅ 动态：派生五维 / 原始六维 单元格 */}
                       {STAT_COLS.map(col => {
-                        let val: any = 0
-                        if (showRaw) {
-                          val = (m as any)[col.key] ?? 0
-                        } else {
-                          if (col.key === 'pp_pressure') {
-                            val = (m.derived as any)?.pp_pressure ?? 0
-                          } else {
-                            val = (m.derived as any)?.[col.key] ?? 0
-                          }
-                        }
+                        const val = showRaw ? (m as any)[col.key] ?? 0 : getDerivedValue(m, col.key)
                         return (
                           <td key={col.key} className="text-center align-middle py-2.5">{val}</td>
                         )
@@ -1567,7 +1573,7 @@ export default function MonstersPage() {
                         </div>
                       </td>
                       <td className="text-center align-middle py-2.5">
-                        <div className="inline-flex flex-wrap gap-1 justify-center">
+                        <div className="inline-flex flex-wrap gap-1 justify中心">
                           {chips(buckets.deb, '🔴')}
                         </div>
                       </td>
@@ -1714,7 +1720,7 @@ export default function MonstersPage() {
                       <div className="text-sm text-gray-600 text-center">{label}</div>
                       <input type="range" min={50} max={200} step={1}
                         value={val} onChange={e => (setter as any)(parseInt(e.target.value, 10))} className="col-span-4" />
-                      <input className="input py-1 text-center" value={val}
+                      <input className="input py-1 text中心" value={val}
                         onChange={e => (setter as any)(Math.max(0, parseInt(e.target.value || '0', 10)))} />
                     </div>
                   ))}
@@ -1796,7 +1802,6 @@ export default function MonstersPage() {
                     <div className="p-2 bg-gray-50 rounded text-center">攻击：<b>{showStats.attack}</b></div>
                     <div className="p-2 bg-gray-50 rounded text-center">防御：<b>{showStats.defense}</b></div>
                     <div className="p-2 bg-gray-50 rounded text-center">法术：<b>{showStats.magic}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
                     <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{(showStats as any).sum}</b></div>
                   </div>
                 </div>
@@ -1873,7 +1878,7 @@ export default function MonstersPage() {
 
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               {typeof progressPct === 'number' ? (
-                <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
+                <div className="h-2 bg紫-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
               ) : (
                 <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
               )}
@@ -1904,7 +1909,7 @@ export default function MonstersPage() {
 
       {/* 简易的“加入收藏”选择/新建弹框 */}
       {collectionDialogOpen && (
-        <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center">
+        <div className="固定 inset-0 z-50 bg-black/30 flex items-center justify-center">
           <div className="bg白 rounded-2xl shadow-xl w-[min(92vw,520px)] p-5 space-y-4">
             <div className="text-lg font-semibold">加入收藏</div>
 

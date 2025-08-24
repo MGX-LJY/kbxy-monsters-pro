@@ -6,27 +6,27 @@ from typing import List, Tuple, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, asc, desc, outerjoin, case, distinct, or_
 
-from ..models import Monster, Tag, MonsterDerived, MonsterSkill, Skill
+from ..models import Monster, Tag, MonsterDerived, MonsterSkill, Skill, CollectionItem
 
 
-# ---- 排序字段解析：支持派生五维 + 原始六维 + 六维总和（pp / pp_pressure 都支持） ----
+# ---- 排序字段解析：支持“新五轴” + 原始六维 + 六维总和 ----
 def _get_sort_target(sort: str):
     s = (sort or "updated_at").lower()
     md = MonsterDerived
     m = Monster
+    # 新五轴（仅保留这些键，不再保留旧映射）
     derived_map = {
-        "offense": md.offense,
-        "survive": md.survive,
-        "control": md.control,
-        "tempo": md.tempo,
-        "pp_pressure": md.pp_pressure,
-        "pp": md.pp_pressure,  # 别名
+        "body_defense": md.body_defense,      # 体防
+        "body_resist": md.body_resist,        # 体抗
+        "debuff_def_res": md.debuff_def_res,  # 削防抗
+        "debuff_atk_mag": md.debuff_atk_mag,  # 削攻法
+        "special_tactics": md.special_tactics # 特殊
     }
     if s in derived_map:
         # 需要派生表参与排序 -> 需要 join
         return derived_map[s], True
 
-    # ✅ 新增：原始六维排序（不需要 join）
+    # 原始六维（不需要 join）
     raw_map = {
         "hp": m.hp,
         "speed": m.speed,
@@ -38,7 +38,7 @@ def _get_sort_target(sort: str):
     if s in raw_map:
         return raw_map[s], False
 
-    # ✅ 新增：六维总和排序（多个别名）
+    # 六维总和排序（多个别名）
     if s in {"raw_sum", "sum", "stats_sum"}:
         sum_expr = (
             func.coalesce(m.hp, 0)
@@ -125,7 +125,7 @@ def _subq_skill_count_nonempty():
     )
 
 
-# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取/是否需修复 过滤；按派生/六维/更新时间排序 ----
+# ---- 列表查询：可按标签(单/多)/元素/定位/获取途径/是否可获取/是否需修复/收藏分组 过滤；按新五轴/六维/更新时间排序 ----
 def list_monsters(
     db: Session,
     *,
@@ -143,6 +143,8 @@ def list_monsters(
     new_type: Optional[bool] = None,     # Monster.new_type
     # 修复筛选（技能名非空的技能数为 0 或 >5）
     need_fix: Optional[bool] = None,
+    # ✅ 新增：收藏分组过滤（保持与路由一致，避免回退）
+    collection_id: Optional[int] = None,
     sort: Optional[str] = None,
     order: Optional[str] = None,
     page: int = 1,
@@ -157,7 +159,8 @@ def list_monsters(
       - 若提供了 tags_all/any，则忽略旧参数 tag（向后兼容）。
       - 获取途径（acq_type/type_）为包含匹配（ILIKE），更宽松。
       - need_fix=True：筛选出“技能名非空的技能数为 0 或 >5”的怪。
-      - 排序字段：支持派生五维、原始六维与六维总和 raw_sum；分页/计数在过滤后执行。
+      - collection_id：按收藏分组过滤（JOIN CollectionItem）
+      - 排序字段：支持**新五轴**、原始六维与六维总和 raw_sum；分页/计数在过滤后执行。
     """
     page = max(1, page)
     page_size = min(max(1, page_size), 200)
@@ -205,6 +208,15 @@ def list_monsters(
             )
         )
 
+    # ✅ 收藏分组过滤（避免触发路由层的回退）
+    if collection_id is not None:
+        base_stmt = (
+            base_stmt
+            .join(CollectionItem, CollectionItem.monster_id == Monster.id)
+            .where(CollectionItem.collection_id == int(collection_id))
+            .distinct(Monster.id)
+        )
+
     # 排序依赖（仅影响 SELECT FROM 的 JOIN，计数不需要 order_by）
     sort_col, need_join = _get_sort_target(sort or "updated_at")
     if need_join:
@@ -248,7 +260,15 @@ def list_monsters(
             )
         )
 
-    # 排序（派生排序需要 OUTER JOIN）
+    # ✅ 收藏分组过滤
+    if collection_id is not None:
+        rows_stmt = (
+            rows_stmt
+            .join(CollectionItem, CollectionItem.monster_id == Monster.id)
+            .where(CollectionItem.collection_id == int(collection_id))
+        )
+
+    # 排序（新五轴排序需要 OUTER JOIN）
     if need_join:
         rows_stmt = rows_stmt.select_from(
             outerjoin(Monster, MonsterDerived, MonsterDerived.monster_id == Monster.id)
@@ -286,7 +306,7 @@ def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
     return result
 
 
-# ---- 设置标签即派生：统一依赖 derive_service，避免旧 infer_role_for_monster ----
+# ---- 设置标签并重算派生：仅写新五轴，不再自动写 role ----
 def set_tags_and_rederive(
     db: Session,
     monster: Monster,
@@ -295,13 +315,14 @@ def set_tags_and_rederive(
     commit: bool = True,
 ) -> None:
     """
-    写入规范化标签并立刻调用 recompute_and_autolabel：
+    写入规范化标签并立刻调用 recompute_derived_only：
       - 会更新 monster.tags
-      - 会计算派生五维与定位（monster.role / derived.*）
+      - 会计算并持久化“新五轴”（MonsterDerived.*）
+      - 不再自动写回 monster.role
     """
-    from .derive_service import recompute_and_autolabel  # 延迟导入，避免循环依赖
+    from .derive_service import recompute_derived_only  # 延迟导入，避免循环依赖
     monster.tags = upsert_tags(db, names or [])
-    recompute_and_autolabel(db, monster)
+    recompute_derived_only(db, monster, ensure_prefix_tags=False)
     if commit:
         db.commit()
 

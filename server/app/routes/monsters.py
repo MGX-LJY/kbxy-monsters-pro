@@ -13,7 +13,6 @@ from ..services.skills_service import upsert_skills
 from ..services.derive_service import (
     compute_derived_out,
     compute_and_persist,
-    recompute_and_autolabel,
 )
 
 router = APIRouter()
@@ -81,7 +80,8 @@ def list_api(
     # 可选：如果前端以后直接传 tags=[]
     tags: Optional[List[str]] = Query(None),
     # 获取途径 / 是否当前可获取
-    acq_type: Optional[str] = Query(None, description="获取途径（包含匹配）"),
+    acq_type: Optional[str] = Query(None, description="获取途径（包含匹配）")
+    ,
     type_: Optional[str] = Query(None, alias="type", description="获取途径别名（与 acq_type 等价）"),
     new_type: Optional[bool] = Query(None, description="是否当前可获取"),
     # ✅ 新增：按收藏分组筛选
@@ -213,7 +213,7 @@ def list_api(
                                  skill_cnt_sub.c.cnt > 5))
             )
 
-        # 排序（默认为 updated_at；其余派生字段排序由服务层处理，这里保持简单）
+        # 排序（默认为 updated_at）
         sort_col = getattr(Monster, sort, getattr(Monster, "updated_at", None))
         if sort_col is None:
             sort_col = getattr(Monster, "updated_at")
@@ -245,31 +245,30 @@ def list_api(
     changed = False
 
     for m in items:
-        # 缺 role/tags/derived 自动补齐（统一走 recompute_and_autolabel）
-        if (not m.role) or (not m.tags) or (not m.derived):
-            recompute_and_autolabel(db, m)
+        # 仅确保派生存在与最新（不做自动定位/标签）
+        if not m.derived:
+            compute_and_persist(db, m)
             changed = True
 
-        # 保证派生最新（与 compute_derived_out 对齐）
         fresh = compute_derived_out(m)
         need_update = (
             (not m.derived)
-            or m.derived.offense != fresh["offense"]
-            or m.derived.survive != fresh["survive"]
-            or m.derived.control != fresh["control"]
-            or m.derived.tempo != fresh["tempo"]
-            or m.derived.pp_pressure != fresh["pp_pressure"]
+            or m.derived.body_defense != fresh["body_defense"]
+            or m.derived.body_resist != fresh["body_resist"]
+            or m.derived.debuff_def_res != fresh["debuff_def_res"]
+            or m.derived.debuff_atk_mag != fresh["debuff_atk_mag"]
+            or m.derived.special_tactics != fresh["special_tactics"]
         )
         if need_update:
             compute_and_persist(db, m)
             changed = True
 
         d = fresh if need_update else {
-            "offense": m.derived.offense,
-            "survive": m.derived.survive,
-            "control": m.derived.control,
-            "tempo": m.derived.tempo,
-            "pp_pressure": m.derived.pp_pressure,
+            "body_defense": m.derived.body_defense,
+            "body_resist": m.derived.body_resist,
+            "debuff_def_res": m.derived.debuff_def_res,
+            "debuff_atk_mag": m.derived.debuff_atk_mag,
+            "special_tactics": m.derived.special_tactics,
         }
 
         result.append(
@@ -311,17 +310,17 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 自动补（统一路径）
-    if (not m.role) or (not m.tags) or (not m.derived):
-        recompute_and_autolabel(db, m)
+    # 仅计算派生
+    if not m.derived:
+        compute_and_persist(db, m)
 
     fresh = compute_derived_out(m)
     if (not m.derived) or (
-        m.derived.offense != fresh["offense"]
-        or m.derived.survive != fresh["survive"]
-        or m.derived.control != fresh["control"]
-        or m.derived.tempo != fresh["tempo"]
-        or m.derived.pp_pressure != fresh["pp_pressure"]
+        m.derived.body_defense != fresh["body_defense"]
+        or m.derived.body_resist != fresh["body_resist"]
+        or m.derived.debuff_def_res != fresh["debuff_def_res"]
+        or m.derived.debuff_atk_mag != fresh["debuff_atk_mag"]
+        or m.derived.special_tactics != fresh["special_tactics"]
     ):
         compute_and_persist(db, m)
         db.commit()
@@ -338,11 +337,11 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         created_at=getattr(m, "created_at", None),
         updated_at=getattr(m, "updated_at", None),
         derived={
-            "offense": m.derived.offense,
-            "survive": m.derived.survive,
-            "control": m.derived.control,
-            "tempo": m.derived.tempo,
-            "pp_pressure": m.derived.pp_pressure,
+            "body_defense": m.derived.body_defense,
+            "body_resist": m.derived.body_resist,
+            "debuff_def_res": m.derived.debuff_def_res,
+            "debuff_atk_mag": m.derived.debuff_atk_mag,
+            "special_tactics": m.derived.special_tactics,
         },
     )
 
@@ -391,7 +390,7 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
     db.flush()
 
     # 建立 (name,element,kind,power) -> payload 行 的映射，便于拿 selected/描述
-    def key_of(n: str, e: Optional[str], k: Optional[str], p: Optional[int]) -> Tuple[str, Optional[str], Optional[str], Optional[int]]:
+    def key_of(n: str, e: Optional[str], k: Optional[str], p: Optional[int]):
         return (n or "", e or None, k or None, p if p is not None else None)
 
     in_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int]], SkillIn] = {
@@ -426,16 +425,16 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
                 ms.selected = bool(s_in.selected)
             if hasattr(ms, "description"):
                 # 若传了描述则覆盖到关联描述（更贴合“该怪物的该技能”）
-                if s_in.description and s_in.description.strip():
-                    ms.description = s_in.description.strip()
+                if (s_in.description or "").strip():
+                    ms.description = (s_in.description or "").strip()
 
     # explain_json 快照
     ex = m.explain_json or {}
     ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
     m.explain_json = ex
 
-    # 自动定位/标签 + 重算派生（统一入口）
-    recompute_and_autolabel(db, m)
+    # 仅重算派生（不做定位/自动打标）
+    compute_and_persist(db, m)
     db.commit()
     return {"ok": True, "monster_id": m.id, "skills": ex["skill_names"]}
 
@@ -475,9 +474,17 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     return {"ok": True, "monster_id": m.id}
 
 
-# ---------- 派生 + 建议（供前端“填充”） ----------
+# ---------- 仅派生 ----------
 @router.get("/monsters/{monster_id}/derived")
-def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
+def derived_values(monster_id: int, db: Session = Depends(get_db)):
+    """
+    返回当前怪物的“新五轴”派生（不包含定位/建议标签）：
+      - body_defense     体防
+      - body_resist      体抗
+      - debuff_def_res   削防抗
+      - debuff_atk_mag   削攻法
+      - special_tactics  特殊
+    """
     m = db.execute(
         select(Monster)
         .where(Monster.id == monster_id)
@@ -490,20 +497,18 @@ def derived_suggestions(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 统一通过 derive_service 更新并读取
-    recompute_and_autolabel(db, m)
+    # 统一计算与落库
+    compute_and_persist(db, m)
     db.commit()
 
     derived_now = compute_derived_out(m)
     return {
         "monster_id": m.id,
-        "role_suggested": m.role,                     # 统一由 derive_service 产出
-        "tags": [t.name for t in (m.tags or [])],     # 当前建议标签（已落库）
         "derived": derived_now,
     }
 
 
-# ---------- 批量自动匹配 ----------
+# ---------- 批量自动匹配（仅保留接口，内部不做定位） ----------
 @router.post("/monsters/auto_match")
 def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
     if not body.ids:
@@ -521,8 +526,8 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
 
     n = 0
     for m in mons:
-        # 统一入口：自动标签 + 定位 + 派生
-        recompute_and_autolabel(db, m)
+        # 仅重算派生
+        compute_and_persist(db, m)
         n += 1
 
     db.commit()
@@ -566,7 +571,7 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
             # 关联级字段
             if s_in and hasattr(ms, "selected") and (s_in.selected is not None):
                 ms.selected = bool(s_in.selected)
-            if s_in and hasattr(ms, "description") and (s_in.description or "").strip():  # ✅ 用 strip 而不是 trim
+            if s_in and hasattr(ms, "description") and (s_in.description or "").strip():
                 ms.description = s_in.description.strip()
             db.add(ms)
 
@@ -575,8 +580,8 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [s.name for s in skills]
         m.explain_json = ex
 
-    # 初次自动打标 + 派生（统一入口）
-    recompute_and_autolabel(db, m)
+    # 初次派生（仅计算落库）
+    compute_and_persist(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
 
@@ -644,8 +649,8 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
         m.explain_json = ex
 
-    # 更新后：重打标+重算派生（统一入口）
-    recompute_and_autolabel(db, m)
+    # 更新后：仅重算派生
+    compute_and_persist(db, m)
     db.commit()
     return detail(monster_id, db)
 

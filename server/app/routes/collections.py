@@ -5,11 +5,11 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import SessionLocal
-from ..models import Collection, CollectionItem, Monster, MonsterSkill
+from ..models import Collection, CollectionItem, Monster, MonsterSkill, MonsterDerived
 from ..schemas import (
     CollectionCreateIn, CollectionUpdateIn,
     CollectionOut, CollectionList,
@@ -237,12 +237,19 @@ def api_get_collection(collection_id: int, db: Session = Depends(get_db)):
 
 
 # -----------------------------
-# 收藏夹成员：列表（分页）
+# 收藏夹成员：列表（分页，支持新五轴/六维/总和排序）
 # -----------------------------
 @router.get("/{collection_id}/members", response_model=MonsterList)
 def api_list_collection_members(
     collection_id: int,
-    sort: Optional[str] = Query("id", description="id/name/element/role/updated_at/created_at"),
+    sort: Optional[str] = Query(
+        "id",
+        description=(
+            "id/name/element/role/updated_at/created_at "
+            "| hp/speed/attack/defense/magic/resist/raw_sum "
+            "| body_defense/body_resist/debuff_def_res/debuff_atk_mag/special_tactics"
+        ),
+    ),
     order: Optional[str] = Query("asc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
@@ -252,16 +259,80 @@ def api_list_collection_members(
     if not get_collection_by_id(db, collection_id):
         raise HTTPException(status_code=404, detail="collection not found")
 
-    items, total = list_collection_members(
-        db,
-        collection_id=collection_id,
-        sort=sort or "id",
-        order=order or "asc",
-        page=page,
-        page_size=page_size,
-    )
+    # 先尝试服务层（若已支持这些排序键则直接用）
+    try:
+        items, total = list_collection_members(
+            db,
+            collection_id=collection_id,
+            sort=sort or "id",
+            order=order or "asc",
+            page=page,
+            page_size=page_size,
+        )
+    except TypeError:
+        # 本地回退：带新五轴/六维/总和排序
+        s = (sort or "id").lower()
+        is_asc = (order or "asc").lower() == "asc"
+        direction = asc if is_asc else desc
 
-    # 预加载（避免 N+1）
+        # 基础选择：只取该收藏夹内的怪
+        base = (
+            select(Monster)
+            .join(CollectionItem, CollectionItem.monster_id == Monster.id)
+            .where(CollectionItem.collection_id == collection_id)
+        )
+
+        # 排序键解析
+        derived_map = {
+            "body_defense":   MonsterDerived.body_defense,
+            "body_resist":    MonsterDerived.body_resist,
+            "debuff_def_res": MonsterDerived.debuff_def_res,
+            "debuff_atk_mag": MonsterDerived.debuff_atk_mag,
+            "special_tactics": MonsterDerived.special_tactics,
+        }
+        raw_map = {
+            "hp": Monster.hp,
+            "speed": Monster.speed,
+            "attack": Monster.attack,
+            "defense": Monster.defense,
+            "magic": Monster.magic,
+            "resist": Monster.resist,
+        }
+        raw_sum_expr = (
+            func.coalesce(Monster.hp, 0)
+            + func.coalesce(Monster.speed, 0)
+            + func.coalesce(Monster.attack, 0)
+            + func.coalesce(Monster.defense, 0)
+            + func.coalesce(Monster.magic, 0)
+            + func.coalesce(Monster.resist, 0)
+        )
+
+        if s in derived_map:
+            base = base.outerjoin(MonsterDerived, MonsterDerived.monster_id == Monster.id)
+            base = base.order_by(direction(derived_map[s]), asc(Monster.id))
+        elif s in raw_map:
+            base = base.order_by(direction(raw_map[s]), asc(Monster.id))
+        elif s == "raw_sum":
+            base = base.order_by(direction(raw_sum_expr), asc(Monster.id))
+        else:
+            # 基础列
+            if s not in {"id", "name", "element", "role", "updated_at", "created_at"}:
+                s = "id"
+            col = getattr(Monster, s)
+            base = base.order_by(direction(col), asc(Monster.id))
+
+        # 计数
+        total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+
+        # 分页 + 预加载
+        stmt = base.limit(page_size).offset((page - 1) * page_size).options(
+            selectinload(Monster.tags),
+            selectinload(Monster.derived),
+            selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
+        )
+        items = db.execute(stmt).scalars().all()
+
+    # 预加载（避免 N+1；若走服务层且已预加载则下面无副作用）
     ids = [m.id for m in items]
     if ids:
         _ = db.execute(

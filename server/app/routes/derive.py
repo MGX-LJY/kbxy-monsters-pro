@@ -10,10 +10,10 @@ from sqlalchemy import select
 from ..db import SessionLocal
 from ..models import Monster
 
-# 统一只依赖 derive_service（内部已整合派生+定位）
+# 统一只依赖 derive_service（仅计算并持久化“新五轴”派生，不做自动定位/打标）
 from ..services.derive_service import (
     compute_derived_out,
-    recompute_and_autolabel,
+    recompute_derived_only,
     recompute_all,
 )
 
@@ -38,20 +38,14 @@ def _monster_or_404(db: Session, monster_id: int) -> Monster:
 
 def _derived_payload(m: Monster) -> Dict[str, object]:
     """
-    统一响应结构：
-      - 五维派生：offense/survive/control/tempo/pp_pressure
-      - role_suggested：当前落库到 monster.role（与 derived.role_suggested 语义一致）
-      - tags：当前落库后的标签名列表
+    统一响应结构：返回“新五轴”派生（0~120 的整数）
+      - body_defense / 体防
+      - body_resist  / 体抗
+      - debuff_def_res / 削防抗
+      - debuff_atk_mag / 削攻法
+      - special_tactics / 特殊
     """
-    out = compute_derived_out(m)  # dict[int]
-    # role：由 derive_service.apply_role_tags / recompute_and_autolabel 负责写入
-    role = getattr(m, "role", None) or getattr(getattr(m, "derived", None), "role_suggested", None)
-    tags = [t.name for t in (getattr(m, "tags", None) or []) if getattr(t, "name", None)]
-    return {
-        **out,
-        "role_suggested": role,
-        "tags": tags,
-    }
+    return compute_derived_out(m)
 
 # ---------------------------
 # 单个：读取/计算（GET）
@@ -60,11 +54,11 @@ def _derived_payload(m: Monster) -> Dict[str, object]:
 @router.get("/monsters/{monster_id}/derived")
 def get_monster_derived(monster_id: int, db: Session = Depends(get_db)):
     """
-    读取并返回派生五维 + 定位 + 标签。
-    这里直接调用 recompute_and_autolabel，以保证 role/tag 与派生一致（并写库）。
+    读取并返回“新五轴”派生。
+    这里直接调用 recompute_derived_only，以确保落库为最新（不做自动定位/标签补齐）。
     """
     m = _monster_or_404(db, monster_id)
-    recompute_and_autolabel(db, m)   # 统一在服务层完成：派生 + 定位 +（必要时）标签合并
+    recompute_derived_only(db, m, ensure_prefix_tags=False)
     db.commit()
     return _derived_payload(m)
 
@@ -72,7 +66,7 @@ def get_monster_derived(monster_id: int, db: Session = Depends(get_db)):
 @router.get("/derive/{monster_id}")
 def get_derived_compat(monster_id: int, db: Session = Depends(get_db)):
     m = _monster_or_404(db, monster_id)
-    recompute_and_autolabel(db, m)
+    recompute_derived_only(db, m, ensure_prefix_tags=False)
     db.commit()
     return _derived_payload(m)
 
@@ -83,18 +77,18 @@ def get_derived_compat(monster_id: int, db: Session = Depends(get_db)):
 @router.post("/monsters/{monster_id}/derived/recompute")
 def recalc_monster(monster_id: int, db: Session = Depends(get_db)):
     """
-    强制重算并落库（派生 + 定位 + 标签）。
+    强制重算并落库（仅新五轴，不做自动定位/标签）。
     """
     m = _monster_or_404(db, monster_id)
-    recompute_and_autolabel(db, m)
+    recompute_derived_only(db, m, ensure_prefix_tags=False)
     db.commit()
     return _derived_payload(m)
 
-# 兼容旧路径：/derive/recalc/{id}
+# 兼容旧路径：/derive/recalc/{monster_id}
 @router.post("/derive/recalc/{monster_id}")
 def recalc_monster_compat(monster_id: int, db: Session = Depends(get_db)):
     m = _monster_or_404(db, monster_id)
-    recompute_and_autolabel(db, m)
+    recompute_derived_only(db, m, ensure_prefix_tags=False)
     db.commit()
     return _derived_payload(m)
 
@@ -102,10 +96,8 @@ def recalc_monster_compat(monster_id: int, db: Session = Depends(get_db)):
 # 批量：重算（POST）
 # ---------------------------
 
-class BatchIdsIn(BaseException):
-    pass
-
 from pydantic import BaseModel
+
 class BatchIds(BaseModel):
     ids: Optional[List[int]] = None  # 缺省/空 => 全部
 
@@ -128,7 +120,7 @@ def _batch_recompute(ids: Optional[List[int]], db: Session) -> Dict[str, object]
             details.append({"id": mid, "ok": False, "error": "monster not found"})
             continue
         try:
-            recompute_and_autolabel(db, m)
+            recompute_derived_only(db, m, ensure_prefix_tags=False)
             db.commit()
             success += 1
             details.append({"id": mid, "ok": True})
@@ -150,7 +142,7 @@ def derived_batch(payload: BatchIds = Body(...), db: Session = Depends(get_db)):
     """
     批量重算（兼容前端“/derived/batch”调用）：
       - 未传 ids 或空数组 => 对全部 Monster 重算
-      - 逐条串行 recompute_and_autolabel，保证 role 与 tags 与派生一致
+      - 逐条串行 recompute_derived_only（不做定位/标签）
     """
     return _batch_recompute(payload.ids, db)
 
@@ -166,7 +158,7 @@ def derived_batch_api_v1(payload: BatchIds = Body(...), db: Session = Depends(ge
 @router.post("/derive/recalc_all")
 def recalc_all(db: Session = Depends(get_db)):
     """
-    对全部 Monster 重算（不带明细）。
+    对全部 Monster 重算新五轴（不带明细）。
     """
     n = recompute_all(db)
     db.commit()

@@ -22,10 +22,10 @@ from ..services.tags_service import (
     load_catalog,          # 热加载 tags_catalog.json （实现于 tags_service）
     get_i18n_map,          # 返回 {code: "中文"} 映射（实现于 tags_service）
 )
-# 只从 derive_service 引入“派生+定位”的入口
+# 仅从 derive_service 引入“新五轴派生”的入口（不再做定位）
 from ..services.derive_service import (
-    recompute_and_autolabel,
-    infer_role_for_monster,   # 用于 /suggest 纯建议展示（不落库）
+    compute_and_persist,
+    compute_derived_out,
 )
 
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -136,24 +136,23 @@ def suggest(monster_id: int, db: Session = Depends(get_db)):
     """
     仅返回建议（不写库）：
     - tags: 正则建议标签（代码）
-    - role_suggest: 通过 derive_service 的 infer_role_for_monster 得到的“建议定位”（不落库）
+    - derived_preview: 当前怪以现有数据计算的“新五轴派生”（0~120 整数），方便前端展示
     - i18n: 附带 code→中文映射，前端可以直接用
     """
     m = db.execute(select(Monster).where(Monster.id == monster_id)).scalar_one_or_none()
     if not m:
         raise HTTPException(404, "monster not found")
     tags = suggest_tags_for_monster(m)
-    role_suggest = infer_role_for_monster(m)
+    derived_preview = compute_derived_out(m)
     return {
         "monster_id": m.id,
-        "role_suggest": role_suggest,
-        "role": getattr(m, "role", None),
         "tags": tags,                 # code list
+        "derived_preview": derived_preview,
         "i18n": get_i18n_map(),       # 前端据此渲染中文
     }
 
 # ======================
-# 正则落库（统一派生+定位）
+# 正则落库（写库 + 仅派生，不做定位）
 # ======================
 
 @router.post("/monsters/{monster_id}/retag")
@@ -161,7 +160,7 @@ def retag(monster_id: int, db: Session = Depends(get_db)):
     """
     正则计算并落库：
       1) m.tags = upsert_tags(...)
-      2) recompute_and_autolabel(db, m) → 负责派生与定位
+      2) compute_and_persist(db, m) → 计算并落库“新五轴派生”
     """
     m = db.execute(select(Monster).where(Monster.id == monster_id)).scalar_one_or_none()
     if not m:
@@ -170,19 +169,19 @@ def retag(monster_id: int, db: Session = Depends(get_db)):
     tags = suggest_tags_for_monster(m)
     m.tags = upsert_tags(db, tags)
 
-    recompute_and_autolabel(db, m)
+    compute_and_persist(db, m)
     db.commit()
 
     return {
         "ok": True,
         "monster_id": m.id,
-        "role": getattr(m, "role", None),
-        "tags": tags,           # code list
-        "i18n": get_i18n_map(), # 便于前端立即显示
+        "tags": tags,                       # code list
+        "derived": compute_derived_out(m),  # 0~120
+        "i18n": get_i18n_map(),             # 便于前端立即显示
     }
 
 # ======================
-# AI 打标签（单条，统一派生+定位）
+# AI 打标签（单条，写库 + 仅派生）
 # ======================
 
 @router.post("/monsters/{monster_id}/retag_ai")
@@ -190,7 +189,7 @@ def retag_ai(monster_id: int, db: Session = Depends(get_db)):
     """
     AI 识别并落库（内部已做审计/修复/自由候选写盘——见 tags_service）：
       1) m.tags = upsert_tags(...)
-      2) recompute_and_autolabel(db, m) → 负责派生与定位
+      2) compute_and_persist(db, m) → 计算并落库“新五轴派生”
     """
     m = db.execute(select(Monster).where(Monster.id == monster_id)).scalar_one_or_none()
     if not m:
@@ -202,14 +201,14 @@ def retag_ai(monster_id: int, db: Session = Depends(get_db)):
         raise HTTPException(500, f"AI 标签识别失败：{e}")
 
     m.tags = upsert_tags(db, tags)
-    recompute_and_autolabel(db, m)
+    compute_and_persist(db, m)
     db.commit()
 
     return {
         "ok": True,
         "monster_id": m.id,
-        "role": getattr(m, "role", None),
         "tags": tags,
+        "derived": compute_derived_out(m),
         "i18n": get_i18n_map(),
     }
 
@@ -227,7 +226,7 @@ def ai_batch(payload: BatchIds = Body(...), db: Session = Depends(get_db)):
       - 未传 ids 或传空数组 => 对全部 Monster
       - 对每个目标：
           m.tags = upsert_tags(...)
-          recompute_and_autolabel(db, m)
+          compute_and_persist(db, m)
       - 返回成功/失败明细（最多 200 条）
     """
     if payload.ids:
@@ -248,10 +247,15 @@ def ai_batch(payload: BatchIds = Body(...), db: Session = Depends(get_db)):
                 continue
             tags = ai_suggest_tags_for_monster(m)
             m.tags = upsert_tags(db, tags)
-            recompute_and_autolabel(db, m)
+            compute_and_persist(db, m)
             db.commit()
             success += 1
-            details.append({"id": mid, "ok": True, "role": getattr(m, "role", None), "tags": tags})
+            details.append({
+                "id": mid,
+                "ok": True,
+                "tags": tags,
+                "derived": compute_derived_out(m),
+            })
         except Exception as e:
             db.rollback()
             failed += 1

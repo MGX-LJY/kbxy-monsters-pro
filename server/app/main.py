@@ -1,3 +1,4 @@
+# server/app/main.py
 from __future__ import annotations
 
 import logging
@@ -13,7 +14,7 @@ from .db import Base, engine, startup_db_report_lines, DB_INFO
 from .middleware import TraceIDMiddleware
 
 from .routes import (
-    health, monsters, importing, recalc, tasks, skills, backup, utils, derive, crawl,
+    health, monsters, skills, backup, utils, derive, crawl,
     warehouse, types, collections,
 )
 
@@ -49,14 +50,12 @@ app.add_middleware(TraceIDMiddleware)
 # ⚠️ 移除：不要在模块顶层执行 create_all（会与 --reload 竞态）
 # Base.metadata.create_all(bind=engine)
 
-# 注册路由
+# 注册路由（基础）
 app.include_router(health.router)
 app.include_router(monsters.router)
-app.include_router(importing.router)   # 导入与爬虫相关接口（含 4399 测试/导入）
 app.include_router(backup.router)
 app.include_router(utils.router)
 app.include_router(skills.router)
-app.include_router(recalc.router)
 app.include_router(derive.router)
 app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])

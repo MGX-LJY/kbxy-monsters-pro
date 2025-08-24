@@ -26,23 +26,22 @@ class SkillOut(BaseModel):
         from_attributes = True
 
 
-# —— Derived 五维 —— #
+# —— Derived 新五轴 —— #
 class DerivedOut(BaseModel):
-    offense: int = 0
-    survive: int = 0
-    control: int = 0
-    tempo: int = 0
-    pp_pressure: int = 0
+    body_defense: int = 0       # 体防：体力/防御基础 + 治疗/护盾/减伤等自保
+    body_resist: int = 0        # 体抗：体力/抗性基础 + 净化/免疫/抗性提升等
+    debuff_def_res: int = 0     # 削防抗：降低防御/抗性（含破甲/易伤）；降速可作为加分项
+    debuff_atk_mag: int = 0     # 削攻法：降低攻击/法攻/命中等抑制输出
+    special_tactics: int = 0    # 特殊：PP 压制/中毒/剧毒/自爆/偷增益/封印等战术资源博弈
 
 
-# —— AutoMatch（保留，当前未直接使用） —— #
+# —— AutoMatch（保留占位：当前未直接使用；已去除 role 字段） —— #
 class AutoMatchIn(BaseModel):
     commit: bool = False  # True=写库，False=只返回建议（现由 /monsters/auto_match 接管）
 
 
 class AutoMatchOut(BaseModel):
     monster_id: int
-    role: str
     tags: List[str]
     derived: DerivedOut
     committed: bool = False
@@ -53,6 +52,7 @@ class MonsterIn(BaseModel):
     # 用 name 取代 name_final
     name: str
     element: Optional[str] = None
+    # role 字段保留作展示/人工维护；系统不再自动定位
     role: Optional[str] = None
 
     # 原始六维
@@ -78,6 +78,7 @@ class MonsterOut(BaseModel):
     id: int
     name: str
     element: Optional[str] = None
+    # role 字段保留作展示/人工维护；系统不再自动定位
     role: Optional[str] = None
 
     # 原始六维
@@ -102,7 +103,7 @@ class MonsterOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    # 派生五维（服务端计算）
+    # 新五轴派生（服务端计算）
     derived: Optional[DerivedOut] = None
 
     class Config:

@@ -15,7 +15,7 @@ from ..services.crawler_service import (
     normalize_skill_element, normalize_skill_kind,   # 复用统一映射
 )
 from ..services.skills_service import upsert_skills
-from ..services.derive_service import recompute_and_autolabel
+from ..services.derive_service import compute_and_persist  # ✅ 仅保留派生计算/落库
 
 router = APIRouter(prefix="/api/v1/crawl", tags=["crawl_4399"])
 log = logging.getLogger(__name__)
@@ -182,9 +182,9 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
                         db.flush()
                         affected += 1
 
-    # 3) 可选：重算派生 + 自动定位/标签
+    # 3) 可选：重算“新五轴”派生并落库
     if do_derive:
-        recompute_and_autolabel(db, m)
+        compute_and_persist(db, m)
         db.flush()
 
     return is_insert, affected
@@ -245,6 +245,7 @@ def crawl_all(body: CrawlAllBody):
       - skip_existing=True：库里已存在 name 则跳过
       - 否则执行 upsert；overwrite=True 时覆盖基础字段
       - Skill 全局去重唯一键使用【统一后的】(name, element, kind, power)
+      - 可选：为每只怪计算“新五轴”派生并落库
     """
     crawler = Kabu4399Crawler()
 

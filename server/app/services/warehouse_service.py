@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, asc, desc, or_
 
 from ..models import Monster, MonsterSkill, Skill, Tag, MonsterDerived
-from ..services.derive_service import compute_derived_out, compute_and_persist
+from ..services.derive_service import compute_derived_out, recompute_derived_only
 
 
 # -------- 基础操作：加入/移出/批量设置 --------
@@ -83,17 +83,11 @@ def list_warehouse(
     page_size: int = 20,
 ) -> Tuple[List[Monster], int]:
     """
-    支持按 possess 过滤：
-      - possess=True  ：仅返回在仓库中的怪（Monster.possess=True）
-      - possess=False ：仅返回未拥有（Monster.possess=False 或 NULL）
-      - possess=None  ：不过滤拥有状态（全量）
-
-    其它筛选：
-      - q / element / role / tag / tags_all / type(acq_type)
-    排序（SQL 层）：
+    支持按 possess 过滤与多条件筛选；排序支持：
       - 基础列：updated_at / created_at / name / element / role
       - 原生六维：hp / speed / attack / defense / magic / resist / raw_sum（六维总和）
-      - 派生五维：offense / survive / control / tempo / pp_pressure（OUTER JOIN MonsterDerived）
+      - 新五轴（派生，需 OUTER JOIN MonsterDerived）：
+          body_defense / body_resist / debuff_def_res / debuff_atk_mag / special_tactics
     """
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
@@ -136,14 +130,13 @@ def list_warehouse(
     # ---- 排序键解析 ----
     s = (sort or "updated_at").lower()
 
-    # 派生五维
+    # 新五轴（派生）
     derived_map = {
-        "offense": MonsterDerived.offense,
-        "survive": MonsterDerived.survive,
-        "control": MonsterDerived.control,
-        "tempo": MonsterDerived.tempo,
-        "pp": MonsterDerived.pp_pressure,          # 别名
-        "pp_pressure": MonsterDerived.pp_pressure,
+        "body_defense":   MonsterDerived.body_defense,    # 体防
+        "body_resist":    MonsterDerived.body_resist,     # 体抗
+        "debuff_def_res": MonsterDerived.debuff_def_res,  # 削防抗
+        "debuff_atk_mag": MonsterDerived.debuff_atk_mag,  # 削攻法
+        "special_tactics": MonsterDerived.special_tactics # 特殊
     }
 
     # 原生六维
@@ -191,12 +184,13 @@ def list_warehouse(
     # 可选：确保派生落库最新（不会影响排序，因为排序已在 SQL 完成）
     changed = False
     for m in items:
-        fresh = compute_derived_out(m)
+        fresh = compute_derived_out(m)  # 新五轴 0~120（由 derive_service 决定范围）
         if (not m.derived) or any(
-            getattr(m.derived, k) != fresh[k]
-            for k in ("offense", "survive", "control", "tempo", "pp_pressure")
+            getattr(m.derived, k, None) != fresh[k]
+            for k in ("body_defense", "body_resist", "debuff_def_res", "debuff_atk_mag", "special_tactics")
         ):
-            compute_and_persist(db, m)
+            # 仅重算并持久化新五轴；不做定位写回
+            recompute_derived_only(db, m, ensure_prefix_tags=False)
             changed = True
     if changed:
         db.flush()
