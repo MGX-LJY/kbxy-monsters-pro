@@ -1,7 +1,7 @@
 # server/app/routes/warehouse.py
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from pydantic import BaseModel
@@ -27,6 +27,53 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# 旧→新派生键兜底（与前端保持一致）
+LEGACY_FALLBACK = {
+    "body_defense": "survive",
+    "special_tactics": "pp_pressure",
+    # 如还有其它旧键→新键关系，可继续补
+}
+
+
+def pick_derived_value(d: dict, key: str):
+    """取派生值：优先新键；没有则用旧键兜底；返回 None 表示无值。"""
+    if not isinstance(d, dict):
+        return None
+    v = d.get(key, None)
+    if isinstance(v, (int, float)):
+        return float(v)
+    legacy = LEGACY_FALLBACK.get(key)
+    if legacy is not None:
+        lv = d.get(legacy)
+        if isinstance(lv, (int, float)):
+            return float(lv)
+    return None
+
+
+def enrich_new_keys(d: dict) -> dict:
+    """把缺失的新键补出来，便于前端直接读取。"""
+    out = dict(d or {})
+    for newk, oldk in LEGACY_FALLBACK.items():
+        if newk not in out and isinstance(out.get(oldk), (int, float)):
+            out[newk] = out[oldk]
+    return out
+
+
+def sort_key_for(val: Optional[float], mid: int, is_asc: bool):
+    """
+    生成排序 key：
+      - 升序：NULLS FIRST
+      - 降序：NULLS LAST
+      - 同值按 id ASC
+    统一用“升序排序”，不使用 reverse 以避免 NULL 行为出错。
+    """
+    if val is None:
+        # 升序时放前，降序时放后
+        return (0, 0.0, mid) if is_asc else (1, 0.0, mid)
+    else:
+        return (1, float(val), mid) if is_asc else (0, -float(val), mid)
 
 
 # ---- 列表（拥有过滤：possess=True/False/None）----
@@ -63,151 +110,124 @@ def warehouse_list(
         * 六维总和：raw_sum
         * 基础：updated_at / created_at / name / element / role
     """
-    # —— 只要命中“派生排序”或带 collection_id，就强制走本地回退（避免老 service 忽略/不支持）—— #
+    s_key = (sort or "updated_at").lower()
+    is_asc = (order or "desc").lower() == "asc"
+
     DERIVED_KEYS = {"body_defense", "body_resist", "debuff_def_res", "debuff_atk_mag", "special_tactics"}
-    force_fallback = (sort or "").lower() in DERIVED_KEYS or (collection_id is not None)
+    RAW_MAP = {
+        "hp": Monster.hp,
+        "speed": Monster.speed,
+        "attack": Monster.attack,
+        "defense": Monster.defense,
+        "magic": Monster.magic,
+        "resist": Monster.resist,
+    }
+    raw_sum_expr = (
+        func.coalesce(Monster.hp, 0)
+        + func.coalesce(Monster.speed, 0)
+        + func.coalesce(Monster.attack, 0)
+        + func.coalesce(Monster.defense, 0)
+        + func.coalesce(Monster.magic, 0)
+        + func.coalesce(Monster.resist, 0)
+    )
 
-    try:
-        if force_fallback:
-            raise TypeError("force local fallback")
-        items, total = list_warehouse(
-            db,
-            possess=possess,
-            q=q,
-            element=element,
-            role=role,
-            tag=tag,
-            tags_all=tags_all,
-            type=type,
-            acq_type=acq_type,
-            collection_id=collection_id,              # 先尝试带上
-            sort=sort or "updated_at",
-            order=order or "desc",
-            page=page,
-            page_size=page_size,
+    # ---------- 构建基础过滤 ----------
+    base_q = db.query(Monster)
+
+    # possess 过滤
+    if possess is True:
+        base_q = base_q.filter(Monster.possess.is_(True))
+    elif possess is False:
+        base_q = base_q.filter(or_(Monster.possess.is_(False), Monster.possess.is_(None)))
+
+    # 收藏分组
+    if collection_id is not None:
+        base_q = (
+            base_q.join(CollectionItem, CollectionItem.monster_id == Monster.id)
+                  .filter(CollectionItem.collection_id == int(collection_id))
+                  .distinct(Monster.id)
         )
-    except TypeError:
-        # 签名不支持 collection_id 的情况下，再试一次不带该参数（保持“服务层排序”能力）
-        try:
-            if force_fallback:
-                raise TypeError("force local fallback 2")
-            items, total = list_warehouse(
-                db,
-                possess=possess,
-                q=q,
-                element=element,
-                role=role,
-                tag=tag,
-                tags_all=tags_all,
-                type=type,
-                acq_type=acq_type,
-                sort=sort or "updated_at",
-                order=order or "desc",
-                page=page,
-                page_size=page_size,
+
+    # 基础筛选
+    if q:
+        like = f"%{q.strip()}%"
+        base_q = base_q.filter(Monster.name.ilike(like))
+    if element:
+        base_q = base_q.filter(Monster.element == element)
+    if role:
+        base_q = base_q.filter(Monster.role == role)
+
+    # 标签筛选
+    if tags_all:
+        for t in tags_all:
+            if t:
+                base_q = base_q.filter(Monster.tags.any(Tag.name == t))
+    if tag:
+        base_q = base_q.filter(Monster.tags.any(Tag.name == tag))
+
+    # 获取途径（包含匹配）
+    acq = (acq_type or type or "").strip()
+    if acq:
+        base_q = base_q.filter(Monster.type.ilike(f"%{acq}%"))
+
+    # 先拿总数
+    total = base_q.order_by(None).count()
+
+    # ---------- 排序 ----------
+    if s_key in DERIVED_KEYS:
+        # —— 派生五维：固定走内存排序（避免 Derived 表空/半空导致排序退化）——
+        id_rows = base_q.with_entities(Monster.id).all()
+        id_list = [r[0] for r in id_rows]
+
+        items: List[Monster] = []
+        if id_list:
+            ms = (
+                db.query(Monster)
+                  .filter(Monster.id.in_(id_list))
+                  .options(
+                      selectinload(Monster.tags),
+                      selectinload(Monster.derived),
+                      selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
+                  )
+                  .all()
             )
-        except TypeError:
-            # ---------- 本地回退实现（支持新五轴 SQL 排序） ----------
-            page = max(1, int(page))
-            page_size = min(200, max(1, int(page_size)))
+            m_map = {m.id: m for m in ms}
 
-            query = db.query(Monster)
+            scored: List[Tuple[tuple, int]] = []
+            for mid in id_list:
+                m = m_map.get(mid)
+                if not m:
+                    continue
+                d = compute_derived_out(m) or {}
+                val = pick_derived_value(d, s_key)
+                scored.append((sort_key_for(val, mid, is_asc), mid))
 
-            # possess 过滤
-            if possess is True:
-                query = query.filter(Monster.possess.is_(True))
-            elif possess is False:
-                # 将未拥有定义为 False 或 None
-                query = query.filter(or_(Monster.possess.is_(False), Monster.possess.is_(None)))
+            scored.sort(key=lambda x: x[0])  # 统一升序 key
 
-            # 按收藏分组过滤（JOIN + DISTINCT 防重复）
-            if collection_id is not None:
-                query = (
-                    query.join(CollectionItem, CollectionItem.monster_id == Monster.id)
-                         .filter(CollectionItem.collection_id == int(collection_id))
-                         .distinct(Monster.id)
-                )
+            start = (page - 1) * page_size
+            end = start + page_size
+            page_ids = [mid for _, mid in scored[start:end]]
+            items = [m_map[mid] for mid in page_ids if mid in m_map]
 
-            # 基础筛选
-            if q:
-                like = f"%{q.strip()}%"
-                query = query.filter(Monster.name.ilike(like))
-            if element:
-                query = query.filter(Monster.element == element)
-            if role:
-                query = query.filter(Monster.role == role)
+    elif s_key == "raw_sum":
+        q_sorted = base_q.order_by(asc(raw_sum_expr) if is_asc else desc(raw_sum_expr), Monster.id.asc())
+        items = q_sorted.offset((page - 1) * page_size).limit(page_size).all()
 
-            # 标签筛选
-            if tags_all:
-                for t in tags_all:
-                    if t:
-                        query = query.filter(Monster.tags.any(Tag.name == t))
-            if tag:
-                query = query.filter(Monster.tags.any(Tag.name == tag))
+    elif s_key in RAW_MAP:
+        col = RAW_MAP[s_key]
+        q_sorted = base_q.order_by(asc(col) if is_asc else desc(col), Monster.id.asc())
+        items = q_sorted.offset((page - 1) * page_size).limit(page_size).all()
 
-            # 获取途径（包含匹配）
-            acq = (acq_type or type or "").strip()
-            if acq:
-                query = query.filter(Monster.type.ilike(f"%{acq}%"))
+    elif s_key in {"name", "element", "role", "created_at", "updated_at"}:
+        col = getattr(Monster, s_key)
+        q_sorted = base_q.order_by(asc(col) if is_asc else desc(col), Monster.id.asc())
+        items = q_sorted.offset((page - 1) * page_size).limit(page_size).all()
 
-            # —— 排序（含新五轴）——
-            s = (sort or "updated_at").lower()
-            is_asc = (order or "desc").lower() == "asc"
+    else:
+        q_sorted = base_q.order_by(Monster.updated_at.desc(), Monster.id.asc())
+        items = q_sorted.offset((page - 1) * page_size).limit(page_size).all()
 
-            # 新五轴映射
-            derived_map = {
-                "body_defense":   MonsterDerived.body_defense,
-                "body_resist":    MonsterDerived.body_resist,
-                "debuff_def_res": MonsterDerived.debuff_def_res,
-                "debuff_atk_mag": MonsterDerived.debuff_atk_mag,
-                "special_tactics": MonsterDerived.special_tactics,
-            }
-
-            # 六维 & 总和
-            raw_map = {
-                "hp": Monster.hp,
-                "speed": Monster.speed,
-                "attack": Monster.attack,
-                "defense": Monster.defense,
-                "magic": Monster.magic,
-                "resist": Monster.resist,
-            }
-            raw_sum = (
-                func.coalesce(Monster.hp, 0)
-                + func.coalesce(Monster.speed, 0)
-                + func.coalesce(Monster.attack, 0)
-                + func.coalesce(Monster.defense, 0)
-                + func.coalesce(Monster.magic, 0)
-                + func.coalesce(Monster.resist, 0)
-            )
-
-            if s in derived_map:
-                # 排序用 OUTER JOIN 到派生表；NULLS LAST/FIRST 便于观感
-                query = query.outerjoin(
-                    MonsterDerived,
-                    MonsterDerived.monster_id == Monster.id
-                )
-                col = derived_map[s]
-                order_expr = (asc(col).nullsfirst() if is_asc else desc(col).nullslast())
-                query = query.order_by(order_expr, Monster.id.asc())
-            elif s == "raw_sum":
-                query = query.order_by(asc(raw_sum) if is_asc else desc(raw_sum), Monster.id.asc())
-            elif s in raw_map:
-                col = raw_map[s]
-                query = query.order_by(asc(col) if is_asc else desc(col), Monster.id.asc())
-            elif s in {"name", "element", "role", "created_at", "updated_at"}:
-                col = getattr(Monster, s)
-                query = query.order_by(asc(col) if is_asc else desc(col), Monster.id.asc())
-            else:
-                query = query.order_by(Monster.updated_at.desc(), Monster.id.asc())
-
-            # 计数（与查询同条件）
-            total = query.order_by(None).count()
-
-            # 分页
-            items = query.offset((page - 1) * page_size).limit(page_size).all()
-
-    # 预加载（避免 N+1）
+    # 预加载（避免 N+1；上面派生分支已预加载，这里补全其它分支）
     ids = [m.id for m in items]
     if ids:
         _ = db.execute(
@@ -220,9 +240,11 @@ def warehouse_list(
             )
         ).scalars().all()
 
+    # 输出
     out = []
     for m in items:
-        d = compute_derived_out(m)  # 新五轴由 derive_service 统一计算/兜底
+        d_raw = compute_derived_out(m) or {}
+        d = enrich_new_keys(d_raw)
         out.append(
             MonsterOut(
                 id=m.id,
