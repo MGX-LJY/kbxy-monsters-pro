@@ -63,8 +63,13 @@ def warehouse_list(
         * 六维总和：raw_sum
         * 基础：updated_at / created_at / name / element / role
     """
-    # —— 优先调用 service；若签名较旧不支持 collection_id，则无 collection_id 再试；再不行才回退 —— #
+    # —— 只要命中“派生排序”或带 collection_id，就强制走本地回退（避免老 service 忽略/不支持）—— #
+    DERIVED_KEYS = {"body_defense", "body_resist", "debuff_def_res", "debuff_atk_mag", "special_tactics"}
+    force_fallback = (sort or "").lower() in DERIVED_KEYS or (collection_id is not None)
+
     try:
+        if force_fallback:
+            raise TypeError("force local fallback")
         items, total = list_warehouse(
             db,
             possess=possess,
@@ -84,6 +89,8 @@ def warehouse_list(
     except TypeError:
         # 签名不支持 collection_id 的情况下，再试一次不带该参数（保持“服务层排序”能力）
         try:
+            if force_fallback:
+                raise TypeError("force local fallback 2")
             items, total = list_warehouse(
                 db,
                 possess=possess,

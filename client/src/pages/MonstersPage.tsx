@@ -1573,7 +1573,7 @@ export default function MonstersPage() {
                         </div>
                       </td>
                       <td className="text-center align-middle py-2.5">
-                        <div className="inline-flex flex-wrap gap-1 justify中心">
+                        <div className="inline-flex flex-wrap gap-1 justify-center">
                           {chips(buckets.deb, '🔴')}
                         </div>
                       </td>
@@ -1720,7 +1720,7 @@ export default function MonstersPage() {
                       <div className="text-sm text-gray-600 text-center">{label}</div>
                       <input type="range" min={50} max={200} step={1}
                         value={val} onChange={e => (setter as any)(parseInt(e.target.value, 10))} className="col-span-4" />
-                      <input className="input py-1 text中心" value={val}
+                      <input className="input py-1 text-center" value={val}
                         onChange={e => (setter as any)(Math.max(0, parseInt(e.target.value || '0', 10)))} />
                     </div>
                   ))}
@@ -1802,21 +1802,24 @@ export default function MonstersPage() {
                     <div className="p-2 bg-gray-50 rounded text-center">攻击：<b>{showStats.attack}</b></div>
                     <div className="p-2 bg-gray-50 rounded text-center">防御：<b>{showStats.defense}</b></div>
                     <div className="p-2 bg-gray-50 rounded text-center">法术：<b>{showStats.magic}</b></div>
-                    <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{(showStats as any).sum}</b></div>
+                    <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
+                    <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{showStats.sum}</b>
+                    </div>
                   </div>
                 </div>
 
                 <div>
                   <h4 className="font-semibold mb-2">技能</h4>
                   {skills.isLoading && <div className="text-sm text-gray-500">加载中...</div>}
-                  {!skills.data?.length && !skills.isLoading && <div className="text-sm text-gray-500">暂无技能数据</div>}
+                  {!skills.data?.length && !skills.isLoading &&
+                      <div className="text-sm text-gray-500">暂无技能数据</div>}
                   <ul className="space-y-2">
                     {skills.data?.filter(s => isValidSkillName(s.name)).map(s => (
-                      <li key={`${s.id || s.name}`} className="p-3 bg-gray-50 rounded">
-                        <div className="flex items-center justify-between">
-                          <div className="font-medium">{s.name}</div>
-                          <div className="text-xs text-gray-500">
-                            {[s.element, s.kind, (s.power ?? '')].filter(Boolean).join(' / ') || '—'}
+                        <li key={`${s.id || s.name}`} className="p-3 bg-gray-50 rounded">
+                          <div className="flex items-center justify-between">
+                            <div className="font-medium">{s.name}</div>
+                            <div className="text-xs text-gray-500">
+                              {[s.element, s.kind, (s.power ?? '')].filter(Boolean).join(' / ') || '—'}
                           </div>
                         </div>
                         {isMeaningfulDesc(s.description) && (
@@ -1878,7 +1881,7 @@ export default function MonstersPage() {
 
             <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               {typeof progressPct === 'number' ? (
-                <div className="h-2 bg紫-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
+                <div className="h-2 bg-purple-300 rounded-full transition-all duration-200" style={{ width: `${progressPct}%` }} />
               ) : (
                 <div className="h-2 w-1/2 animate-pulse bg-purple-300 rounded-full" />
               )}
@@ -1909,8 +1912,8 @@ export default function MonstersPage() {
 
       {/* 简易的“加入收藏”选择/新建弹框 */}
       {collectionDialogOpen && (
-        <div className="固定 inset-0 z-50 bg-black/30 flex items-center justify-center">
-          <div className="bg白 rounded-2xl shadow-xl w-[min(92vw,520px)] p-5 space-y-4">
+        <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center">
+          <div className="bg-white rounded-2xl shadow-xl w-[min(92vw,520px)] p-5 space-y-4">
             <div className="text-lg font-semibold">加入收藏</div>
 
             <div className="space-y-3">

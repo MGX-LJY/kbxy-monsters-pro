@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import bisect
-import re
 from typing import Dict, Tuple, List, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from ..models import Monster, MonsterDerived
-from .tags_service import extract_signals, suggest_tags_for_monster  # 仅用于信号与“缺前缀时的补齐”
+# 仅保留用于“可选补齐前缀标签”的建议；计算本身不再依赖技能
+from .tags_service import suggest_tags_for_monster  # 仅在 _ensure_prefix_tags 可选使用
 from .monsters_service import upsert_tags
 
 
@@ -25,108 +25,74 @@ def _raw_six(monster: Monster) -> Tuple[float, float, float, float, float, float
     return hp, speed, attack, defense, magic, resist
 
 
-def _skills_text(monster: Monster) -> str:
-    """
-    兼容两种关系结构：
-    - monster.skills: [Skill or MonsterSkill(skill=Skill)]
-    - monster.monster_skills: [MonsterSkill]
-    """
-    parts: List[str] = []
-    # 1) 常规 skills
-    for item in (getattr(monster, "skills", None) or []):
-        skill = getattr(item, "skill", None) or item
-        n = getattr(skill, "name", None)
-        d = getattr(skill, "description", None)
-        if n:
-            parts.append(str(n))
-        if d:
-            parts.append(str(d))
-        # 有些实现把说明写在 MonsterSkill 上
-        desc2 = getattr(item, "description", None)
-        if desc2:
-            parts.append(str(desc2))
-    # 2) 兼容 monster_skills
-    for ms in (getattr(monster, "monster_skills", None) or []):
-        sk = getattr(ms, "skill", None)
-        if sk is not None:
-            if getattr(sk, "name", None):
-                parts.append(str(sk.name))
-            if getattr(sk, "description", None):
-                parts.append(str(sk.description))
-        if getattr(ms, "description", None):
-            parts.append(str(ms.description))
-    return " ".join(parts)
-
-
 def _round_int_clip(v: float, hi: int = 120) -> int:
     return int(min(hi, max(0, round(v))))
 
 
 def _tag_codes_from_monster(monster: Monster) -> List[str]:
-    raw = []
+    """
+    只从已有标签中读取规范化代码（buf_/deb_/util_）。
+    不做基于技能文本的回退/推断。
+    """
+    raw: List[str] = []
     for t in (getattr(monster, "tags", None) or []):
         name = getattr(t, "name", None) or (t if isinstance(t, str) else None)
         if isinstance(name, str):
-            raw.append(name)
-    codes = [c for c in raw if c.startswith("buf_") or c.startswith("deb_") or c.startswith("util_")]
-    if not codes:
-        tried = suggest_tags_for_monster(monster)
-        codes = [c for c in tried if c.startswith("buf_") or c.startswith("deb_") or c.startswith("util_")]
-    return codes
+            raw.append(name.strip())
+    return [c for c in raw if c.startswith(("buf_", "deb_", "util_"))]
 
 
-# ===================== 信号抽取（在 tags_service 基础上补充“毒/自爆”等） =====================
+# ===================== 信号抽取（仅基于标签） =====================
 
 def _detect_signals_v3(monster: Monster) -> Dict[str, float]:
     """
-    统一信号面向新五轴：
-      - 生存：heal/shield/dmg_reduce/reflect/物免/法免/异常免疫/净化/def_up/res_up/evasion_up
-      - 抑制：def_down/res_down/armor_break/atk_down/mag_down/acc_down/spd_down/skill_seal/mark_expose
-      - 资源&非常规：pp_any/pp_hits/poison/toxic/self_destruct/heal_block/fatigue/（可选）dispel/transfer/invert
+    统一信号面向新五轴，**仅依据标签 codes（buf_/deb_/util_）**：
+
+    - 生存：heal/shield/dmg_reduce/reflect/物免/法免/异常免疫/净化/def_up/res_up/evasion_up
+    - 抑制：def_down/res_down/armor_break(=util_penetrate)/atk_down/mag_down/acc_down/spd_down/skill_seal/mark_expose
+    - 资源&非常规：pp_any(util_pp_drain)/pp_hits(=0)/poison(deb_poison)/toxic(=0)/self_destruct(=0)/
+      heal_block/debuff_fatigue/dispel_enemy/transfer_debuff/invert_buffs
     """
-    sig = extract_signals(monster)  # 由 tags_service 产出的一组基础布尔/计数信号
-    text = _skills_text(monster)
     codes = set(_tag_codes_from_monster(monster))
 
-    def has(patterns: List[str]) -> bool:
-        return any(re.search(p, text) for p in patterns)
+    def has_code(*keys: str) -> bool:
+        return any(k in codes for k in keys)
 
     # —— 生存/辅助 —— #
-    heal        = ("buf_heal" in codes) or has([r"(回复|治疗|恢复)"])
-    shield      = ("buf_shield" in codes) or has([r"护盾|结界|护体|庇护|保护"])
-    dmg_reduce  = ("buf_dmg_cut_all" in codes) or ("buf_phys_cut" in codes) or ("buf_mag_cut" in codes) or \
-                  has([r"(所受|受到).*(伤害).*(减少|降低|减半|减免)", r"伤害(减少|降低|减半|减免)"])
-    reflect     = ("util_reflect" in codes) or has([r"反击|反伤|反弹|反射伤害"])
-    cleanse_self= ("buf_purify" in codes) or has([r"(净化|清除|消除|解除).*(自身|自我|本方).*?(负面|异常|减益|不良)"])
-    immunity    = ("buf_immunity" in codes) or has([r"免疫(异常|控制|不良)状态?"])
-    phys_immu   = ("buf_phys_immunity" in codes) or has([r"免疫.*?(物理|物理攻击)"])
-    mag_immu    = ("buf_mag_immunity" in codes) or has([r"免疫.*?(法术|魔法|法术攻击|魔法攻击)"])
-    def_up      = ("buf_def_up" in codes)
-    res_up      = ("buf_res_up" in codes)
-    evasion_up  = ("buf_evasion_up" in codes) or has([r"(闪避|回避|躲避)(率)?(提升|提高|上升|增加|增强)"])
+    heal         = has_code("buf_heal")
+    shield       = has_code("buf_shield")
+    dmg_reduce   = has_code("buf_dmg_cut_all", "buf_phys_cut", "buf_mag_cut")
+    reflect      = has_code("util_reflect")
+    cleanse_self = has_code("buf_purify")
+    immunity     = has_code("buf_immunity")
+    phys_immu    = has_code("buf_phys_immunity")
+    mag_immu     = has_code("buf_mag_immunity")
+    def_up       = has_code("buf_def_up")
+    res_up       = has_code("buf_res_up")
+    evasion_up   = has_code("buf_evasion_up")
 
     # —— 抑制（对敌方） —— #
-    armor_break = has([r"破防", r"护甲破坏"])
-    def_down    = ("deb_def_down" in codes)
-    res_down    = ("deb_res_down" in codes)
-    atk_down    = ("deb_atk_down" in codes)
-    mag_down    = ("deb_mag_down" in codes)
-    acc_down    = ("deb_acc_down" in codes)
-    spd_down    = ("deb_spd_down" in codes)
-    skill_seal  = ("deb_confuse_seal" in codes) or has([r"封印|禁技|无法使用技能|禁止使用技能"])
-    mark_expose = ("deb_marked" in codes) or ("deb_vulnerable" in codes) or has([r"标记|易伤|(暴|曝)露|破绽"])
+    armor_break  = has_code("util_penetrate")  # 破防/穿透/破盾 视作破甲信号
+    def_down     = has_code("deb_def_down")
+    res_down     = has_code("deb_res_down")
+    atk_down     = has_code("deb_atk_down")
+    mag_down     = has_code("deb_mag_down")
+    acc_down     = has_code("deb_acc_down")
+    spd_down     = has_code("deb_spd_down")
+    skill_seal   = has_code("deb_confuse_seal")
+    mark_expose  = has_code("deb_marked", "deb_vulnerable")
 
     # —— 资源/非常规 —— #
-    pp_hits      = int(sig.get("pp_hits", 0))
-    pp_any       = (pp_hits > 0) or ("util_pp_drain" in codes) or has([r"扣\s*PP", r"减少.*?技能.*?次数"])
-    poison       = has([r"中毒|毒伤"]) and not has([r"解毒|祛毒"])
-    toxic        = has([r"剧毒|猛毒|强毒"])
-    self_destruct= has([r"自爆|自毁|同归于尽|玉石俱焚"])
-    heal_block   = ("deb_heal_block" in codes) or has([r"无法(回复|治疗|恢复)", r"(治疗|回复|恢复).*(降低|减少|减半|抑制)"])
-    fatigue      = ("deb_fatigue" in codes) or has([r"疲劳|乏力|疲倦"])
-    dispel_enemy = ("deb_dispel" in codes) or has([r"(消除|驱散|清除).*(对方|对手|敌方).*(增益|强化|状态)"])
-    transfer_debuff = ("util_transfer_debuff" in codes) or has([r"(将|把).*(自身|自我).*(负面|异常|减益).*(转移|移交).*(对方|对手|敌方)"])
-    invert_buffs = ("util_invert_buffs" in codes) or has([r"(将|使).*(增益|强化).*(转变|变为).*(减益|负面)"])
+    pp_hits       = 0  # 不读取技能，不统计段数
+    pp_any        = has_code("util_pp_drain")
+    poison        = has_code("deb_poison")
+    toxic         = False  # 无单独“剧毒”标签，置 0
+    self_destruct = False  # 无“自爆”标签，置 0
+    heal_block    = has_code("deb_heal_block")
+    fatigue       = has_code("deb_fatigue")
+    dispel_enemy  = has_code("deb_dispel")
+    transfer_debuff = has_code("util_transfer_debuff")
+    invert_buffs    = has_code("util_invert_buffs")
 
     return {
         # 生存
@@ -175,6 +141,7 @@ NEW_KEYS = ["body_defense", "body_resist", "debuff_def_res", "debuff_atk_mag", "
 def compute_derived(monster: Monster) -> Dict[str, float]:
     """
     计算“体防/体抗/削防抗/削攻法/特殊”的原始浮点值（未裁剪）。
+    仅基于：六维（hp/defense/resist）+ 上述标签信号。
     """
     hp, _speed, _attack, defense, _magic, resist = _raw_six(monster)
     s = _detect_signals_v3(monster)
@@ -206,13 +173,13 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
 
     # 削防抗：降防/降抗/破甲 + 联合奖励（降速/易伤小额）
     debuff_def_res_sig = (
-        8.0  * s["armor_break"] +
+        8.0  * s["armor_break"] +   # = util_penetrate
         6.0  * s["def_down"] +
         6.0  * s["res_down"] +
         2.0  * s["spd_down"] +
         2.0  * s["mark_expose"]
     )
-    # 联合命中加成
+    # 联合命中加成（只看标签是否同时存在）
     if s["def_down"] and s["res_down"]:
         debuff_def_res_sig += 4.0
     if s["def_down"] and s["armor_break"]:
@@ -228,13 +195,13 @@ def compute_derived(monster: Monster) -> Dict[str, float]:
         2.0  * s["spd_down"]
     )
 
-    # 特殊：PP 压制/中毒(剧毒)/自爆/禁疗/疲劳/（可选）驱散/转移/反转
+    # 特殊：PP 压制/中毒(剧毒=0)/自爆=0/禁疗/疲劳/（可选）驱散/转移/反转
     special_tactics_raw = (
         12.0 * s["pp_any"] +
-        4.0  * s["pp_hits"] +
-        8.0  * s["toxic"] +
+        4.0  * s["pp_hits"] +     # 恒为 0（不读技能）
+        8.0  * s["toxic"] +       # 恒为 0（无“剧毒”标签）
         6.0  * s["poison"] +
-        10.0 * s["self_destruct"] +
+        10.0 * s["self_destruct"] +  # 恒为 0
         7.0  * s["heal_block"] +
         6.0  * s["fatigue"] +
         3.0  * s["dispel_enemy"] +
@@ -328,6 +295,7 @@ def compute_and_persist(db: Session, monster: Monster) -> MonsterDerived:
 def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
     """
     可选：若缺少 buf_/deb_/util_ 前缀标签，则用正则建议补齐，不覆盖已有非前缀。
+    （注意：这一步仍可能基于技能文本；默认 recompute_derived_only 会传 ensure_prefix_tags=False）
     """
     cur = [getattr(t, "name", None) or (t if isinstance(t, str) else None) for t in (monster.tags or [])]
     cur = [c for c in cur if isinstance(c, str)]
@@ -346,7 +314,7 @@ def _ensure_prefix_tags(db: Session, monster: Monster) -> None:
 
 def recompute_derived_only(db: Session, monster: Monster, *, ensure_prefix_tags: bool = False) -> MonsterDerived:
     """
-    1) 计算派生 0~120（写 MonsterDerived）
+    1) 计算派生 0~120（写 MonsterDerived）—— 仅基于标签与基础六维
     2) （可选）若缺新前缀标签，用正则补齐并写库（不覆盖已有非前缀）
     不再写回 monster.role，也不提供任何定位相关输出。
     """
