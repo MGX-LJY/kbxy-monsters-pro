@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles  # ← 新增
 
 from .config import settings
 from .db import Base, engine, startup_db_report_lines, DB_INFO
@@ -17,6 +18,7 @@ from .routes import (
     health, monsters, skills, backup, utils, derive, crawl,
     warehouse, types, collections,
 )
+from .routes import images as images_routes  # ← 新增
 
 # 可选路由（不存在也不报错）
 try:
@@ -50,6 +52,18 @@ app.add_middleware(TraceIDMiddleware)
 # ⚠️ 移除：不要在模块顶层执行 create_all（会与 --reload 竞态）
 # Base.metadata.create_all(bind=engine)
 
+# ---- 静态图片挂载 ----
+def _images_dir() -> str:
+    env_dir = os.getenv("MONSTERS_MEDIA_DIR")
+    if env_dir:
+        p = Path(env_dir).expanduser().resolve(); p.mkdir(parents=True, exist_ok=True); return str(p)
+    here = Path(__file__).resolve().parent  # server/app
+    p = here.parent / "images" / "monsters" # server/images/monsters
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+app.mount("/media/monsters", StaticFiles(directory=_images_dir(), html=False), name="monsters_media")
+
 # 注册路由（基础）
 app.include_router(health.router)
 app.include_router(monsters.router)
@@ -61,6 +75,7 @@ app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])
 app.include_router(types.router)
 app.include_router(collections.router, prefix="", tags=["collections"])
+app.include_router(images_routes.router)  # ← 新增
 
 # 可选：tags、roles
 if HAS_TAGS:
@@ -78,7 +93,6 @@ def _init_schema_once_with_lock():
 
     parent_dir = DB_INFO.get("db_parent_dir")
     if not parent_dir:
-        # 非本地 SQLite（例如 DATABASE_URL 指向外部库），直接按 checkfirst 执行一次即可
         try:
             Base.metadata.create_all(bind=engine, checkfirst=True)
             logger.info("[startup] schema create_all (DATABASE_URL) executed.")
@@ -91,7 +105,6 @@ def _init_schema_once_with_lock():
 
     acquired = False
     try:
-        # 原子创建锁文件；存在即代表其它进程在初始化
         fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
         acquired = True
@@ -108,7 +121,6 @@ def _init_schema_once_with_lock():
             try:
                 os.remove(lock_file)
             except Exception:
-                # 如果删除失败，不影响运行；必要时手动清理
                 pass
     else:
         logger.info("[startup] another process is initializing schema or it already exists; skip create_all.")
@@ -120,6 +132,12 @@ async def _startup_logs_and_schema():
     for line in startup_db_report_lines():
         logger.info(f"[startup] {line}")
     _init_schema_once_with_lock()
+    # 预热图片索引（可选）
+    try:
+        from .services.image_service import get_image_resolver
+        get_image_resolver().reindex()
+    except Exception:
+        logger.exception("[startup] image resolver warmup failed.")
 
 # 全局异常处理
 @app.exception_handler(HTTPException)

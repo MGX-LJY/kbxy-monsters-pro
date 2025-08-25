@@ -7,7 +7,8 @@ import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
 import SideDrawer from '../components/SideDrawer'
 import { useSettings } from '../context/SettingsContext'
-
+import MonsterCardGrid from '../components/MonsterCardGrid'
+import SkeletonCardGrid from '../components/SkeletonCardGrid'
 
 // 适配新后端：技能带 element/kind/power/description
 type SkillDTO = {
@@ -215,6 +216,15 @@ export default function MonstersPage() {
     name: string,
     color: string
   }>({ mode: 'existing', selectedId: '', name: '', color: '' })
+
+  // —— 视图切换（列表/卡片），默认 card，并做本地持久化 —— //
+  const [view, setView] = useState<'table' | 'card'>(() => {
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem('monsters_view') : null
+    return (v === 'table' || v === 'card') ? (v as any) : 'card'
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem('monsters_view', view) } catch {}
+  }, [view])
 
   // —— 弹框“最短显示 + 淡出关闭” —— //
   const OVERLAY_MIN_VISIBLE_MS = 1000
@@ -470,37 +480,37 @@ export default function MonstersPage() {
 
   // —— 列表数据 —— //
   const list = useQuery({
-  queryKey: ['monsters', {
-    q, element, tagBuf, tagDeb, tagUtil, acqType, sort: sortForApi, order,
-    page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
-  }],
-  queryFn: async () => {
-    const baseParams: any = {
-      q: q || undefined,
-      element: element || undefined,
-      type: acqType || undefined,
-      acq_type: acqType || undefined,
-      sort: sortForApi, order,
-      page,
-      page_size: pageSize,
-      collection_id: collectionId || undefined,  // ← 收藏筛选
-    }
-    if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
-    else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
+    queryKey: ['monsters', {
+      q, element, tagBuf, tagDeb, tagUtil, acqType, sort: sortForApi, order,
+      page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
+    }],
+    queryFn: async () => {
+      const baseParams: any = {
+        q: q || undefined,
+        element: element || undefined,
+        type: acqType || undefined,
+        acq_type: acqType || undefined,
+        sort: sortForApi, order,
+        page,
+        page_size: pageSize,
+        collection_id: collectionId || undefined,  // ← 收藏筛选
+      }
+      if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
+      else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
 
-    // ✅ 只要“仓库”或“未获取”任一开启，就走 /warehouse
-    if (warehouseOnly || notOwnedOnly) {
-      if (warehouseOnly) baseParams.possess = true
-      if (notOwnedOnly)  baseParams.possess = false
-      return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
-    }
+      // ✅ 只要“仓库”或“未获取”任一开启，就走 /warehouse
+      if (warehouseOnly || notOwnedOnly) {
+        if (warehouseOnly) baseParams.possess = true
+        if (notOwnedOnly)  baseParams.possess = false
+        return (await api.get('/warehouse', { params: toURLParams(baseParams) })).data as MonsterListResp
+      }
 
-    // 默认：全库
-    return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
-  },
-  refetchOnWindowFocus: false,
-  refetchOnReconnect: false,
-})
+      // 默认：全库
+      return (await api.get('/monsters', { params: toURLParams(baseParams) })).data as MonsterListResp
+    },
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
   // —— 当 /tags 不可用时，用当前页 items 的 tags 做临时计数 —— //
   const localTagCounts: TagCount[] = useMemo(() => {
     if (tags.data && tags.data.length > 0) return tags.data
@@ -1277,6 +1287,37 @@ export default function MonstersPage() {
         { value: 'special_tactics', label: '特殊' },
       ] as {value: SortKey, label: string}[])
 
+  // —— 获取途径角标：只按你的分类（不包含“稀有”），优先级：VIP > 超进化 > BOSS > 活动 > 任务 > 可捕捉 —— //
+  const computeRibbon = (m: Monster) => {
+    const t = `${m.type || ''} ${m.method || ''}`.toLowerCase()
+    const hit = (kw: string | RegExp) =>
+      typeof kw === 'string' ? t.includes(kw.toLowerCase()) : kw.test(t)
+
+    if (hit('vip')) return { text: 'VIP', colorClass: 'bg-green-500' }
+    if (hit(/超[\s·]?进化|超进|超化/)) return { text: '超进化', colorClass: 'bg-orange-500' }
+    if (hit('boss') || hit('首领')) return { text: 'BOSS', colorClass: 'bg-red-500' }
+    if (hit('活动') || hit('限时')) return { text: '活动', colorClass: 'bg-blue-500' }
+    if (hit('任务')) return { text: '任务', colorClass: 'bg-cyan-500' }
+    if (m.new_type === true || (m.type || '').includes('可捕捉')) return { text: '可捕捉', colorClass: 'bg-lime-500' }
+    return null
+  }
+
+  // —— 刷新单体派生（用于详细页“派生五维”卡片） —— //
+  const refreshDerived = async () => {
+    if (!selected) return
+    try {
+      try {
+        await api.post('/api/v1/derived/batch', { ids: [(selected as any).id] })
+      } catch {
+        try { await api.get(`/monsters/${(selected as any).id}/derived`) } catch {}
+      }
+      const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
+      setSelected(fresh)
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || '刷新失败')
+    }
+  }
+
   return (
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
@@ -1291,27 +1332,27 @@ export default function MonstersPage() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
 
-          {/* ← 新增：收藏组管理，放在“一键匹配”左侧 */}
-          {collectionId && (
-            <>
-              <button
-                className={`btn ${BTN_FX}`}
-                onClick={openRenameCollection}
-                title="重命名当前收藏组"
-              >
-                重命名收藏组
-              </button>
-              <button
-                className={`btn ${BTN_FX}`}
-                onClick={deleteCurrentCollection}
-                title="删除当前收藏组"
-              >
-                删除收藏组
-              </button>
-              {/* 可选：分隔线，让分组管理与其它操作区隔开 */}
-              <span className="hidden md:inline-block w-px h-5 bg-gray-200 mx-1" aria-hidden />
-            </>
-          )}
+            {/* ← 新增：收藏组管理，放在“一键匹配”左侧 */}
+            {collectionId && (
+              <>
+                <button
+                  className={`btn ${BTN_FX}`}
+                  onClick={openRenameCollection}
+                  title="重命名当前收藏组"
+                >
+                  重命名收藏组
+                </button>
+                <button
+                  className={`btn ${BTN_FX}`}
+                  onClick={deleteCurrentCollection}
+                  title="删除当前收藏组"
+                >
+                  删除收藏组
+                </button>
+                {/* 可选：分隔线，让分组管理与其它操作区隔开 */}
+                <span className="hidden md:inline-block w-px h-5 bg-gray-200 mx-1" aria-hidden />
+              </>
+            )}
 
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
@@ -1330,7 +1371,7 @@ export default function MonstersPage() {
             <button
               className={`btn ${notOwnedOnly ? 'btn-primary' : ''} ${BTN_FX}`}
               onClick={() => { setNotOwnedOnly(v => { const next = !v; if (next) setWarehouseOnly(false); return next }); setPage(1) }}
-              title="只显示未拥有的宠物 / 再次点击还原"
+              title="只显示未获取的宠物 / 再次点击还原"
             >
               未获取妖怪
             </button>
@@ -1351,6 +1392,15 @@ export default function MonstersPage() {
               }}
             >
               {showRaw ? '派生五维' : '恢复六维'}
+            </button>
+
+            {/* 新增：视图切换（列表/卡片） */}
+            <button
+              className={`btn ${BTN_FX}`}
+              title="切换表格/卡片视图"
+              onClick={() => setView(v => (v === 'card' ? 'table' : 'card'))}
+            >
+              {view === 'card' ? '表格视图' : '卡片视图'}
             </button>
 
             {/* 新增：新增妖怪 */}
@@ -1502,101 +1552,120 @@ export default function MonstersPage() {
         </div>
       )}
 
-      {/* 列表 */}
+      {/* 列表/卡片视图 */}
       <div className="card">
-        <div className="overflow-auto">
-          <table className="table table-auto table-zebra">
-            <thead>
-              <tr>
-                <th className="w-10 text-center">
-                  <input
-                    type="checkbox"
-                    className="h-5 w-5"
-                    checked={allVisibleSelected}
-                    onChange={toggleAllVisible}
-                    aria-label="全选本页可见项"
-                  />
-                </th>
-                <th className="w-16 text-center">ID</th>
-                <th className="text-left">名称</th>
-                <th className="w-20 min-w-[64px] text-center">元素</th>
-                {/* ✅ 动态：派生五维 / 原生六维 表头 */}
-                {STAT_COLS.map(col => (
-                  <th key={col.key} className="w-14 text-center">{col.label}</th>
-                ))}
-                <th className="text-center">增强</th>
-                <th className="text-center">削弱</th>
-                <th className="text-center">特殊</th>
-              </tr>
-            </thead>
-            {list.isLoading && <SkeletonRows rows={8} cols={totalCols} />}
-            {!list.isLoading && (
-              <tbody>
-                {filteredItems.map((m: any) => {
-                  const buckets = bucketizeTags(m.tags)
-                  const chips = (arr: string[], prefixEmoji: string) =>
-                    arr.slice(0, LIMIT_TAGS_PER_CELL).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
-                  return (
-                    <tr
-                      key={m.id}
-                      className="align-middle cursor-pointer hover:bg-gray-50"
-                      onClick={() => openDetail(m)}
-                      title=""
-                    >
-                      <td className="text-center align-middle py-2.5" onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          className="h-5 w-5"
-                          checked={selectedIds.has(m.id)}
-                          onChange={() => toggleOne(m.id)}
-                          aria-label={`选择 ${m.name || m.name_final}`}
-                        />
-                      </td>
-                      <td className="text-center align-middle py-2.5">{m.id}</td>
-                      <td className="text-left align-middle py-2.5 truncate max-w-[240px]" title={m.name || m.name_final}>
-                        {m.name || m.name_final}
-                      </td>
-                      <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
-                        {m.element}
-                      </td>
-                      {/* ✅ 动态：派生五维 / 原始六维 单元格 */}
-                      {STAT_COLS.map(col => {
-                        const val = showRaw ? (m as any)[col.key] ?? 0 : getDerivedValue(m, col.key)
-                        return (
-                          <td key={col.key} className="text-center align-middle py-2.5">{val}</td>
-                        )
-                      })}
-
-                      <td className="text-center align-middle py-2.5">
-                        <div className="inline-flex flex-wrap gap-1 justify-center">
-                          {chips(buckets.buf, '🟢')}
-                        </div>
-                      </td>
-                      <td className="text-center align-middle py-2.5">
-                        <div className="inline-flex flex-wrap gap-1 justify-center">
-                          {chips(buckets.deb, '🔴')}
-                        </div>
-                      </td>
-                      <td className="text-center align-middle py-2.5">
-                        <div className="inline-flex flex-wrap gap-1 justify-center">
-                          {chips(buckets.util, '🟣')}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-                {filteredItems.length === 0 && (
+        <div className="p-3">
+          {view === 'card' ? (
+            <>
+              {list.isLoading ? (
+                <SkeletonCardGrid />
+              ) : (
+                <MonsterCardGrid
+                  items={filteredItems as Monster[]}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleOne}
+                  onOpenDetail={openDetail}
+                  showRawSummary={showRaw}
+                  computeRibbon={computeRibbon}
+                />
+              )}
+            </>
+          ) : (
+            <div className="overflow-auto">
+              <table className="table table-auto table-zebra">
+                <thead>
                   <tr>
-                    <td colSpan={totalCols} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON。</td>
+                    <th className="w-10 text-center">
+                      <input
+                        type="checkbox"
+                        className="h-5 w-5"
+                        checked={allVisibleSelected}
+                        onChange={toggleAllVisible}
+                        aria-label="全选本页可见项"
+                      />
+                    </th>
+                    <th className="w-16 text-center">ID</th>
+                    <th className="text-left">名称</th>
+                    <th className="w-20 min-w-[64px] text-center">元素</th>
+                    {/* ✅ 动态：派生五维 / 原生六维 表头 */}
+                    {STAT_COLS.map(col => (
+                      <th key={col.key} className="w-14 text-center">{col.label}</th>
+                    ))}
+                    <th className="text-center">增强</th>
+                    <th className="text-center">削弱</th>
+                    <th className="text-center">特殊</th>
                   </tr>
+                </thead>
+                {list.isLoading && <SkeletonRows rows={8} cols={totalCols} />}
+                {!list.isLoading && (
+                  <tbody>
+                    {filteredItems.map((m: any) => {
+                      const buckets = bucketizeTags(m.tags)
+                      const chips = (arr: string[], prefixEmoji: string) =>
+                        arr.slice(0, LIMIT_TAGS_PER_CELL).map(t => <span key={t} className="badge">{prefixEmoji}{tagLabel(t)}</span>)
+                      return (
+                        <tr
+                          key={m.id}
+                          className="align-middle cursor-pointer hover:bg-gray-50"
+                          onClick={() => openDetail(m)}
+                          title=""
+                        >
+                          <td className="text-center align-middle py-2.5" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              className="h-5 w-5"
+                              checked={selectedIds.has(m.id)}
+                              onChange={() => toggleOne(m.id)}
+                              aria-label={`选择 ${m.name || m.name_final}`}
+                            />
+                          </td>
+                          <td className="text-center align-middle py-2.5">{m.id}</td>
+                          <td className="text-left align-middle py-2.5 truncate max-w-[240px]" title={m.name || m.name_final}>
+                            {m.name || m.name_final}
+                          </td>
+                          <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
+                            {m.element}
+                          </td>
+                          {/* ✅ 动态：派生五维 / 原始六维 单元格 */}
+                          {STAT_COLS.map(col => {
+                            const val = showRaw ? (m as any)[col.key] ?? 0 : getDerivedValue(m, col.key)
+                            return (
+                              <td key={col.key} className="text-center align-middle py-2.5">{val}</td>
+                            )
+                          })}
+
+                          <td className="text-center align-middle py-2.5">
+                            <div className="inline-flex flex-wrap gap-1 justify-center">
+                              {chips(buckets.buf, '🟢')}
+                            </div>
+                          </td>
+                          <td className="text-center align-middle py-2.5">
+                            <div className="inline-flex flex-wrap gap-1 justify-center">
+                              {chips(buckets.deb, '🔴')}
+                            </div>
+                          </td>
+                          <td className="text-center align-middle py-2.5">
+                            <div className="inline-flex flex-wrap gap-1 justify-center">
+                              {chips(buckets.util, '🟣')}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {filteredItems.length === 0 && (
+                      <tr>
+                        <td colSpan={totalCols} className="text-center text-gray-500 py-6">没有数据。请调整筛选或导入 JSON。</td>
+                      </tr>
+                    )}
+                  </tbody>
                 )}
-              </tbody>
-            )}
-          </table>
-        </div>
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
-          <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
+              </table>
+            </div>
+          )}
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
+            <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
+          </div>
         </div>
       </div>
 
@@ -1805,6 +1874,39 @@ export default function MonstersPage() {
                     <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
                     <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{showStats.sum}</b>
                     </div>
+                  </div>
+                </div>
+
+                {/* 新增：派生五维展示 + 刷新 */}
+                <div className="card p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-semibold">派生五维</h4>
+                    <button className={`btn ${BTN_FX}`} onClick={refreshDerived}>刷新派生</button>
+                  </div>
+                  {(() => {
+                    const d = (selected as any)?.derived || {}
+                    const vals = [
+                      ['体防', getDerivedValue(selected, 'body_defense')],
+                      ['体抗', getDerivedValue(selected, 'body_resist')],
+                      ['防抗', getDerivedValue(selected, 'debuff_def_res')],
+                      ['攻法', getDerivedValue(selected, 'debuff_atk_mag')],
+                      ['特殊', getDerivedValue(selected, 'special_tactics')],
+                    ]
+                    const hasAny = vals.some(([, v]) => Number(v) > 0)
+                    return hasAny ? (
+                      <div className="grid grid-cols-5 gap-2 text-sm">
+                        {vals.map(([label, v]) => (
+                          <div key={label as string} className="p-2 bg-gray-50 rounded text-center">
+                            {label}：<b>{v as number}</b>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-500">未计算；点击“刷新派生”尝试计算。</div>
+                    )
+                  })()}
+                  <div className="text-xs text-gray-400">
+                    派生五维由技能与标签推导，和原始六维不同。
                   </div>
                 </div>
 

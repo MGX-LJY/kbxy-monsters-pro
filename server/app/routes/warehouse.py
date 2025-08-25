@@ -17,6 +17,8 @@ from ..services.warehouse_service import (
     list_warehouse, warehouse_stats,
 )
 from ..services.derive_service import compute_derived_out
+# ⬇️ 新增：图片解析器（若未引入图片服务，可去掉两行 import 和下文 img_url 相关三行）
+from ..services.image_service import get_image_resolver
 
 router = APIRouter()
 
@@ -88,7 +90,7 @@ def warehouse_list(
     tags_all: Optional[List[str]] = Query(None),
     type: Optional[str] = Query(None),
     acq_type: Optional[str] = Query(None),
-    # ✅ 新增：收藏分组筛选
+    # ✅ 收藏分组筛选
     collection_id: Optional[int] = Query(None, description="收藏分组 ID"),
     # ✅ 排序：支持新五轴 + 六维 + 六维总和 + 基础列
     sort: Optional[str] = Query("updated_at"),
@@ -170,12 +172,12 @@ def warehouse_list(
     if acq:
         base_q = base_q.filter(Monster.type.ilike(f"%{acq}%"))
 
-    # 先拿总数
+    # 先拿总数（和数据行同条件）
     total = base_q.order_by(None).count()
 
     # ---------- 排序 ----------
     if s_key in DERIVED_KEYS:
-        # —— 派生五维：固定走内存排序（避免 Derived 表空/半空导致排序退化）——
+        # —— 派生五维：固定走内存排序（保证稳定且有旧键兜底）——
         id_rows = base_q.with_entities(Monster.id).all()
         id_list = [r[0] for r in id_rows]
 
@@ -202,7 +204,7 @@ def warehouse_list(
                 val = pick_derived_value(d, s_key)
                 scored.append((sort_key_for(val, mid, is_asc), mid))
 
-            scored.sort(key=lambda x: x[0])  # 统一升序 key
+            scored.sort(key=lambda x: x[0])  # 统一升序 key（含 NULLS FIRST/LAST 语义）
 
             start = (page - 1) * page_size
             end = start + page_size
@@ -240,11 +242,22 @@ def warehouse_list(
             )
         ).scalars().all()
 
+    # 图片解析器（可选）
+    img_resolver = get_image_resolver()
+
     # 输出
     out = []
     for m in items:
         d_raw = compute_derived_out(m) or {}
         d = enrich_new_keys(d_raw)
+
+        # 可选：为每条记录解析图片 URL
+        img_url = img_resolver.resolve_by_names([
+            m.name,
+            getattr(m, "name_final", None),
+            getattr(m, "alias", None),
+        ])
+
         out.append(
             MonsterOut(
                 id=m.id,
@@ -261,6 +274,8 @@ def warehouse_list(
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
                 derived=d,
+                # 若 MonsterOut 未添加 image_url 字段，这里会被忽略；若已添加则直接输出
+                image_url=img_url,
             )
         )
 

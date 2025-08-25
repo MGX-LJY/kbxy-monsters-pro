@@ -1,18 +1,33 @@
 // client/src/types.ts
 
-/** ===== Derived（派生五维） ===== */
-export interface Derived {
-  offense: number
-  survive: number
-  control: number
-  tempo: number
-  pp_pressure: number
+/** ===== Derived（派生维度） =====
+ * 新后端五轴：
+ *  - body_defense / body_resist / debuff_def_res / debuff_atk_mag / special_tactics
+ * 为兼容老数据，保留旧键（offense/survive/control/tempo/pp_pressure）为可选。
+ */
+export interface DerivedNew {
+  body_defense?: number
+  body_resist?: number
+  debuff_def_res?: number
+  debuff_atk_mag?: number
+  special_tactics?: number
 }
+
+export interface DerivedLegacy {
+  offense?: number
+  survive?: number
+  control?: number
+  tempo?: number
+  pp_pressure?: number
+}
+
+export type Derived = DerivedNew & Partial<DerivedLegacy>
 
 /** ===== Monster（已适配新后端） =====
  * - name_final → name
  * - 新增 possess/new_type/type/method
  * - 新增 created_at/updated_at（ISO 字符串）
+ * - 新增 image_url（可选；由后端图片服务返回）
  */
 export interface Monster {
   id: number
@@ -34,8 +49,13 @@ export interface Monster {
   type?: string | null
   method?: string | null
 
+  // 图片（可选）
+  image_url?: string | null
+
   tags: string[]
   explain_json?: Record<string, any>
+
+  // 派生维度（新五轴为主；旧键可作为兜底）
   derived?: Derived
 
   created_at?: string | null
@@ -81,7 +101,7 @@ export interface ImportCommitResp {
   errors?: Array<Record<string, unknown>>
 }
 
-/** ===== Collections（收藏夹相关，便于前端对接） ===== */
+/** ===== Collections（收藏夹相关） ===== */
 
 export interface Collection {
   id: number
