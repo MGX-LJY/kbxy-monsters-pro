@@ -1,0 +1,386 @@
+{
+  "created_at": "2025-09-17T21:56:13.293002",
+  "last_updated": "2025-09-17T21:56:13.293003",
+  "files": {
+    "stop-bg.sh": {
+      "hash": "3f43c3476e7d623b96528d110b03c7df",
+      "size": 2434,
+      "modified_time": "2025-09-06T11:29:25.059788"
+    },
+    "upscale_batch.py": {
+      "hash": "f1a74ec510e905602295ed7fc826596e",
+      "size": 7592,
+      "modified_time": "2025-08-25T14:45:05.873996"
+    },
+    "LICENSE": {
+      "hash": "11aebf18a1397e0ef931a803e9f1b002",
+      "size": 1063,
+      "modified_time": "2025-08-12T00:28:14"
+    },
+    "upscaler_gui.py": {
+      "hash": "580d14547feb12727b02569f8514fe28",
+      "size": 14555,
+      "modified_time": "2025-08-29T18:24:49.620831"
+    },
+    "start-bg.sh": {
+      "hash": "c90a45fcaa9fed43e37d1d382ccf3e6f",
+      "size": 5920,
+      "modified_time": "2025-09-06T11:29:25.059670"
+    },
+    "Makefile": {
+      "hash": "d0a881c7183ede944e015c1754e5eb6e",
+      "size": 656,
+      "modified_time": "2025-09-06T11:29:24.592849"
+    },
+    "upscale.py": {
+      "hash": "f1a74ec510e905602295ed7fc826596e",
+      "size": 7592,
+      "modified_time": "2025-09-06T11:29:25.059920"
+    },
+    ".dockerignore": {
+      "hash": "df8948e67cb600c3a5b895516e85d33d",
+      "size": 126,
+      "modified_time": "2025-09-06T11:29:24.592138"
+    },
+    ".gitignore": {
+      "hash": "76e3c9cd3a2e9c461d29caa56a7ab087",
+      "size": 1113,
+      "modified_time": "2025-09-06T11:29:24.592585"
+    },
+    "server/Dockerfile": {
+      "hash": "dda46a7885f394f68dd60fe9ad1a9150",
+      "size": 893,
+      "modified_time": "2025-09-06T11:29:24.598720"
+    },
+    "server/__init__.py": {
+      "hash": "d41d8cd98f00b204e9800998ecf8427e",
+      "size": 0,
+      "modified_time": "2025-09-06T11:29:24.598753"
+    },
+    "scripts/seed_from_export.py": {
+      "hash": "8cd4450af2c61d1f7dadeac8608e7881",
+      "size": 4804,
+      "modified_time": "2025-09-06T11:29:24.598470"
+    },
+    "scripts/backup_sqlite.py": {
+      "hash": "81e685dd968c3c5b0a008af7dcf28179",
+      "size": 10184,
+      "modified_time": "2025-09-06T11:29:24.598213"
+    },
+    "scripts/restore_sqlite.py": {
+      "hash": "8bd2cbc5d0f0568b5f1c9f7f919051d0",
+      "size": 12471,
+      "modified_time": "2025-09-06T11:29:24.598344"
+    },
+    "scripts/sqlite_stress_write.py": {
+      "hash": "dfaa2de1959e303848ba33fc0d1bd825",
+      "size": 3773,
+      "modified_time": "2025-09-06T11:29:24.598598"
+    },
+    "client/index.html": {
+      "hash": "61942bdf117527b2ca24a06599f5c5fa",
+      "size": 312,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/Dockerfile": {
+      "hash": "38b5ff04bc67f3c80dcbd7672b405ca8",
+      "size": 562,
+      "modified_time": "2025-09-06T11:29:24.592964"
+    },
+    "client/postcss.config.cjs": {
+      "hash": "37b75945e453a986d412f8f12a528b26",
+      "size": 67,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/tailwind.config.ts": {
+      "hash": "984eade24ec6106a202c69d6a06c4885",
+      "size": 155,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/vite.config.ts": {
+      "hash": "26d163a0c2795600b26b1207362922bd",
+      "size": 539,
+      "modified_time": "2025-09-06T11:29:24.597925"
+    },
+    "server/app/db.py": {
+      "hash": "e8ca2cb47d813af8edf6318b59ae3f4e",
+      "size": 4117,
+      "modified_time": "2025-09-06T11:29:24.599643"
+    },
+    "server/app/config.py": {
+      "hash": "aaea0831faa71aeb434075de99c7ac0b",
+      "size": 2066,
+      "modified_time": "2025-09-06T11:29:24.599139"
+    },
+    "server/app/models.py": {
+      "hash": "5909b61b21c3c1ad660b6381157cd69a",
+      "size": 11902,
+      "modified_time": "2025-09-06T11:29:24.600516"
+    },
+    "server/app/__init__.py": {
+      "hash": "d41d8cd98f00b204e9800998ecf8427e",
+      "size": 0,
+      "modified_time": "2025-08-12T00:34:08"
+    },
+    "server/app/schemas.py": {
+      "hash": "84ac0eb59e5c0ad797750fbc0faa3414",
+      "size": 4537,
+      "modified_time": "2025-09-06T11:29:24.603725"
+    },
+    "server/app/main.py": {
+      "hash": "f321c63a7329057c311cedb4c897ad23",
+      "size": 4836,
+      "modified_time": "2025-09-06T11:29:24.599857"
+    },
+    "server/app/middleware.py": {
+      "hash": "2d4e03c1c532e6d210a7af7cd3949a0c",
+      "size": 550,
+      "modified_time": "2025-09-06T11:29:24.600220"
+    },
+    "server/app/routes/crawl.py": {
+      "hash": "1d02bfa04de7784418deab35de16d0fa",
+      "size": 9828,
+      "modified_time": "2025-09-06T11:29:24.601027"
+    },
+    "server/app/routes/tags.py": {
+      "hash": "899ee55ed3af81e503ce406483c7dbb8",
+      "size": 9646,
+      "modified_time": "2025-09-06T11:29:24.603120"
+    },
+    "server/app/routes/backup.py": {
+      "hash": "f4e0d3d4cc996955c9ddf9d3d5442035",
+      "size": 19084,
+      "modified_time": "2025-09-06T11:29:24.600682"
+    },
+    "server/app/routes/warehouse.py": {
+      "hash": "d26f0c8aea784b8dc831abb1b4c34873",
+      "size": 11546,
+      "modified_time": "2025-09-06T11:29:24.603517"
+    },
+    "server/app/routes/skills.py": {
+      "hash": "e7181f8be40b434251b81b52240645b9",
+      "size": 4221,
+      "modified_time": "2025-09-06T11:29:24.602511"
+    },
+    "server/app/routes/roles.py": {
+      "hash": "d18449a9f088b5f1bbfdb8550ddf465e",
+      "size": 647,
+      "modified_time": "2025-09-06T11:29:24.602210"
+    },
+    "server/app/routes/health.py": {
+      "hash": "0c79f78cdbb35297d20190f6b6b74a5b",
+      "size": 567,
+      "modified_time": "2025-09-06T11:29:24.601446"
+    },
+    "server/app/routes/derive.py": {
+      "hash": "fe895b99528e87f8d53327c53e543fce",
+      "size": 5128,
+      "modified_time": "2025-09-06T11:29:24.601164"
+    },
+    "server/app/routes/__init__.py": {
+      "hash": "d41d8cd98f00b204e9800998ecf8427e",
+      "size": 0,
+      "modified_time": "2025-08-12T00:34:08"
+    },
+    "server/app/routes/types.py": {
+      "hash": "9532b75384118bf5b667621be0cf6c16",
+      "size": 998,
+      "modified_time": "2025-09-06T11:29:24.603249"
+    },
+    "server/app/routes/skills_admin.py": {
+      "hash": "466b09b90765b247ade81d124e989767",
+      "size": 3696,
+      "modified_time": "2025-09-06T11:29:24.602803"
+    },
+    "server/app/routes/collections.py": {
+      "hash": "9f2b836fcfb6b318c7c4f08949ccdb4d",
+      "size": 13215,
+      "modified_time": "2025-09-06T11:29:24.600848"
+    },
+    "server/app/routes/utils.py": {
+      "hash": "1967e89c33aef18470b2d9083049710b",
+      "size": 1649,
+      "modified_time": "2025-09-06T11:29:24.603371"
+    },
+    "server/app/routes/monsters.py": {
+      "hash": "cffa4396af239e646aacb4a062b254fd",
+      "size": 25177,
+      "modified_time": "2025-09-06T11:29:24.601904"
+    },
+    "server/app/routes/images.py": {
+      "hash": "e0fc5d9e281f7c15e9f84670800ad133",
+      "size": 2164,
+      "modified_time": "2025-09-06T11:29:24.601564"
+    },
+    "server/app/services/derive_service.py": {
+      "hash": "d4ecca1b4a1a4e0563ca0a5b43efb0c3",
+      "size": 12830,
+      "modified_time": "2025-09-06T11:29:24.604366"
+    },
+    "server/app/services/tags_service.py": {
+      "hash": "16ba8e06d82fbeab2670c0cc286510e4",
+      "size": 28409,
+      "modified_time": "2025-09-06T11:29:24.605303"
+    },
+    "server/app/services/skills_service.py": {
+      "hash": "5062fd117349e700dbdcbf4109261d9d",
+      "size": 5923,
+      "modified_time": "2025-09-06T11:29:24.605160"
+    },
+    "server/app/services/warehouse_service.py": {
+      "hash": "46755f09590bc61a012c781b89ac3d5d",
+      "size": 6817,
+      "modified_time": "2025-09-06T11:29:24.605556"
+    },
+    "server/app/services/__init__.py": {
+      "hash": "d41d8cd98f00b204e9800998ecf8427e",
+      "size": 0,
+      "modified_time": "2025-08-12T00:34:08"
+    },
+    "server/app/services/crawler_service.py": {
+      "hash": "51b7ca7d96ad86845da138af3974b232",
+      "size": 33589,
+      "modified_time": "2025-09-06T11:29:24.604231"
+    },
+    "server/app/services/collection_service.py": {
+      "hash": "be01dd0a8f53f6ae35a44af58ca59c5f",
+      "size": 11037,
+      "modified_time": "2025-09-06T11:29:24.603857"
+    },
+    "server/app/services/monsters_service.py": {
+      "hash": "50ce97fdaf65e191fcfe0c9375f01db0",
+      "size": 12787,
+      "modified_time": "2025-09-06T11:29:24.604772"
+    },
+    "server/app/services/image_service.py": {
+      "hash": "56f7fadade8bd1200e335f6babfc5bf3",
+      "size": 4059,
+      "modified_time": "2025-09-06T11:29:24.604477"
+    },
+    "server/app/services/types_service.py": {
+      "hash": "b61c3477670a62d8ec711e5010dfad90",
+      "size": 9058,
+      "modified_time": "2025-09-06T11:29:24.605439"
+    },
+    "server/app/services/normalization.py": {
+      "hash": "7a7c491582f3e38d890951dbebb5674f",
+      "size": 4999,
+      "modified_time": "2025-09-06T11:29:24.604887"
+    },
+    "client/src/App.tsx": {
+      "hash": "eefd6ac0dddb787a33e4727a1799587d",
+      "size": 3662,
+      "modified_time": "2025-09-06T11:29:24.593447"
+    },
+    "client/src/main.tsx": {
+      "hash": "b2c1df8c5ecd0a1493b7695bfa007eb8",
+      "size": 776,
+      "modified_time": "2025-09-06T11:29:24.596233"
+    },
+    "client/src/styles.css": {
+      "hash": "b0bc20e88fd4daf69917172edeaf60ec",
+      "size": 10161,
+      "modified_time": "2025-09-06T11:29:24.597212"
+    },
+    "client/src/api.ts": {
+      "hash": "d197c513a4fbb1858a92590a6d1761b0",
+      "size": 481,
+      "modified_time": "2025-09-06T11:29:24.593779"
+    },
+    "client/src/types.ts": {
+      "hash": "0e84cc3537a29ff6ec94f70aa1f454fa",
+      "size": 2964,
+      "modified_time": "2025-09-06T11:29:24.597510"
+    },
+    "client/src/vite-env.d.ts": {
+      "hash": "db266f67270495e5478804f291146e99",
+      "size": 37,
+      "modified_time": "2025-09-06T11:29:24.597626"
+    },
+    "client/src/context/SettingsContext.tsx": {
+      "hash": "3da0a14b4d8f142fccde4df1edd226ac",
+      "size": 1450,
+      "modified_time": "2025-09-06T11:29:24.595968"
+    },
+    "client/src/components/Pagination.tsx": {
+      "hash": "1471d1a371bb59b7ad518245439231d5",
+      "size": 640,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/src/components/SideDrawer.tsx": {
+      "hash": "73580b970c32981e28e1080e6431d16b",
+      "size": 3544,
+      "modified_time": "2025-09-06T11:29:24.595149"
+    },
+    "client/src/components/MonsterCardGrid.tsx": {
+      "hash": "bad7d3d9dc0f7ce557c88d137e0e28e2",
+      "size": 11419,
+      "modified_time": "2025-09-06T11:29:24.594776"
+    },
+    "client/src/components/TypeChartDialog.tsx": {
+      "hash": "105c071d1ba12b09fd8f3fde5037273a",
+      "size": 14029,
+      "modified_time": "2025-09-06T11:29:24.595685"
+    },
+    "client/src/components/TypeChartModal.tsx": {
+      "hash": "9c12bdade132d37a13b9c086fae3bcd7",
+      "size": 658,
+      "modified_time": "2025-09-06T11:29:24.595795"
+    },
+    "client/src/components/TopBar.tsx": {
+      "hash": "af6736a563e8590b65ca27b4774f9d00",
+      "size": 3205,
+      "modified_time": "2025-09-06T11:29:24.595554"
+    },
+    "client/src/components/SkeletonCardGrid.tsx": {
+      "hash": "a0297dc4b9d92304360557c10186aa9f",
+      "size": 1290,
+      "modified_time": "2025-09-06T11:29:24.595262"
+    },
+    "client/src/components/AddMonsterDrawer.tsx": {
+      "hash": "171de20fa7fb94ba789dad95e10c9706",
+      "size": 11671,
+      "modified_time": "2025-09-06T11:29:24.593943"
+    },
+    "client/src/components/FilterChips.tsx": {
+      "hash": "c5686ce7996c74aaa8ffdd9704a0bc58",
+      "size": 1121,
+      "modified_time": "2025-09-06T11:29:24.594066"
+    },
+    "client/src/components/ImportWizard.tsx": {
+      "hash": "2138e371215593f620b6e77ca9e0ba24",
+      "size": 4525,
+      "modified_time": "2025-09-06T11:29:24.594353"
+    },
+    "client/src/components/SkeletonRows.tsx": {
+      "hash": "9ee8538129ced8ed773a7a0047419385",
+      "size": 421,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/src/components/SettingsButton.tsx": {
+      "hash": "21b5fd54afe5c3b3997c7e427b081bf4",
+      "size": 2363,
+      "modified_time": "2025-09-06T11:29:24.594880"
+    },
+    "client/src/components/Modal.tsx": {
+      "hash": "6654a96f7f32f8d6e3bddd50a0f0eb3d",
+      "size": 2441,
+      "modified_time": "2025-09-06T11:29:24.594645"
+    },
+    "client/src/components/Toast.tsx": {
+      "hash": "aa8ef60cc88f0f9e4cec695fe404eef3",
+      "size": 867,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/src/components/ErrorBoundary.tsx": {
+      "hash": "8a32457141516ed6ebd490c3cafaaeb8",
+      "size": 951,
+      "modified_time": "2025-08-12T00:42:32"
+    },
+    "client/src/pages/MonstersPage.tsx": {
+      "hash": "d0973c54837ee25629b2e613b89936ca",
+      "size": 88889,
+      "modified_time": "2025-09-06T11:29:24.596852"
+    }
+  }
+}

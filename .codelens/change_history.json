@@ -1,0 +1,42 @@
+{
+  "created_at": "2025-09-17T21:47:39.417575",
+  "last_updated": "2025-09-17T21:56:13.293651",
+  "total_operations": 5,
+  "history": [
+    {
+      "id": "change_1758116859417",
+      "timestamp": "2025-09-17T21:47:39.417507",
+      "operation": "init",
+      "files_count": 10165,
+      "summary": "初始化项目指纹基点，记录10165个代码文件"
+    },
+    {
+      "id": "change_1758117199590",
+      "timestamp": "2025-09-17T21:53:19.590138",
+      "operation": "init",
+      "files_count": 10165,
+      "summary": "初始化项目指纹基点，记录10165个代码文件"
+    },
+    {
+      "id": "change_1758117231173",
+      "timestamp": "2025-09-17T21:53:51.173598",
+      "operation": "init",
+      "files_count": 10165,
+      "summary": "初始化项目指纹基点，记录10165个代码文件"
+    },
+    {
+      "id": "change_1758117279842",
+      "timestamp": "2025-09-17T21:54:39.842132",
+      "operation": "init",
+      "files_count": 10165,
+      "summary": "初始化项目指纹基点，记录10165个代码文件"
+    },
+    {
+      "id": "change_1758117373293",
+      "timestamp": "2025-09-17T21:56:13.293494",
+      "operation": "init",
+      "files_count": 76,
+      "summary": "初始化项目指纹基点，记录76个代码文件"
+    }
+  ]
+}

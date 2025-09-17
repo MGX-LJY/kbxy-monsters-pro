@@ -1,0 +1,129 @@
+{
+  "project_analysis": {
+    "project_type": "python",
+    "main_framework": "custom",
+    "identified_modules": [
+      "app",
+      "routes",
+      "services"
+    ],
+    "code_complexity": "complex",
+    "file_count": 1035,
+    "key_files": [
+      "server/app/models.py",
+      "server/app/main.py",
+      "server/app/schemas.py",
+      "server/app/services/derive_service.py",
+      "server/app/services/tags_service.py",
+      "server/app/services/skills_service.py",
+      "server/app/services/warehouse_service.py",
+      "server/app/services/crawler_service.py",
+      "server/app/services/collection_service.py",
+      "server/app/services/monsters_service.py",
+      "server/app/services/image_service.py",
+      "server/app/services/types_service.py",
+      "server/app/services/normalization.py",
+      "server/app/routes/utils.py",
+      "server/app/db.py",
+      "server/app/middleware.py",
+      "server/app/data/monsters.db",
+      "server/app/routes/crawl.py",
+      "server/app/routes/tags.py",
+      "server/app/routes/backup.py"
+    ],
+    "file_distribution": {
+      ".sh": 2,
+      ".py": 36,
+      "": 3,
+      ".db": 43,
+      ".db-wal": 2,
+      ".db-shm": 2,
+      ".sha256": 39,
+      ".html": 1,
+      ".cjs": 1,
+      ".ts": 5,
+      ".pid": 3,
+      ".png": 877,
+      ".conf": 1,
+      ".tsx": 19,
+      ".css": 1
+    },
+    "directory_structure": [
+      "scripts",
+      "data",
+      "backups",
+      "client",
+      ".logs",
+      "server/app",
+      "server/app/data",
+      "server/app/routes",
+      "server/app/services",
+      "server/images/monsters",
+      "client/deploy",
+      "client/src",
+      "client/src/context",
+      "client/src/components",
+      "client/src/pages"
+    ]
+  },
+  "documentation_strategy": {
+    "execution_phases": [
+      "architecture_first",
+      "files_second",
+      "project_last"
+    ],
+    "priority_strategy": "top_down",
+    "priority_files": [
+      "server/app/models.py",
+      "server/app/main.py",
+      "server/app/schemas.py",
+      "server/app/services/derive_service.py",
+      "server/app/services/tags_service.py",
+      "server/app/services/skills_service.py",
+      "server/app/services/warehouse_service.py",
+      "server/app/services/crawler_service.py",
+      "server/app/services/collection_service.py",
+      "server/app/services/monsters_service.py"
+    ],
+    "estimated_templates": 40,
+    "complexity_level": "complex"
+  },
+  "generation_plan": {
+    "phase_1_files": [
+      "server/app/models.py",
+      "server/app/main.py",
+      "server/app/schemas.py",
+      "server/app/services/derive_service.py",
+      "server/app/services/tags_service.py",
+      "server/app/services/skills_service.py",
+      "server/app/services/warehouse_service.py",
+      "server/app/services/crawler_service.py",
+      "server/app/services/collection_service.py",
+      "server/app/services/monsters_service.py",
+      "server/app/services/image_service.py",
+      "server/app/services/types_service.py",
+      "server/app/services/normalization.py",
+      "server/app/routes/utils.py",
+      "server/app/db.py",
+      "server/app/middleware.py",
+      "server/app/data/monsters.db",
+      "server/app/routes/crawl.py",
+      "server/app/routes/tags.py",
+      "server/app/routes/backup.py"
+    ],
+    "phase_2_architecture": [
+      "system_overview",
+      "tech_stack",
+      "data_flow",
+      "deployment_architecture",
+      "package_structure",
+      "dependency_management"
+    ],
+    "phase_3_project": [
+      "project_readme"
+    ],
+    "estimated_duration": "2 hours 30 minutes"
+  },
+  "timestamp": 1758117352.943134,
+  "version": "1.0"
+}

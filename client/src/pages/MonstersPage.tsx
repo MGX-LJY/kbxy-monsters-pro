@@ -615,32 +615,6 @@ export default function MonstersPage() {
     list.refetch(); stats.refetch(); wstats.refetch()
   }
 
-  // —— 备份/恢复 —— //
-  const restoreInputRef = useRef<HTMLInputElement>(null)
-
-  const exportBackup = async () => {
-    const res = await api.get('/backup/export_json', { responseType: 'blob' })
-    const url = window.URL.createObjectURL(res.data)
-    const a = document.createElement('a')
-    a.href = url; a.download = `backup_${Date.now()}.json`; a.click()
-    window.URL.revokeObjectURL(url)
-  }
-  const openRestore = () => restoreInputRef.current?.click()
-  const onRestoreFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (!f) return
-    try {
-      const text = await f.text()
-      const json = JSON.parse(text)
-      await api.post('/backup/restore_json', json)
-      alert('恢复完成！')
-      list.refetch(); stats.refetch(); wstats.refetch()
-    } catch (err: any) {
-      alert('恢复失败：' + (err?.response?.data?.detail || err?.message || '未知错误'))
-    } finally {
-      e.target.value = ''
-    }
-  }
 
   // —— 打开详情 —— //
   const openDetail = (m: Monster | any) => {
@@ -1322,17 +1296,9 @@ export default function MonstersPage() {
     <div className="container my-6 space-y-4">
       {/* 顶部工具栏 */}
       <div className="card p-4">
-        {/* 0 行：备份 / 恢复 */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <button className={`btn ${BTN_FX}`} onClick={exportBackup}>备份 JSON</button>
-            <button className={`btn ${BTN_FX}`} onClick={openRestore}>恢复 JSON</button>
-            <input id="restoreInput" ref={restoreInputRef} type="file" accept="application/json" className="hidden"
-                   onChange={onRestoreFile}/>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-
-            {/* ← 新增：收藏组管理，放在“一键匹配”左侧 */}
+            {/* ← 新增：收藏组管理，放在"一键匹配"左侧 */}
             {collectionId && (
               <>
                 <button
