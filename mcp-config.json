@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "sqlite": {
+      "command": "npx",
+      "args": ["-y", "mcp-sqlite", "./kbxy-dev.db"],
+      "description": "SQLite MCP Server for KBXY Monsters Pro database"
+    }
+  }
+}

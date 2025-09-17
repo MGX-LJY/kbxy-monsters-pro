@@ -1006,7 +1006,11 @@ export default function MonstersPage() {
 
   // === 保留原始元素数组供“编辑表单/技能编辑”等处使用（纯文本，不带倍率） ===
   const elementOptions = elementOptionsFull
-  const acquireTypeOptions = ['可捕捉宠物','BOSS宠物','活动获取宠物','兑换/商店','任务获取','超进化','其它']
+  const acquireTypeOptions = [
+    '无双宠物', '神宠', '珍宠', '罗盘宠物', 
+    'BOSS宠物', '可捕捉宠物', 'VIP宠物', '商城宠物', 
+    '任务宠物', '超进化宠物', '活动宠物', '其他宠物'
+  ]
 
   // —— 批量加入/移出仓库 —— //
   const bulkSetWarehouse = async (flag: boolean) => {
@@ -1261,18 +1265,24 @@ export default function MonstersPage() {
         { value: 'special_tactics', label: '特殊' },
       ] as {value: SortKey, label: string}[])
 
-  // —— 获取途径角标：只按你的分类（不包含“稀有”），优先级：VIP > 超进化 > BOSS > 活动 > 任务 > 可捕捉 —— //
+  // —— 获取途径角标：基于新的12类分类，优先级：无双 > 神宠 > 珍宠 > 罗盘 > VIP > 超进化 > BOSS > 活动 > 任务 > 可捕捉 —— //
   const computeRibbon = (m: Monster) => {
-    const t = `${m.type || ''} ${m.method || ''}`.toLowerCase()
-    const hit = (kw: string | RegExp) =>
-      typeof kw === 'string' ? t.includes(kw.toLowerCase()) : kw.test(t)
-
-    if (hit('vip')) return { text: 'VIP', colorClass: 'bg-green-500' }
-    if (hit(/超[\s·]?进化|超进|超化/)) return { text: '超进化', colorClass: 'bg-orange-500' }
-    if (hit('boss') || hit('首领')) return { text: 'BOSS', colorClass: 'bg-red-500' }
-    if (hit('活动') || hit('限时')) return { text: '活动', colorClass: 'bg-blue-500' }
-    if (hit('任务')) return { text: '任务', colorClass: 'bg-cyan-500' }
-    if (m.new_type === true || (m.type || '').includes('可捕捉')) return { text: '可捕捉', colorClass: 'bg-lime-500' }
+    const type = m.type || ''
+    
+    // 直接匹配新的分类名称
+    if (type === '无双宠物') return { text: '无双', colorClass: 'bg-purple-600' }
+    if (type === '神宠') return { text: '神宠', colorClass: 'bg-yellow-500' }
+    if (type === '珍宠') return { text: '珍宠', colorClass: 'bg-pink-500' }
+    if (type === '罗盘宠物') return { text: '罗盘', colorClass: 'bg-indigo-500' }
+    if (type === 'VIP宠物') return { text: 'VIP', colorClass: 'bg-green-500' }
+    if (type === '超进化宠物') return { text: '超进化', colorClass: 'bg-orange-500' }
+    if (type === 'BOSS宠物') return { text: 'BOSS', colorClass: 'bg-red-500' }
+    if (type === '活动宠物') return { text: '活动', colorClass: 'bg-blue-500' }
+    if (type === '任务宠物') return { text: '任务', colorClass: 'bg-cyan-500' }
+    if (type === '可捕捉宠物') return { text: '可捕捉', colorClass: 'bg-lime-500' }
+    if (type === '商城宠物') return { text: '商城', colorClass: 'bg-amber-500' }
+    
+    // 如果是其他宠物，不显示角标
     return null
   }
 

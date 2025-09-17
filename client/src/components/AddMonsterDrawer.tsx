@@ -19,6 +19,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
   const [nameFinal, setNameFinal] = useState('')
   const [element, setElement] = useState('')
   const [role, setRole] = useState('')
+  const [type, setType] = useState('')
 
   // 六维
   const [hp, setHp] = useState(100)
@@ -49,7 +50,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
     setSkills(prev => prev.map((s, i) => (i === idx ? { ...s, [key]: val } : s)))
 
   const resetAll = () => {
-    setNameFinal(''); setElement(''); setRole('')
+    setNameFinal(''); setElement(''); setRole(''); setType('')
     setHp(100); setSpeed(100); setAttack(100); setDefense(100); setMagic(100); setResist(100)
     setTagsInput(''); setSkills([{ name: '', description: '' }]); setErr(null); setExtractRaw('')
   }
@@ -64,9 +65,10 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
           api.get(`/monsters/${editId}/skills`)
         ])
         const d = detail.data
-        setNameFinal(d.name_final || '')
+        setNameFinal(d.name_final || d.name || '')
         setElement(d.element || '')
         setRole(d.role || '')
+        setType(d.type || '')
         // 原始六维如有则用原始，否则用折算
         const raw = d.explain_json?.raw_stats
         if (raw) {
@@ -95,6 +97,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
         name_final: nameFinal.trim(),
         element: element || null,
         role: role || null,
+        type: type || null,
         base_offense, base_survive, base_control, base_tempo, base_pp,
         tags: tagsInput.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
         skills: skills
@@ -201,6 +204,24 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
                 <option value="辅助">辅助</option>
                 <option value="坦克">坦克</option>
                 <option value="通用">通用</option>
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="label">获取分类</label>
+              <select className="select" value={type} onChange={e => setType(e.target.value)}>
+                <option value="">未设置</option>
+                <option value="无双宠物">无双宠物</option>
+                <option value="神宠">神宠</option>
+                <option value="珍宠">珍宠</option>
+                <option value="罗盘宠物">罗盘宠物</option>
+                <option value="BOSS宠物">BOSS宠物</option>
+                <option value="可捕捉宠物">可捕捉宠物</option>
+                <option value="VIP宠物">VIP宠物</option>
+                <option value="商城宠物">商城宠物</option>
+                <option value="任务宠物">任务宠物</option>
+                <option value="超进化宠物">超进化宠物</option>
+                <option value="活动宠物">活动宠物</option>
+                <option value="其他宠物">其他宠物</option>
               </select>
             </div>
             <div className="md:col-span-2">

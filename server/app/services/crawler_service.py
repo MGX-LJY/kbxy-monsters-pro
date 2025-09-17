@@ -1,4 +1,4 @@
-# server/app/services/crawler_server.py
+# server/app/services/crawler_service.py
 # -*- coding: utf-8 -*-
 """
 4399【卡布西游-妖怪大全】爬虫（合并版）
@@ -11,9 +11,7 @@ import time
 import random
 import json
 import logging
-import io
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Generator, Iterable, Optional, Tuple, Set
 from urllib.parse import urljoin, urlparse
@@ -31,9 +29,11 @@ log = logging.getLogger(__name__)
 IMAGES_DIR = Path(__file__).parent.parent.parent / "images" / "monsters"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+
 def ensure_dir(p: Path):
     """确保目录存在"""
     p.mkdir(parents=True, exist_ok=True)
+
 
 def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
     """下载图片到指定路径"""
@@ -44,7 +44,7 @@ def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
         }
         response = requests.get(url, headers=headers, timeout=timeout, stream=True)
         response.raise_for_status()
-        
+
         ensure_dir(save_path.parent)
         with open(save_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
@@ -54,14 +54,15 @@ def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
         log.warning(f"Failed to download image {url}: {e}")
         return False
 
+
 def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
     """使用waifu2x进行图片超分"""
     try:
         cmd = [
-            "waifu2x-ncnn-vulkan", 
-            "-i", str(src), 
-            "-o", str(dst), 
-            "-s", str(scale), 
+            "waifu2x-ncnn-vulkan",
+            "-i", str(src),
+            "-o", str(dst),
+            "-s", str(scale),
             "-n", "-1",  # noise level
             "-m", "models-cunet",
             "-f", "png"
@@ -75,14 +76,15 @@ def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
         log.warning(f"waifu2x failed: {e}")
         return False
 
+
 def upscale_image(image_path: Path, scale: int = 2) -> bool:
     """对图片进行超分处理"""
     if not image_path.exists():
         return False
-    
+
     # 生成超分后的文件名
     upscaled_path = image_path.with_name(f"{image_path.stem}_upscaled{image_path.suffix}")
-    
+
     # 尝试使用waifu2x超分
     if run_waifu2x_upscale(image_path, upscaled_path, scale):
         # 如果超分成功，替换原文件
@@ -105,6 +107,7 @@ def upscale_image(image_path: Path, scale: int = 2) -> bool:
             log.warning(f"Failed to upscale with PIL: {e}")
             return False
 
+
 def sanitize_filename(name: str) -> str:
     """清理文件名，移除非法字符"""
     # 移除或替换非法字符
@@ -115,15 +118,17 @@ def sanitize_filename(name: str) -> str:
     name = name.strip('.')
     return name
 
+
 # ---------- 数据模型 ----------
 @dataclass
 class SkillRow:
     name: str
     level: Optional[int]
     element: str
-    kind: str         # 物理 / 法术 / 特殊
+    kind: str  # 物理 / 法术 / 特殊
     power: Optional[int]
     description: str
+
 
 @dataclass
 class MonsterRow:
@@ -147,51 +152,59 @@ class MonsterRow:
     recommended_names: List[str] = field(default_factory=list)
     selected_skills: List[SkillRow] = field(default_factory=list)
 
+
 # ---------- 小工具 ----------
 _INT = re.compile(r"-?\d+")
 _WS = re.compile(r"\s+")
-def _to_int(s: str | None) -> Optional[int]:
+
+
+def _to_int(s: Optional[str]) -> Optional[int]:
     if not s:
         return None
     m = _INT.search(s)
     return int(m.group()) if m else None
 
-def _clean(s: str | None) -> str:
+
+def _clean(s: Optional[str]) -> str:
     if not s:
         return ""
     return _WS.sub(" ", s).strip()
 
+
 def _abs(base: str, href: str) -> str:
     return urljoin(base, href)
+
 
 def _is_detail_link(href: str) -> bool:
     return bool(href) and '/kabuxiyou/yaoguaidaquan/' in href and href.endswith('.html')
 
+
 # ---------- 获取渠道：常量 & 正则 ----------
 ACQ_KEYWORDS = [
-    "获得方式","获取方式","获取方法","获得方法","获得渠道","获取渠道","获取途径",
-    "获得：","获取：","分布地","获得","获取",
-    "捕捉","捕获","参与活动","挑战","BOSS","副本","通关","兑换","商店",
-    "寻宝罗盘","罗盘","七星宝图","北斗七星图","神宠之魂","VIP","充值","年费","月费",
-    "任务","剧情","点亮","签到","有几率","抽取","抽得","抽奖","幻境","地府","荣耀",
+    "获得方式", "获取方式", "获取方法", "获得方法", "获得渠道", "获取渠道", "获取途径",
+    "获得：", "获取：", "分布地", "获得", "获取",
+    "捕捉", "捕获", "参与活动", "挑战", "BOSS", "副本", "通关", "兑换", "商店",
+    "寻宝罗盘", "罗盘", "七星宝图", "北斗七星图", "神宠之魂", "VIP", "充值", "年费", "月费",
+    "任务", "剧情", "点亮", "签到", "有几率", "抽取", "抽得", "抽奖", "幻境", "地府", "荣耀",
 ]
 POS_WORDS = [
-    "获得","获取","可获得","可得","有几率","概率","挑战","副本","通关",
-    "活动","兑换","商店","罗盘","寻宝罗盘","七星宝图","北斗七星图","神宠之魂",
-    "VIP","年费","充值","任务","剧情","点亮","签到","捕捉","捕获","幻境","地府","仙踪之门",
+    "获得", "获取", "可获得", "可得", "有几率", "概率", "挑战", "副本", "通关",
+    "活动", "兑换", "商店", "罗盘", "寻宝罗盘", "七星宝图", "北斗七星图", "神宠之魂",
+    "VIP", "年费", "充值", "任务", "剧情", "点亮", "签到", "捕捉", "捕获", "幻境", "地府", "仙踪之门",
 ]
-NEGATIVE_TOKENS = ["无","未知","暂无","未开放","暂时未知","敬请期待","？","?",""]
+NEGATIVE_TOKENS = ["无", "未知", "暂无", "未开放", "暂时未知", "敬请期待", "？", "?", ""]
 BLOCK_PHRASES = [
-    "妖怪获得小技巧请点击","免费获得卡布币","技能表分布地配招","举报反馈","来源：4399.com",
-    "红色印记","妖怪性格","资质视频","充值卡布币","视频攻略","太上令","点击查看性格大全",
-    "卡布西游红色印记","卡布西游妖怪性格","卡布西游充值卡布币","卡布西游太上令",
+    "妖怪获得小技巧请点击", "免费获得卡布币", "技能表分布地配招", "举报反馈", "来源：4399.com",
+    "红色印记", "妖怪性格", "资质视频", "充值卡布币", "视频攻略", "太上令", "点击查看性格大全",
+    "卡布西游红色印记", "卡布西游妖怪性格", "卡布西游充值卡布币", "卡布西游太上令",
 ]
 _HEADER_WORDS = {"种族值", "体力", "速度", "攻击", "防御", "法术", "抗性", "资料", "妖怪名", "名称", "：", ":"}
 
 DATE_RE = re.compile(r"\d{4}年\d{1,2}月\d{1,2}日?|(\d{4}年\d{1,2}月)|(\d{1,2}月\d{1,2}日)")
 DATE_HINT = re.compile(r"\d{4}年\d{1,2}月(?:\d{1,2}日)?|(?:\d{1,2}月\d{1,2}日)")
 ANCHOR_HEAD_RE = re.compile(r"(获得方式|获取方式|获得方法|获取方法|获得[:：]|获取[:：]|分布地[:：])")
-TRIM_TAIL_RE = re.compile(r"(极品性格|点击查看性格大全|推荐修为|推荐配招|相关链接|种族值|妖怪名|系别|进化等级|作者|来源)")
+TRIM_TAIL_RE = re.compile(
+    r"(极品性格|点击查看性格大全|推荐修为|推荐配招|相关链接|种族值|妖怪名|系别|进化等级|作者|来源)")
 
 # —— 统一字段值（技能“元素/类型”规范化）——
 CANON_ELEM_MAP = {
@@ -199,14 +212,15 @@ CANON_ELEM_MAP = {
     "无": "特殊",
 }
 CANON_KIND_MAP = {
-    "技能": "法术",   # 如果你更倾向把“技能”算成“特殊”，把这里改成 "特殊"
+    "技能": "法术",  # 如果你更倾向把“技能”算成“特殊”，把这里改成 "特殊"
     "技": "法术",
     "状态": "特殊",
     "变化": "特殊",
     "辅助": "特殊",
-    "特": "特殊",     # 有些页面把“类型”也写成“特”
+    "特": "特殊",  # 有些页面把“类型”也写成“特”
     "": None,
 }
+
 
 def normalize_skill_element(e: Optional[str]) -> Optional[str]:
     if e is None:
@@ -214,100 +228,131 @@ def normalize_skill_element(e: Optional[str]) -> Optional[str]:
     e = e.strip()
     return CANON_ELEM_MAP.get(e, e) or None
 
+
 def normalize_skill_kind(k: Optional[str]) -> Optional[str]:
     if k is None:
         return None
     k = k.strip()
     return CANON_KIND_MAP.get(k, k) or None
 
+
 def _acq_clean(x: str) -> str:
-    if not x: return ""
-    x = x.replace("\uFFFD","").replace("\u200b","").replace("\xa0"," ")
-    x = re.sub(r"[ \t\r\f\v]+"," ",x)
-    x = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]+","",x)
+    if not x:
+        return ""
+    x = x.replace("\uFFFD", "").replace("\u200b", "").replace("\xa0", " ")
+    x = re.sub(r"[ \t\r\f\v]+", " ", x)
+    x = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]+", "", x)
     return x.strip()
+
 
 def _is_negative_value(text: str) -> bool:
     t = _acq_clean(text).strip("：: ")
     return t in NEGATIVE_TOKENS
 
+
 def _bad_block(text: str) -> bool:
     return any(p in text for p in BLOCK_PHRASES)
 
+
 def pick_main_container(soup: BeautifulSoup) -> Tag:
-    for sel in ["#newstext",".article",".news_text",".con",".content","article",".text"]:
+    for sel in ["#newstext", ".article", ".news_text", ".con", ".content", "article", ".text"]:
         node = soup.select_one(sel)
-        if node: return node
+        if node:
+            return node
     return soup.body or soup
+
 
 def _trim_acq_phrase(t: str) -> str:
     t = _acq_clean(t)
-    if not t: return t
+    if not t:
+        return t
     m = ANCHOR_HEAD_RE.search(t)
-    if m: t = t[m.start():]
+    if m:
+        t = t[m.start():]
     t = re.split(r"[。！？!?\n]", t)[0]
     t = TRIM_TAIL_RE.split(t)[0]
     if len(t) > 100:
-        m2 = re.search(r".{0,100}?(捕获|捕捉|获得|获取|抽(取|得)|兑换|挑战|通关|罗盘|七星|幻境|地府|VIP|年费)[^，,。！!？\n]*", t)
-        if m2: t = t[:m2.end()]
+        m2 = re.search(
+            r".{0,100}?(捕获|捕捉|获得|获取|抽(取|得)|兑换|挑战|通关|罗盘|七星|幻境|地府|VIP|年费)[^，,。！!？\n]*", t)
+        if m2:
+            t = t[:m2.end()]
     return t.strip(" ，,;；-—")
+
 
 def _score_candidate(text: str) -> int:
     t = _acq_clean(text)
-    if not t: return -999
-    if _bad_block(t): return -500
-    if re.search(r"^分布地[:：]\s*(无|未知|暂无|未开放|暂时未知)\s*$", t): return -400
+    if not t:
+        return -999
+    if _bad_block(t):
+        return -500
+    if re.search(r"^分布地[:：]\s*(无|未知|暂无|未开放|暂时未知)\s*$", t):
+        return -400
     right = t.split("：", 1)[-1].strip() if ("：" in t or ":" in t) else t
-    if _is_negative_value(right): return -350
-    if not (re.search(r"(获[得取]|获取|可获得|可得)", t) or re.search(r"^分布地[:：]", t)): return -300
+    if _is_negative_value(right):
+        return -350
+    if not (re.search(r"(获[得取]|获取|可获得|可得)", t) or re.search(r"^分布地[:：]", t)):
+        return -300
     score = 0
-    if re.search(r"(获得方?式|获取方?式|获得渠道|获取渠道|获取途径)", t): score += 20
-    if t.startswith(("获得：","获取：")): score += 15
-    if t.startswith("分布地："): score += 8
-    if DATE_RE.search(t): score += 50
-    if ("起" in t) or ("至" in t): score += 8
+    if re.search(r"(获得方?式|获取方?式|获得渠道|获取渠道|获取途径)", t):
+        score += 20
+    if t.startswith(("获得：", "获取：")):
+        score += 15
+    if t.startswith("分布地："):
+        score += 8
+    if DATE_RE.search(t):
+        score += 50
+    if ("起" in t) or ("至" in t):
+        score += 8
     for w in POS_WORDS:
-        if w in t: score += 12
+        if w in t:
+            score += 12
     ln = len(t)
-    if 6 <= ln <= 80: score += 10
-    elif ln > 120: score -= 12
+    if 6 <= ln <= 80:
+        score += 10
+    elif ln > 120:
+        score -= 12
     return score
+
 
 def _collect_candidates_from_tables(scope: Tag) -> List[Dict[str, object]]:
     cands = []
     for tb in scope.find_all("table")[:10]:
         for tr in tb.find_all("tr"):
-            line = _acq_clean(tr.get_text(" ", strip=True))
+            line = _acq_clean(tr.get_text(separator=" ", strip=True))
             if not line: continue
-            if not any(k in line for k in ["获得","获取","分布地"]): continue
+            if not any(k in line for k in ["获得", "获取", "分布地"]): continue
             tds = tr.find_all("td")
             if tds:
                 for td in tds:
-                    cell = _acq_clean(td.get_text(" ", strip=True))
+                    cell = _acq_clean(td.get_text(separator=" ", strip=True))
                     if not cell: continue
-                    if not any(k in cell for k in ["获得","获取","分布地"]): continue
+                    if not any(k in cell for k in ["获得", "获取", "分布地"]): continue
                     txt = _trim_acq_phrase(cell)
                     if not txt or _bad_block(txt): continue
-                    if any(k in cell for k in ["获得方式","获取方式","获得方法","获取方法","获得：","获取："]):
+                    if any(k in cell for k in ["获得方式", "获取方式", "获得方法", "获取方法", "获得：", "获取："]):
                         label = "table_acq"
                     elif "分布地" in cell:
                         label = "table_loc"
                     else:
                         label = "table_misc"
-                    cands.append({"from":label,"path":"table","text":txt,"score":_score_candidate(txt),"discard":None})
+                    cands.append(
+                        {"from": label, "path": "table", "text": txt, "score": _score_candidate(txt), "discard": None})
             else:
                 txt = _trim_acq_phrase(line)
                 if not txt or _bad_block(txt): continue
-                label = "table_acq" if any(k in line for k in ["获得方式","获取方式","获得方法","获取方法","获得：","获取："]) \
-                        else ("table_loc" if "分布地" in line else "table_misc")
-                cands.append({"from":label,"path":"tr","text":txt,"score":_score_candidate(txt),"discard":None})
+                label = "table_acq" if any(
+                    k in line for k in ["获得方式", "获取方式", "获得方法", "获取方法", "获得：", "获取："]) \
+                    else ("table_loc" if "分布地" in line else "table_misc")
+                cands.append(
+                    {"from": label, "path": "tr", "text": txt, "score": _score_candidate(txt), "discard": None})
     return cands
+
 
 def _collect_candidates_from_text(scope: Tag) -> List[Dict[str, object]]:
     kw_re = re.compile("|".join(re.escape(k) for k in ACQ_KEYWORDS + ["分布地"]))
     cands: List[Dict[str, object]] = []
-    for el in scope.find_all(["p","li","div","section","span"])[:400]:
-        raw = _acq_clean(el.get_text(" ", strip=True))
+    for el in scope.find_all(["p", "li", "div", "section", "span"])[:400]:
+        raw = _acq_clean(el.get_text(separator=" ", strip=True))
         if not raw or _bad_block(raw) or not kw_re.search(raw): continue
         for s in re.split(r"[。！？!?\n]", raw):
             s = _acq_clean(s)
@@ -315,9 +360,10 @@ def _collect_candidates_from_text(scope: Tag) -> List[Dict[str, object]]:
             if not (re.search(r"(获[得取]|获取|可获得|可得)", s) or re.search(r"^分布地[:：]", s)): continue
             s2 = _trim_acq_phrase(s)
             if not s2 or _bad_block(s2): continue
-            cands.append({"from":"text","path":"text","text":s2,"score":_score_candidate(s2),"discard":None})
+            cands.append({"from": "text", "path": "text", "text": s2, "score": _score_candidate(s2), "discard": None})
         if len(cands) >= 40: break
     return cands
+
 
 def pick_acquire_text(soup: BeautifulSoup) -> str:
     scope = pick_main_container(soup)
@@ -329,12 +375,13 @@ def pick_acquire_text(soup: BeautifulSoup) -> str:
         t, sc = str(c["text"]), int(c["score"])
         if re.search(r"^分布地[:：]\s*(无|未知|暂无|未开放|暂时未知)\s*$", t):
             continue
-        right = t.split("：",1)[-1] if ("：" in t) else t
+        right = t.split("：", 1)[-1] if ("：" in t) else t
         if _is_negative_value(right) or _bad_block(t):
             continue
         if sc > best_score:
             best_score, best_text = sc, t
     return best_text
+
 
 # —— 分类器（有序正则 + 新/当期判断）——
 def _norm(s: str) -> str:
@@ -342,70 +389,110 @@ def _norm(s: str) -> str:
     res = []
     for ch in s:
         o = ord(ch)
-        if o == 0x3000: ch = " "
-        elif 0xFF01 <= o <= 0xFF5E: ch = chr(o - 0xFEE0)
+        if o == 0x3000:
+            ch = " "
+        elif 0xFF01 <= o <= 0xFF5E:
+            ch = chr(o - 0xFEE0)
         res.append(ch)
     s = "".join(res)
-    s = s.replace("：",":").replace("，",",").replace("、",",").replace("；",";")
-    s = re.sub(r"\s+"," ",s).strip()
+    s = s.replace("：", ":").replace("，", ",").replace("、", ",").replace("；", ";")
+    s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 _UNAVAILABLE = re.compile(r"(绝版|已绝版|停止(获取|产出)|已结束|下架|不可获取|无法获得|已停售)")
 _AVAILABLE_HINT = re.compile(r"(可捕捉|野外|常驻|长期|周常|日常|兑换(长期)?开放|商店(长期)?开放|随时可|任意时段)")
 
 PATTERNS: List[Tuple[re.Pattern, str]] = [
+    # 无双宠物 (最高优先级)
+    (re.compile(r"(?:无双印记|无双状态)[^,，。;；\n]{0,12}?(?:战斗中出现|开启无双状态)", re.I),
+     "无双宠物"),
+
+    # 神宠
+    (re.compile(r"神宠之魂", re.I),
+     "神宠"),
+
+    # 珍宠  
+    (re.compile(r"珍宠之魂", re.I),
+     "珍宠"),
+
+    # 罗盘宠物
+    (re.compile(r"寻宝罗盘", re.I),
+     "罗盘宠物"),
+
+    # BOSS宠物 (排除商城购买)
+    (re.compile(r"(首次[击打]败|首次击败|首次战胜|击败|打败|战胜)[^,，。;；\n]{0,20}?"
+                r"(BOSS|首领|家族大厅|之门|内殿|地府|万妖洞|幻境|超能幻境|守护者|元帅|天尊|洞主|宫)[^,，。;；\n]{0,20}?"
+                r"(可获得|可以获得|获得)", re.I),
+     "BOSS宠物"),
+
+    # 可捕捉宠物
+    (re.compile(r"捕捉", re.I),
+     "可捕捉宠物"),
+
+    # VIP宠物
+    (re.compile(r"(充值|开通|成为|达到)[^,，。;；\n]{0,24}?(VIP|年费|月费|超级VIP|魔界守护者)"
+                r"[^,，。;；\n]{0,16}(领取|获得|可得|可获得)", re.I),
+     "VIP宠物"),
+
+    # 商城宠物 (购买精魄)
+    (re.compile(r"(商城购买|购买精魄|炫光商城)[^,，。;；\n]{0,20}?精魄", re.I),
+     "商城宠物"),
+
+    # 任务宠物
+    (re.compile(
+        r"(完成|通关)[^,，。;；\n]{0,18}(任务|剧情|主线|支线|召集令|点亮|签到|收集|成就)[^,，。;；\n]{0,12}(可获?得|获得)",
+        re.I),
+     "任务宠物"),
+
+    # 超进化宠物 (排除无双)
     (re.compile(r"(?:由[^,，。;；\n]{1,16}(?:进化|升阶|觉醒|融合)[^,，。;；\n]{0,10}?可?得)|"
                 r"(?:进化|升阶|觉醒|融合)[^,，。;；\n]{0,12}?后?可?获?得|"
-                r"(?:无双印记|无双状态)[^,，。;；\n]{0,12}?(?:战斗中出现|开启无双状态)", re.I),
-     "超进化"),
-    (re.compile(r"(首次[击打]败|战胜|挑战|通关)[^,，。;；\n]{0,20}?"
-                r"(BOSS|首领|家族大厅|之门|内殿|地府|万妖洞|幻境|超能幻境|守护者|元帅|天尊|洞主|宫)", re.I),
-     "BOSS宠物"),
-    (re.compile(r"(商城|市集|VIP市集|炫光商城|拍卖|兑换所|兑换|礼盒|礼包|宝箱|扭蛋|转盘|抽奖|"
-                r"寻宝罗盘|七星宝图|北斗七星图|神宠之魂|宝藏|金元宝|购买|精魄(?:孵化|化形)?|抽取|抽到|抽得)", re.I),
-     "兑换/商店"),
+                r"超进化", re.I),
+     "超进化宠物"),
+
+    # 活动宠物
     (re.compile(r"(参加|完成|参与|开启|进行)[^》】』\n]{0,18}"
                 r"(?:《[^》]{1,24}》|【[^】]{1,24}】|『[^』]{1,24}』)?[^,，。;；\n]{0,10}"
                 r"(活动|嘉年华|节|庆|乐园|行动|盛宴|周年|福利)[^,，。;；\n]{0,20}"
                 r"(获得|可获得|有几率(?:抽?到|获得)|有机会获得)", re.I),
-     "活动获取宠物"),
-    (re.compile(r"(完成|通关)[^,，。;；\n]{0,18}(任务|剧情|主线|支线|召集令|点亮|签到|收集)[^,，。;；\n]{0,12}(可获?得|获得)", re.I),
-     "任务获取"),
-    (re.compile(r"(?:分布地\s*:\s*(?!无|未知|暂无|未开放|暂时未知)"
-                r"(?!.*(商城|市集|罗盘|宝图|神宠之魂|VIP|礼盒|礼包)))|"
-                r"((可?在|于|在)[^,，。;；\n]{2,16}(海岸|山|谷|洞|窟|林|湾|岛|宫|城|洞穴|大殿|寺|境|殿)[^,，。;；\n]{0,10}"
-                r"(捕捉|捕获|出现|刷新|遇到|获得))", re.I),
-     "可捕捉宠物"),
-    (re.compile(r"(充值|开通|成为|达到)[^,，。;；\n]{0,24}?(VIP|年费|月费|超级VIP|魔界守护者)"
-                r"[^,，。;；\n]{0,16}(领取|获得|可得|可获得)", re.I),
-     "其它"),
+     "活动宠物"),
+
+    # 其他宠物 (默认)
+    (re.compile(r".*", re.I),
+     "其他宠物"),
 ]
+
 
 def classify_acq_type(acq_text: str) -> Tuple[Optional[str], Optional[bool]]:
     if not acq_text:
         return None, None
     tnorm = _norm(acq_text)
     new_flag: Optional[bool] = None
-    if _UNAVAILABLE.search(tnorm): new_flag = False
-    elif "起" in tnorm and DATE_HINT.search(tnorm) and ("至" not in tnorm) and ("到" not in tnorm) and ("—" not in tnorm):
+    if _UNAVAILABLE.search(tnorm):
+        new_flag = False
+    elif "起" in tnorm and DATE_HINT.search(tnorm) and ("至" not in tnorm) and ("到" not in tnorm) and (
+            "—" not in tnorm):
         new_flag = True
-    elif _AVAILABLE_HINT.search(tnorm): new_flag = True
+    elif _AVAILABLE_HINT.search(tnorm):
+        new_flag = True
     for patt, label in PATTERNS:
         if patt.search(tnorm):
             return label, new_flag
     if DATE_HINT.search(tnorm):
-        return "活动获取宠物", new_flag
+        return "活动宠物", new_flag
     return None, new_flag
+
 
 # ---------- 爬虫主体 ----------
 class Kabu4399Crawler:
     BASE = "https://news.4399.com"
     ROOT = "/kabuxiyou/yaoguaidaquan/"
     CANDIDATE_SLUGS = [
-        "huoxi","jinxi","muxi","shuixi","tuxi","yixi","guaixi",
-        "moxi","yaoxi","fengxi","duxi","leixi","huanxi",
-        "bing","lingxi","jixie","huofengxi","mulingxi",
-        "shengxi","tuhuanxi","shuiyaoxi","yinxi",
+        "huoxi", "jinxi", "muxi", "shuixi", "tuxi", "yixi", "guaixi",
+        "moxi", "yaoxi", "fengxi", "duxi", "leixi", "huanxi",
+        "bing", "lingxi", "jixie", "huofengxi", "mulingxi",
+        "shengxi", "tuhuanxi", "shuiyaoxi", "yinxi",
     ]
     SLUG2ELEM: Dict[str, str] = {
         "huoxi": "火系", "jinxi": "金系", "muxi": "木系", "shuixi": "水系", "tuxi": "土系",
@@ -428,12 +515,12 @@ class Kabu4399Crawler:
     )
 
     def __init__(
-        self,
-        *,
-        throttle_range: Tuple[float, float] = (0.6, 1.2),
-        max_retries: int = 3,
-        timeout: float = 15.0,
-        headers: Optional[Dict[str, str]] = None,
+            self,
+            *,
+            throttle_range: Tuple[float, float] = (0.6, 1.2),
+            max_retries: int = 3,
+            timeout: float = 15.0,
+            headers: Optional[Dict[str, str]] = None,
     ) -> None:
         self.sp = SessionPage()
         self.sp.session.headers.update({
@@ -471,7 +558,7 @@ class Kabu4399Crawler:
                 if self.sp.response and self.sp.response.ok:
                     return True
             except Exception as e:
-                log.warning("GET fail (%s/%s) %s -> %s", i+1, self.max_retries, url, e)
+                log.warning("GET fail (%s/%s) %s -> %s", i + 1, self.max_retries, url, e)
             time.sleep(random.uniform(*self.throttle_range))
         return False
 
@@ -482,7 +569,7 @@ class Kabu4399Crawler:
         返回: List[Tuple[detail_url, img_url, monster_name]]
         """
         results: List[Tuple[str, Optional[str], Optional[str]]] = []
-        
+
         # 首先尝试从目标列表结构中提取
         for li in self.sp.eles('t:li'):
             # 查找详情链接
@@ -492,10 +579,10 @@ class Kabu4399Crawler:
                 if _is_detail_link(href):
                     detail_link = _abs(self.BASE, href)
                     break
-            
+
             if not detail_link:
                 continue
-                
+
             # 查找图片URL
             img_url = None
             for img in li.eles('t:img'):
@@ -509,7 +596,7 @@ class Kabu4399Crawler:
                     else:
                         img_url = src
                     break
-            
+
             # 查找怪物名称（从图片alt或链接文本）
             monster_name = None
             for img in li.eles('t:img'):
@@ -518,7 +605,7 @@ class Kabu4399Crawler:
                     # 提取怪物名称，去掉"卡布西游"前缀
                     monster_name = alt.replace('卡布西游', '').strip()
                     break
-            
+
             if not monster_name:
                 # 从链接文本中获取
                 for a in li.eles('t:a'):
@@ -526,10 +613,10 @@ class Kabu4399Crawler:
                     if text and not _is_detail_link(text):
                         monster_name = text
                         break
-            
+
             if detail_link:
                 results.append((detail_link, img_url, monster_name))
-        
+
         # 如果上面的方法没有找到，使用原来的兜底方法
         if not results:
             for a in self.sp.eles('t:ul@@id=dq_list t:a'):
@@ -541,7 +628,7 @@ class Kabu4399Crawler:
                     href = a.attr('href') or ""
                     if _is_detail_link(href):
                         results.append((_abs(self.BASE, href), None, None))
-        
+
         # 去重
         seen = set()
         unique_results = []
@@ -549,7 +636,7 @@ class Kabu4399Crawler:
             if detail_url not in seen:
                 seen.add(detail_url)
                 unique_results.append((detail_url, img_url, name))
-        
+
         log.info("list[%s] -> %d detail links with images", page_url, len(unique_results))
         return unique_results
 
@@ -609,9 +696,9 @@ class Kabu4399Crawler:
 
     def _infer_element(self, page_url: str, skills: List[SkillRow], soup: Optional[BeautifulSoup]) -> Optional[str]:
         return (
-            self._infer_element_from_url(page_url)
-            or (self._infer_element_from_breadcrumb(soup) if soup else None)
-            or self._infer_element_from_skills(skills)
+                self._infer_element_from_url(page_url)
+                or (self._infer_element_from_breadcrumb(soup) if soup else None)
+                or self._infer_element_from_skills(skills)
         )
 
     # ---- Drission 解析（旧表结构优先）----
@@ -667,7 +754,7 @@ class Kabu4399Crawler:
         tables = soup.find_all("table")
         target = None
         for tb in tables:
-            txt = (_clean(tb.get_text(" ", strip=True)) or "")
+            txt = (_clean(tb.get_text(separator=" ", strip=True)) or "")
             if ("种族值" in txt) or ("资料" in txt and all(k in txt for k in ("体力", "攻击", "速度"))):
                 target = tb
         if not target:
@@ -680,7 +767,8 @@ class Kabu4399Crawler:
                         if nums >= 5:
                             target = tb
                             break
-                if target: break
+                if target:
+                    break
         if not target:
             return []
 
@@ -690,7 +778,7 @@ class Kabu4399Crawler:
 
         header_idx = None
         for i, tr in enumerate(rows[:10]):
-            t = _clean(tr.get_text(" ", strip=True))
+            t = _clean(tr.get_text(separator=" ", strip=True))
             if all(k in t for k in ("体力", "速度", "攻击", "防御", "法术", "抗性")):
                 header_idx = i
                 break
@@ -708,7 +796,7 @@ class Kabu4399Crawler:
             if len(tds) < 2:
                 continue
 
-            vals = [_clean(td.get_text(" ", strip=True)) for td in tds]
+            vals = [_clean(td.get_text(separator=" ", strip=True)) for td in tds]
             num_idx = [i for i, v in enumerate(vals) if _to_int(v) is not None]
             if len(num_idx) < 6:
                 continue
@@ -730,7 +818,8 @@ class Kabu4399Crawler:
                     name = seg
                     break
             if not name:
-                m = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9·]+", " ".join(name_zone) or tr.get_text(" ", strip=True))
+                m = re.findall(r"[\u4e00-\u9fa5A-Za-z0-9·]+",
+                               " ".join(name_zone) or tr.get_text(separator=" ", strip=True))
                 for x in reversed(m):
                     if x not in _HEADER_WORDS:
                         name = x
@@ -755,7 +844,7 @@ class Kabu4399Crawler:
     def _bs4_parse_skills_table(self, soup: BeautifulSoup) -> List[SkillRow]:
         target = None
         for tb in soup.find_all("table"):
-            txt = _clean(tb.get_text(" ", strip=True))
+            txt = _clean(tb.get_text(separator=" ", strip=True))
             if ("技能表" in txt) or ("技能名称" in txt and "类型" in txt):
                 target = tb
         if not target:
@@ -765,7 +854,7 @@ class Kabu4399Crawler:
             return []
         header_idx = 0
         for i, tr in enumerate(rows[:10]):
-            t = _clean(tr.get_text(" ", strip=True))
+            t = _clean(tr.get_text(separator=" ", strip=True))
             if "技能名称" in t:
                 header_idx = i
                 break
@@ -774,7 +863,7 @@ class Kabu4399Crawler:
             tds = tr.find_all("td")
             if len(tds) < 4:
                 continue
-            vals = [_clean(td.get_text(" ", strip=True)) for td in tds]
+            vals = [_clean(td.get_text(separator=" ", strip=True)) for td in tds]
             vals += [""] * (7 - len(vals))
             name = vals[0]
             if not name or name == "无":
@@ -793,9 +882,10 @@ class Kabu4399Crawler:
                 tds = tr.find_all("td")
                 if not tds:
                     continue
-                first = _clean(tds[0].get_text(" ", strip=True))
+                first = _clean(tds[0].get_text(separator=" ", strip=True))
                 if ("推荐配招" in first) or ("推荐技能" in first):
-                    raw = _clean(" ".join(td.get_text(" ", strip=True) for td in tds[1:])) if len(tds) > 1 else _clean(tr.get_text(" ", strip=True))
+                    raw = _clean(" ".join(td.get_text(separator=" ", strip=True) for td in tds[1:])) if len(
+                        tds) > 1 else _clean(tr.get_text(separator=" ", strip=True))
                     raw = raw.replace("：", " ").replace("\u3000", " ")
                     parts = re.split(r"[+＋、/，,；;|\s]+", raw)
                     names, seen = [], set()
@@ -804,7 +894,8 @@ class Kabu4399Crawler:
                         if (not n) or (n == "无") or ("推荐" in n) or ("配招" in n):
                             continue
                         if n not in seen:
-                            seen.add(n); names.append(n)
+                            seen.add(n)
+                            names.append(n)
                     return names
         return []
 
@@ -820,6 +911,7 @@ class Kabu4399Crawler:
     def _select_skills_from_recommend(self, rec_names: List[str], skills: List[SkillRow]) -> List[SkillRow]:
         def norm(s: str) -> str:
             return re.sub(r"\s+", "", s or "")
+
         skill_map = {norm(s.name): s for s in skills}
         out: List[SkillRow] = []
         for rec in rec_names:
@@ -862,7 +954,7 @@ class Kabu4399Crawler:
         return out
 
     @staticmethod
-    def _skill_public(s: SkillRow) -> Dict[str, object]:
+    def skill_to_public(s: SkillRow) -> Dict[str, object]:
         return {
             "name": (s.name or "").strip(),
             "level": s.level,
@@ -873,7 +965,7 @@ class Kabu4399Crawler:
         }
 
     @staticmethod
-    def _to_public_json(m: MonsterRow) -> Dict[str, object]:
+    def to_public_json(m: MonsterRow) -> Dict[str, object]:
         return {
             "name": m.name,
             "element": m.element,
@@ -886,10 +978,11 @@ class Kabu4399Crawler:
             "type": m.type,
             "new_type": m.new_type,
             "method": m.method,
-            "selected_skills": [Kabu4399Crawler._skill_public(s) for s in (m.selected_skills or [])],
+            "selected_skills": [Kabu4399Crawler.skill_to_public(s) for s in (m.selected_skills or [])],
         }
 
-    def _process_monster_image(self, monster_name: str, img_url: Optional[str], enable_upscale: bool = True) -> Optional[str]:
+    def _process_monster_image(self, monster_name: str, img_url: Optional[str], enable_upscale: bool = True) -> \
+            Optional[str]:
         """
         下载并处理怪物图片
         
@@ -903,33 +996,33 @@ class Kabu4399Crawler:
         """
         if not img_url or not monster_name:
             return None
-            
+
         try:
             # 清理文件名
             safe_name = sanitize_filename(monster_name)
             if not safe_name:
                 safe_name = "unknown_monster"
-                
+
             # 确定文件扩展名
             file_ext = ".png"  # 默认使用png
             if img_url.lower().endswith(('.jpg', '.jpeg')):
                 file_ext = ".jpg"
             elif img_url.lower().endswith('.webp'):
                 file_ext = ".webp"
-                
+
             # 生成本地文件路径
             image_path = IMAGES_DIR / f"{safe_name}{file_ext}"
-            
+
             # 如果文件已存在，跳过下载
             if image_path.exists():
                 log.info(f"Image already exists: {image_path}")
                 return str(image_path)
-                
+
             # 下载图片
             log.info(f"Downloading image for {monster_name}: {img_url}")
             if not download_image(img_url, image_path):
                 return None
-                
+
             # 进行超分处理
             if enable_upscale:
                 log.info(f"Upscaling image for {monster_name}")
@@ -938,15 +1031,16 @@ class Kabu4399Crawler:
                     log.info(f"Successfully upscaled image for {monster_name}")
                 else:
                     log.warning(f"Failed to upscale image for {monster_name}, keeping original")
-                    
+
             return str(image_path)
-            
+
         except Exception as e:
             log.error(f"Error processing image for {monster_name}: {e}")
             return None
 
     # ---- 页面抓取（不触库）----
-    def fetch_detail(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> Optional[MonsterRow]:
+    def fetch_detail(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> \
+            Optional[MonsterRow]:
         # 预热
         self._warm_up()
 
@@ -1003,11 +1097,11 @@ class Kabu4399Crawler:
         best.skills = skills
         best.recommended_names = rec_names
         best.selected_skills = selected
-        
+
         # 处理图片下载和超分
         monster_name = list_monster_name or best.name
         img_url_to_use = list_img_url or best.img_url
-        
+
         if monster_name and img_url_to_use:
             try:
                 local_img_path = self._process_monster_image(monster_name, img_url_to_use, enable_upscale=True)
@@ -1019,7 +1113,7 @@ class Kabu4399Crawler:
                     log.warning(f"Failed to process image for {monster_name}")
             except Exception as e:
                 log.error(f"Error in image processing for {monster_name}: {e}")
-        
+
         return best
 
     # ---- 顶层遍历 ----
@@ -1036,18 +1130,17 @@ class Kabu4399Crawler:
             yield m
             time.sleep(random.uniform(*self.throttle_range))
 
+
 # ---------- 示例 ----------
 def example_persist(mon: MonsterRow) -> None:
     log.info(
         "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s new=%s img=%s",
         mon.name, mon.element or "-", mon.hp, mon.attack, mon.speed,
         len(mon.recommended_names), len(mon.selected_skills), len(mon.skills),
-        mon.type or "-", str(mon.new_type), 
+                  mon.type or "-", str(mon.new_type),
         "✓" if mon.img_url and Path(mon.img_url).exists() else "✗"
     )
 
-def _to_public_json(m: MonsterRow) -> Dict[str, object]:
-    return Kabu4399Crawler._to_public_json(m)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -1055,7 +1148,7 @@ if __name__ == "__main__":
     N = 10
     out: List[Dict[str, object]] = []
     for item in crawler.crawl_all(persist=example_persist):
-        out.append(_to_public_json(item))
+        out.append(Kabu4399Crawler.to_public_json(item))
         if len(out) >= N:
             break
     print(json.dumps(out, ensure_ascii=False, indent=2))
