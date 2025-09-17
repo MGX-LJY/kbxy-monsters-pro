@@ -12,7 +12,7 @@ install:
 server:
 	@echo "APP_ENV=$(APP_ENV)"
 	uvicorn server.app.main:app --reload --port 8000 \
-	  --reload-dir server --reload-dir rules \
+	  --reload-dir server \
 	  --reload-exclude '.venv/*' \
 	  --reload-exclude '*/site-packages/*' \
 	  --reload-exclude '**/__pycache__/*'

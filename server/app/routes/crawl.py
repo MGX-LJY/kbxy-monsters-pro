@@ -212,8 +212,8 @@ def crawl_samples(limit: int = Query(10, ge=1, le=100)):
     for list_url in crawler.iter_list_pages():
         if not crawler._get(list_url):
             continue
-        for detail_url in crawler._extract_detail_links_from_list(list_url):
-            mon = crawler.fetch_detail(detail_url)
+        for detail_url, img_url, monster_name in crawler._extract_detail_links_from_list(list_url):
+            mon = crawler.fetch_detail(detail_url, list_img_url=img_url, list_monster_name=monster_name)
             if not mon:
                 continue
             payload = _to_payload(mon)
@@ -258,8 +258,8 @@ def crawl_all(body: CrawlAllBody):
     skills_changed = 0
 
     with SessionLocal() as db:
-        for detail_url in crawler.iter_detail_urls():
-            mon = crawler.fetch_detail(detail_url)
+        for detail_url, img_url, monster_name in crawler.iter_detail_urls():
+            mon = crawler.fetch_detail(detail_url, list_img_url=img_url, list_monster_name=monster_name)
             if not mon:
                 continue
             seen += 1

@@ -11,16 +11,109 @@ import time
 import random
 import json
 import logging
+import io
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Generator, Iterable, Optional, Tuple, Set
 from urllib.parse import urljoin, urlparse
+from pathlib import Path
 
 import requests
 from DrissionPage import SessionPage
 from bs4 import BeautifulSoup, Tag
 from bs4.dammit import UnicodeDammit
+from PIL import Image
 
 log = logging.getLogger(__name__)
+
+# ---------- 图片处理配置 ----------
+IMAGES_DIR = Path(__file__).parent.parent.parent / "images" / "monsters"
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+def ensure_dir(p: Path):
+    """确保目录存在"""
+    p.mkdir(parents=True, exist_ok=True)
+
+def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
+    """下载图片到指定路径"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://news.4399.com/",
+        }
+        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        response.raise_for_status()
+        
+        ensure_dir(save_path.parent)
+        with open(save_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return True
+    except Exception as e:
+        log.warning(f"Failed to download image {url}: {e}")
+        return False
+
+def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
+    """使用waifu2x进行图片超分"""
+    try:
+        cmd = [
+            "waifu2x-ncnn-vulkan", 
+            "-i", str(src), 
+            "-o", str(dst), 
+            "-s", str(scale), 
+            "-n", "-1",  # noise level
+            "-m", "models-cunet",
+            "-f", "png"
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
+    except FileNotFoundError:
+        log.warning("waifu2x-ncnn-vulkan not found in PATH, skipping upscaling")
+        return False
+    except subprocess.CalledProcessError as e:
+        log.warning(f"waifu2x failed: {e}")
+        return False
+
+def upscale_image(image_path: Path, scale: int = 2) -> bool:
+    """对图片进行超分处理"""
+    if not image_path.exists():
+        return False
+    
+    # 生成超分后的文件名
+    upscaled_path = image_path.with_name(f"{image_path.stem}_upscaled{image_path.suffix}")
+    
+    # 尝试使用waifu2x超分
+    if run_waifu2x_upscale(image_path, upscaled_path, scale):
+        # 如果超分成功，替换原文件
+        try:
+            upscaled_path.replace(image_path)
+            return True
+        except Exception as e:
+            log.warning(f"Failed to replace original image: {e}")
+            return False
+    else:
+        # 如果waifu2x不可用，使用PIL进行简单放大
+        try:
+            with Image.open(image_path) as img:
+                width, height = img.size
+                new_size = (width * scale, height * scale)
+                upscaled = img.resize(new_size, Image.LANCZOS)
+                upscaled.save(image_path)
+                return True
+        except Exception as e:
+            log.warning(f"Failed to upscale with PIL: {e}")
+            return False
+
+def sanitize_filename(name: str) -> str:
+    """清理文件名，移除非法字符"""
+    # 移除或替换非法字符
+    illegal_chars = r'[<>:"/\\|?*]'
+    name = re.sub(illegal_chars, '_', name)
+    # 移除多余的空格和点
+    name = re.sub(r'\s+', '_', name.strip())
+    name = name.strip('.')
+    return name
 
 # ---------- 数据模型 ----------
 @dataclass
@@ -382,38 +475,101 @@ class Kabu4399Crawler:
             time.sleep(random.uniform(*self.throttle_range))
         return False
 
-    # ---- 列表页：抽取详情链接 ----
-    def _extract_detail_links_from_list(self, page_url: str) -> List[str]:
-        links: List[str] = []
-        for a in self.sp.eles('t:ul@@id=dq_list t:a'):
-            href = a.attr('href') or ""
-            if _is_detail_link(href):
-                links.append(_abs(self.BASE, href))
-        if not links:
-            for a in self.sp.eles('t:a'):
+    # ---- 列表页：抽取详情链接和图片信息 ----
+    def _extract_detail_links_from_list(self, page_url: str) -> List[Tuple[str, Optional[str], Optional[str]]]:
+        """
+        从列表页提取详情链接、图片URL和怪物名称
+        返回: List[Tuple[detail_url, img_url, monster_name]]
+        """
+        results: List[Tuple[str, Optional[str], Optional[str]]] = []
+        
+        # 首先尝试从目标列表结构中提取
+        for li in self.sp.eles('t:li'):
+            # 查找详情链接
+            detail_link = None
+            for a in li.eles('t:a'):
                 href = a.attr('href') or ""
                 if _is_detail_link(href):
-                    links.append(_abs(self.BASE, href))
-        out, seen = [], set()
-        for u in links:
-            if u not in seen:
-                seen.add(u); out.append(u)
-        log.info("list[%s] -> %d detail links", page_url, len(out))
-        return out
+                    detail_link = _abs(self.BASE, href)
+                    break
+            
+            if not detail_link:
+                continue
+                
+            # 查找图片URL
+            img_url = None
+            for img in li.eles('t:img'):
+                src = img.attr('src') or ""
+                if src:
+                    # 处理相对URL，补全协议
+                    if src.startswith('//'):
+                        img_url = 'https:' + src
+                    elif src.startswith('/'):
+                        img_url = _abs(self.BASE, src)
+                    else:
+                        img_url = src
+                    break
+            
+            # 查找怪物名称（从图片alt或链接文本）
+            monster_name = None
+            for img in li.eles('t:img'):
+                alt = img.attr('alt') or ""
+                if alt and '卡布西游' in alt:
+                    # 提取怪物名称，去掉"卡布西游"前缀
+                    monster_name = alt.replace('卡布西游', '').strip()
+                    break
+            
+            if not monster_name:
+                # 从链接文本中获取
+                for a in li.eles('t:a'):
+                    text = _clean(a.text)
+                    if text and not _is_detail_link(text):
+                        monster_name = text
+                        break
+            
+            if detail_link:
+                results.append((detail_link, img_url, monster_name))
+        
+        # 如果上面的方法没有找到，使用原来的兜底方法
+        if not results:
+            for a in self.sp.eles('t:ul@@id=dq_list t:a'):
+                href = a.attr('href') or ""
+                if _is_detail_link(href):
+                    results.append((_abs(self.BASE, href), None, None))
+            if not results:
+                for a in self.sp.eles('t:a'):
+                    href = a.attr('href') or ""
+                    if _is_detail_link(href):
+                        results.append((_abs(self.BASE, href), None, None))
+        
+        # 去重
+        seen = set()
+        unique_results = []
+        for detail_url, img_url, name in results:
+            if detail_url not in seen:
+                seen.add(detail_url)
+                unique_results.append((detail_url, img_url, name))
+        
+        log.info("list[%s] -> %d detail links with images", page_url, len(unique_results))
+        return unique_results
 
     def iter_list_pages(self) -> Iterable[str]:
         yield _abs(self.BASE, self.ROOT)
         for slug in self.CANDIDATE_SLUGS:
             yield _abs(self.BASE, f"{self.ROOT}{slug}/")
 
-    def iter_detail_urls(self) -> Generator[str, None, None]:
+    def iter_detail_urls(self) -> Generator[Tuple[str, Optional[str], Optional[str]], None, None]:
+        """
+        遍历所有详情页URL，同时返回图片信息
+        返回: Generator[Tuple[detail_url, img_url, monster_name], None, None]
+        """
         for list_url in self.iter_list_pages():
             if not self._get(list_url):
                 continue
-            for u in self._extract_detail_links_from_list(list_url):
-                if u not in self.seen_urls:
-                    self.seen_urls.add(u)
-                    yield u
+            for detail_url, img_url, monster_name in self._extract_detail_links_from_list(list_url):
+                if detail_url not in self.seen_urls:
+                    self.seen_urls.add(detail_url)
+                    yield detail_url, img_url, monster_name
 
     # ---- 系别识别 ----
     def _infer_element_from_url(self, page_url: str) -> Optional[str]:
@@ -733,8 +889,64 @@ class Kabu4399Crawler:
             "selected_skills": [Kabu4399Crawler._skill_public(s) for s in (m.selected_skills or [])],
         }
 
+    def _process_monster_image(self, monster_name: str, img_url: Optional[str], enable_upscale: bool = True) -> Optional[str]:
+        """
+        下载并处理怪物图片
+        
+        Args:
+            monster_name: 怪物名称
+            img_url: 图片URL
+            enable_upscale: 是否启用超分
+            
+        Returns:
+            本地图片路径，失败返回None
+        """
+        if not img_url or not monster_name:
+            return None
+            
+        try:
+            # 清理文件名
+            safe_name = sanitize_filename(monster_name)
+            if not safe_name:
+                safe_name = "unknown_monster"
+                
+            # 确定文件扩展名
+            file_ext = ".png"  # 默认使用png
+            if img_url.lower().endswith(('.jpg', '.jpeg')):
+                file_ext = ".jpg"
+            elif img_url.lower().endswith('.webp'):
+                file_ext = ".webp"
+                
+            # 生成本地文件路径
+            image_path = IMAGES_DIR / f"{safe_name}{file_ext}"
+            
+            # 如果文件已存在，跳过下载
+            if image_path.exists():
+                log.info(f"Image already exists: {image_path}")
+                return str(image_path)
+                
+            # 下载图片
+            log.info(f"Downloading image for {monster_name}: {img_url}")
+            if not download_image(img_url, image_path):
+                return None
+                
+            # 进行超分处理
+            if enable_upscale:
+                log.info(f"Upscaling image for {monster_name}")
+                upscale_success = upscale_image(image_path, scale=2)
+                if upscale_success:
+                    log.info(f"Successfully upscaled image for {monster_name}")
+                else:
+                    log.warning(f"Failed to upscale image for {monster_name}, keeping original")
+                    
+            return str(image_path)
+            
+        except Exception as e:
+            log.error(f"Error processing image for {monster_name}: {e}")
+            return None
+
     # ---- 页面抓取（不触库）----
-    def fetch_detail(self, url: str) -> Optional[MonsterRow]:
+    def fetch_detail(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> Optional[MonsterRow]:
         # 预热
         self._warm_up()
 
@@ -791,12 +1003,29 @@ class Kabu4399Crawler:
         best.skills = skills
         best.recommended_names = rec_names
         best.selected_skills = selected
+        
+        # 处理图片下载和超分
+        monster_name = list_monster_name or best.name
+        img_url_to_use = list_img_url or best.img_url
+        
+        if monster_name and img_url_to_use:
+            try:
+                local_img_path = self._process_monster_image(monster_name, img_url_to_use, enable_upscale=True)
+                if local_img_path:
+                    # 更新img_url为本地路径
+                    best.img_url = local_img_path
+                    log.info(f"Successfully processed image for {monster_name}: {local_img_path}")
+                else:
+                    log.warning(f"Failed to process image for {monster_name}")
+            except Exception as e:
+                log.error(f"Error in image processing for {monster_name}: {e}")
+        
         return best
 
     # ---- 顶层遍历 ----
     def crawl_all(self, *, persist: Optional[callable] = None) -> Generator[MonsterRow, None, None]:
-        for detail_url in self.iter_detail_urls():
-            m = self.fetch_detail(detail_url)
+        for detail_url, img_url, monster_name in self.iter_detail_urls():
+            m = self.fetch_detail(detail_url, list_img_url=img_url, list_monster_name=monster_name)
             if not m:
                 continue
             if persist:
@@ -810,10 +1039,11 @@ class Kabu4399Crawler:
 # ---------- 示例 ----------
 def example_persist(mon: MonsterRow) -> None:
     log.info(
-        "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s new=%s",
+        "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s new=%s img=%s",
         mon.name, mon.element or "-", mon.hp, mon.attack, mon.speed,
         len(mon.recommended_names), len(mon.selected_skills), len(mon.skills),
-        mon.type or "-", str(mon.new_type)
+        mon.type or "-", str(mon.new_type), 
+        "✓" if mon.img_url and Path(mon.img_url).exists() else "✗"
     )
 
 def _to_public_json(m: MonsterRow) -> Dict[str, object]:
