@@ -16,12 +16,6 @@ FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 LOG_DIR="${LOG_DIR:-$ROOT/.logs}"
 PKG_MGR="${PKG_MGR:-}"   # 可指定：pnpm / yarn / npm / bun
 
-# === 备份守护相关（默认开启） ===
-BACKUP_WATCH="${BACKUP_WATCH:-1}"              # 1=开启，0=关闭
-BACKUP_CHANGE_KEEP_MAX="${BACKUP_CHANGE_KEEP_MAX:-20}"  # 仅保留最近 N 份“变更备份”
-BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"    # “每日备份”保留天数
-BACKUP_POLL_INTERVAL="${BACKUP_POLL_INTERVAL:-2.0}"     # 轮询间隔（秒）
-BACKUP_MIN_CHANGE_INTERVAL="${BACKUP_MIN_CHANGE_INTERVAL:-2.0}" # 变更备份防抖（秒）
 
 mkdir -p "$LOG_DIR"
 
@@ -89,36 +83,6 @@ load_env_file() {
   fi
 }
 
-start_backup_watch() {
-  if [[ "${BACKUP_WATCH}" != "1" ]]; then
-    echo "[INFO] 备份守护已关闭（BACKUP_WATCH=0），跳过。"
-    return 0
-  fi
-
-  local pidf="$LOG_DIR/backup.pid"
-  if running "$pidf"; then
-    echo "[INFO] 备份守护已在运行中 (PID $(cat "$pidf"))，跳过启动。"
-    return 0
-  fi
-
-  # 如果设置了 DATABASE_URL，当前备份脚本（只支持本地 SQLite）将无法工作：跳过
-  if [[ -n "${DATABASE_URL:-}" ]]; then
-    echo "[WARN] 检测到 DATABASE_URL 已设置：当前备份守护仅支持本地 SQLite，已跳过启动。"
-    return 0
-  fi
-
-  echo "[INFO] 启动备份守护（变更即备份 + 每日备份）..."
-  nohup env \
-    APP_ENV="${APP_ENV:-dev}" \
-    BACKUP_CHANGE_KEEP_MAX="${BACKUP_CHANGE_KEEP_MAX}" \
-    BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS}" \
-    BACKUP_POLL_INTERVAL="${BACKUP_POLL_INTERVAL}" \
-    BACKUP_MIN_CHANGE_INTERVAL="${BACKUP_MIN_CHANGE_INTERVAL}" \
-    "$PYTHON_BIN" "$ROOT/scripts/backup_sqlite.py" --watch \
-    >"$LOG_DIR/backup.log" 2>&1 &
-  echo $! > "$pidf"
-  echo "[OK] 备份守护 PID $(cat "$pidf")，日志：$LOG_DIR/backup.log"
-}
 
 start_backend() {
   cd "$ROOT"
@@ -173,7 +137,6 @@ start_frontend() {
 # === 执行 ===
 choose_env
 load_env_file
-start_backup_watch   # 先启动备份守护（它会等待 DB 文件出现）
 start_backend
 start_frontend
 
@@ -184,5 +147,4 @@ echo "       后端：http://$BACKEND_HOST:$BACKEND_PORT"
 echo "       前端：http://localhost:$FRONTEND_PORT"
 echo "       查看日志："
 echo "         tail -f $LOG_DIR/backend.log"
-echo "         tail -f $LOG_DIR/backup.log"
 echo "         tail -f $LOG_DIR/frontend.log"
