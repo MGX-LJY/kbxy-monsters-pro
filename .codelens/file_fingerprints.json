@@ -1,11 +1,11 @@
 {
   "created_at": "2025-09-17T21:56:13.293002",
-  "last_updated": "2025-09-17T21:56:13.293003",
+  "last_updated": "2025-09-17T22:58:25.190764",
   "files": {
     "stop-bg.sh": {
-      "hash": "3f43c3476e7d623b96528d110b03c7df",
-      "size": 2434,
-      "modified_time": "2025-09-06T11:29:25.059788"
+      "hash": "62a88abe4411b0e5720e67305030ea23",
+      "size": 2430,
+      "modified_time": "2025-09-17T22:37:06.850334"
     },
     "upscale_batch.py": {
       "hash": "f1a74ec510e905602295ed7fc826596e",
@@ -23,9 +23,9 @@
       "modified_time": "2025-08-29T18:24:49.620831"
     },
     "start-bg.sh": {
-      "hash": "c90a45fcaa9fed43e37d1d382ccf3e6f",
-      "size": 5920,
-      "modified_time": "2025-09-06T11:29:25.059670"
+      "hash": "1843956d490da97758c8ae601a3d9400",
+      "size": 4174,
+      "modified_time": "2025-09-17T22:36:22.683558"
     },
     "Makefile": {
       "hash": "d0a881c7183ede944e015c1754e5eb6e",
@@ -56,26 +56,6 @@
       "hash": "d41d8cd98f00b204e9800998ecf8427e",
       "size": 0,
       "modified_time": "2025-09-06T11:29:24.598753"
-    },
-    "scripts/seed_from_export.py": {
-      "hash": "8cd4450af2c61d1f7dadeac8608e7881",
-      "size": 4804,
-      "modified_time": "2025-09-06T11:29:24.598470"
-    },
-    "scripts/backup_sqlite.py": {
-      "hash": "81e685dd968c3c5b0a008af7dcf28179",
-      "size": 10184,
-      "modified_time": "2025-09-06T11:29:24.598213"
-    },
-    "scripts/restore_sqlite.py": {
-      "hash": "8bd2cbc5d0f0568b5f1c9f7f919051d0",
-      "size": 12471,
-      "modified_time": "2025-09-06T11:29:24.598344"
-    },
-    "scripts/sqlite_stress_write.py": {
-      "hash": "dfaa2de1959e303848ba33fc0d1bd825",
-      "size": 3773,
-      "modified_time": "2025-09-06T11:29:24.598598"
     },
     "client/index.html": {
       "hash": "61942bdf117527b2ca24a06599f5c5fa",
@@ -128,9 +108,9 @@
       "modified_time": "2025-09-06T11:29:24.603725"
     },
     "server/app/main.py": {
-      "hash": "f321c63a7329057c311cedb4c897ad23",
-      "size": 4836,
-      "modified_time": "2025-09-06T11:29:24.599857"
+      "hash": "f1e730d09d78b3971389fb76542cadd0",
+      "size": 4794,
+      "modified_time": "2025-09-17T22:21:32.543691"
     },
     "server/app/middleware.py": {
       "hash": "2d4e03c1c532e6d210a7af7cd3949a0c",
@@ -146,11 +126,6 @@
       "hash": "899ee55ed3af81e503ce406483c7dbb8",
       "size": 9646,
       "modified_time": "2025-09-06T11:29:24.603120"
-    },
-    "server/app/routes/backup.py": {
-      "hash": "f4e0d3d4cc996955c9ddf9d3d5442035",
-      "size": 19084,
-      "modified_time": "2025-09-06T11:29:24.600682"
     },
     "server/app/routes/warehouse.py": {
       "hash": "d26f0c8aea784b8dc831abb1b4c34873",
@@ -168,9 +143,9 @@
       "modified_time": "2025-09-06T11:29:24.602210"
     },
     "server/app/routes/health.py": {
-      "hash": "0c79f78cdbb35297d20190f6b6b74a5b",
-      "size": 567,
-      "modified_time": "2025-09-06T11:29:24.601446"
+      "hash": "2a73010a324732f05be105bcc3f655b3",
+      "size": 1081,
+      "modified_time": "2025-09-17T22:50:27.837702"
     },
     "server/app/routes/derive.py": {
       "hash": "fe895b99528e87f8d53327c53e543fce",
@@ -378,9 +353,9 @@
       "modified_time": "2025-08-12T00:42:32"
     },
     "client/src/pages/MonstersPage.tsx": {
-      "hash": "d0973c54837ee25629b2e613b89936ca",
-      "size": 88889,
-      "modified_time": "2025-09-06T11:29:24.596852"
+      "hash": "7ba4e98c19c5b9ccdeff0b840ac65bc0",
+      "size": 87423,
+      "modified_time": "2025-09-17T22:23:34.986432"
     }
   }
 }

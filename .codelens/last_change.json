@@ -1,7 +1,25 @@
 {
-  "id": "change_1758117373293",
-  "timestamp": "2025-09-17T21:56:13.293494",
-  "operation": "init",
-  "files_count": 76,
-  "summary": "初始化项目指纹基点，记录76个代码文件"
+  "id": "change_1758121105191",
+  "timestamp": "2025-09-17T22:58:25.191215",
+  "operation": "update",
+  "has_changes": true,
+  "files_count": 71,
+  "changes": {
+    "modified": [
+      "stop-bg.sh",
+      "start-bg.sh",
+      "server/app/main.py",
+      "server/app/routes/health.py",
+      "client/src/pages/MonstersPage.tsx"
+    ],
+    "added": [],
+    "deleted": [
+      "scripts/seed_from_export.py",
+      "scripts/backup_sqlite.py",
+      "scripts/restore_sqlite.py",
+      "scripts/sqlite_stress_write.py",
+      "server/app/routes/backup.py"
+    ]
+  },
+  "summary": "检测到变更：修改5个文件, 删除5个文件"
 }
