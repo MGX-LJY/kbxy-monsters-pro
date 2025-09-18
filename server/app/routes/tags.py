@@ -267,9 +267,15 @@ class BatchStartBody(BaseModel):
     ids: Optional[List[int]] = None
 
 @router.post("/ai_batch/start")
-def ai_batch_start(body: BatchStartBody = Body(...)):
-    job_id = start_ai_batch_tagging(body.ids or [], db_factory=SessionLocal)
-    return {"ok": True, "job_id": job_id}
+def ai_batch_start(body: BatchStartBody = Body(...), db: Session = Depends(get_db)):
+    # 与同步版本保持一致：空列表时处理全部怪物
+    if body.ids:
+        ids = list({int(i) for i in body.ids if isinstance(i, int)})
+    else:
+        ids = db.scalars(select(Monster.id)).all()
+    
+    job_id = start_ai_batch_tagging(ids, db_factory=SessionLocal)
+    return {"ok": True, "job_id": job_id, "total_monsters": len(ids)}
 
 @router.get("/ai_batch/{job_id}")
 def ai_batch_progress(job_id: str):

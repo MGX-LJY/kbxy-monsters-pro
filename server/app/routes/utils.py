@@ -19,7 +19,7 @@ def backfill_raw_to_columns(db: Session = Depends(get_db)):
     mons = db.scalars(select(Monster)).all()
     touched = 0
     for m in mons:
-        ex = (m.explain_json or {})
+        ex = getattr(m, "explain_json", {})
         raw = ex.get("raw_stats") or {}
         # 只在列缺失/为0时回填
         def need(v): 

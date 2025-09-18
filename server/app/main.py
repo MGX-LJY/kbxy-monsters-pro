@@ -27,11 +27,6 @@ try:
 except Exception:
     HAS_TAGS = False
 
-try:
-    from .routes import roles
-    HAS_ROLES = True
-except Exception:
-    HAS_ROLES = False
 
 logger = logging.getLogger("kbxy")
 
@@ -75,11 +70,9 @@ app.include_router(types.router)
 app.include_router(collections.router, prefix="", tags=["collections"])
 app.include_router(images_routes.router)  # ← 新增
 
-# 可选：tags、roles
+# 可选：tags
 if HAS_TAGS:
     app.include_router(tags.router)
-if HAS_ROLES:
-    app.include_router(roles.router)
 
 def _init_schema_once_with_lock():
     """

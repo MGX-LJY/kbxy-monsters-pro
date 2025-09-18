@@ -9,6 +9,7 @@ import SideDrawer from '../components/SideDrawer'
 import { useSettings } from '../context/SettingsContext'
 import MonsterCardGrid from '../components/MonsterCardGrid'
 import SkeletonCardGrid from '../components/SkeletonCardGrid'
+import TagSelector from '../components/TagSelector'
 
 // 适配新后端：技能带 element/kind/power/description
 type SkillDTO = {
@@ -84,7 +85,7 @@ const toURLParams = (obj: Record<string, any>) => {
 const ELEMENTS: Record<string, string> = {
   huoxi: '火系', jinxi: '金系', muxi: '木系', shuixi: '水系', tuxi: '土系', yixi: '翼系',
   guaixi: '怪系', moxi: '魔系', yaoxi: '妖系', fengxi: '风系', duxi: '毒系', leixi: '雷系',
-  huanxi: '幻系', bing: '冰系', lingxi: '灵系', jixie: '机械', huofengxi: '火风系',
+  huanxi: '幻系', bing: '冰系', lingxi: '灵系', jixie: '机械系', huofengxi: '火风系',
   mulingxi: '木灵系', tuhuanxi: '土幻系', shuiyaoxi: '水妖系', yinxi: '音系', shengxi: '圣系',
 }
 const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
@@ -93,7 +94,7 @@ const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
 const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
   火: '火系', 水: '水系', 风: '风系', 雷: '雷系', 冰: '冰系', 木: '木系',
   土: '土系', 金: '金系', 圣: '圣系', 毒: '毒系', 幻: '幻系', 灵: '灵系',
-  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械', 特殊: '' // “特殊”不当作元素
+  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系', 特殊: '' // "特殊"不当作元素
 }
 
 // —— 进度弹框状态（新增 cancelable + closing） —— //
@@ -911,32 +912,106 @@ export default function MonstersPage() {
     })
 
     let cancelled = false
+    let batchCompleted = false
 
     try {
-      for (const id of targetIds) {
-        if (cancelAITagRef.current) { cancelled = true; break }
-        try {
-          try {
-            await api.post(`/tags/monsters/${id}/retag_ai`)
-          } catch {
-            await api.post(`/tags/monsters/${id}/retag`)
+      // 使用批量AI接口
+      try {
+        // 启动批量任务
+        setOverlay(prev => ({ ...prev, sub: '正在启动批量处理任务' }))
+        const startResp = await api.post('/tags/ai_batch/start', { ids: targetIds })
+        const jobId = startResp.data.job_id
+        
+        // 轮询进度
+        let pollInterval: number | null = null
+        await new Promise<void>((resolve, reject) => {
+          const pollProgress = async () => {
+            try {
+              if (cancelAITagRef.current) {
+                // 取消任务
+                try {
+                  await api.post(`/tags/ai_batch/${jobId}/cancel`)
+                } catch {}
+                resolve()
+                return
+              }
+              
+              const progressResp = await api.get(`/tags/ai_batch/${jobId}`)
+              const progress = progressResp.data
+              
+              // 更新进度
+              setOverlay(prev => ({
+                ...prev,
+                title: progress.running ? 'AI 打标签进行中…' : '任务完成',
+                sub: progress.running 
+                  ? `已处理 ${progress.processed || 0}/${progress.total} (${Math.round(progress.percent || 0)}%)` 
+                  : '正在更新数据',
+                done: progress.done || 0,
+                ok: progress.done || 0,
+                fail: progress.failed || 0,
+                cancelable: progress.running
+              }))
+              
+              if (!progress.running) {
+                if (pollInterval) clearTimeout(pollInterval)
+                // 显示完成结果
+                setOverlay(prev => ({
+                  ...prev,
+                  title: '批量标签匹配完成',
+                  sub: `成功: ${progress.done || 0}, 失败: ${progress.failed || 0}, 总计: ${progress.total || 0}`,
+                  cancelable: false
+                }))
+                // 等待3秒后关闭，让用户看到结果
+                setTimeout(() => {
+                  resolve()
+                  // 在Promise resolve后立即关闭弹窗
+                  setTimeout(() => smoothCloseOverlay(), 100)
+                }, 3000)
+                return
+              }
+              
+              pollInterval = setTimeout(pollProgress, 1000)
+            } catch (error) {
+              if (pollInterval) clearTimeout(pollInterval)
+              reject(error)
+            }
           }
-          setOverlay(prev => ({
-            ...prev,
-            done: (prev.done || 0) + 1,
-            ok: (prev.ok || 0) + 1
-          }))
-        } catch {
-          setOverlay(prev => ({
-            ...prev,
-            done: (prev.done || 0) + 1,
-            fail: (prev.fail || 0) + 1
-          }))
+          pollProgress()
+        })
+        
+        // 批量处理成功完成
+        batchCompleted = true
+        
+      } catch (batchError) {
+        console.error('批量处理失败，回退到单个处理:', batchError)
+        // 回退到单个处理模式
+        setOverlay(prev => ({ ...prev, title: '使用单个处理模式', sub: '批量模式失败，回退到单个处理', done: 0, ok: 0, fail: 0 }))
+        
+        for (const id of targetIds) {
+          if (cancelAITagRef.current) { cancelled = true; break }
+          try {
+            try {
+              await api.post(`/tags/monsters/${id}/retag_ai`)
+            } catch {
+              await api.post(`/tags/monsters/${id}/retag`)
+            }
+            setOverlay(prev => ({
+              ...prev,
+              done: (prev.done || 0) + 1,
+              ok: (prev.ok || 0) + 1
+            }))
+          } catch {
+            setOverlay(prev => ({
+              ...prev,
+              done: (prev.done || 0) + 1,
+              fail: (prev.fail || 0) + 1
+            }))
+          }
         }
       }
 
-      // 阶段 2：统一分析
-      if (!cancelled) {
+      // 阶段 2：统一分析 (批量处理成功时跳过)
+      if (!cancelled && !batchCompleted) {
         setOverlay({
           show: true,
           title: '分析中…',
@@ -961,7 +1036,10 @@ export default function MonstersPage() {
       } catch {}
 
       setSelectedIds(new Set())
-      smoothCloseOverlay()
+      // 如果批量处理成功完成，不要立即关闭弹窗，让用户看到结果
+      if (!batchCompleted) {
+        smoothCloseOverlay()
+      }
       cancelAITagRef.current = false
     }
   }
@@ -1744,11 +1822,12 @@ export default function MonstersPage() {
                     </div>
 
                     <div className="md:col-span-2">
-                      <label className="label">标签（空格/逗号分隔，仅支持 buf_*/deb_*/util_*）</label>
-                      <input className="input" value={editTags} onChange={e => setEditTags(e.target.value)} />
-                      <div className="text-xs text-gray-500 mt-1">
-                        将自动忽略旧标签；保存后仅保留新前缀标签。
-                      </div>
+                      <TagSelector
+                        value={editTags}
+                        onChange={setEditTags}
+                        monsterId={selected?.id}
+                        className="w-full"
+                      />
                     </div>
                   </div>
                 </div>

@@ -42,8 +42,6 @@ def _get_sort_target(sort: str):
         return m.name, False
     if s == "element":
         return m.element, False
-    if s == "role":
-        return m.role, False
     if s == "created_at":
         return m.created_at, False
     return m.updated_at, False
@@ -119,7 +117,6 @@ def list_monsters(
     *,
     q: Optional[str] = None,
     element: Optional[str] = None,
-    role: Optional[str] = None,
     # 旧：单标签
     tag: Optional[str] = None,
     # 新：多标签（优先于 tag）
@@ -174,8 +171,6 @@ def list_monsters(
         )
     if element:
         base_stmt = base_stmt.where(Monster.element == element)
-    if role:
-        base_stmt = base_stmt.where(Monster.role == role)
     if acq:
         base_stmt = base_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
 
@@ -229,8 +224,6 @@ def list_monsters(
         )
     if element:
         rows_stmt = rows_stmt.where(Monster.element == element)
-    if role:
-        rows_stmt = rows_stmt.where(Monster.role == role)
     if acq:
         rows_stmt = rows_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
 

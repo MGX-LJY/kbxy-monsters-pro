@@ -244,7 +244,7 @@ def api_list_collection_members(
     sort: Optional[str] = Query(
         "id",
         description=(
-            "id/name/element/role/updated_at/created_at "
+            "id/name/element/updated_at/created_at "
             "| hp/speed/attack/defense/magic/resist/raw_sum "
             "| body_defense/body_resist/debuff_def_res/debuff_atk_mag/special_tactics"
         ),
@@ -305,7 +305,7 @@ def api_list_collection_members(
             base = base.order_by(direction(raw_sum_expr), asc(Monster.id))
         else:
             # 基础列
-            if s not in {"id", "name", "element", "role", "updated_at", "created_at"}:
+            if s not in {"id", "name", "element", "updated_at", "created_at"}:
                 s = "id"
             col = getattr(Monster, s)
             base = base.order_by(direction(col), asc(Monster.id))
@@ -339,13 +339,12 @@ def api_list_collection_members(
                 id=m.id,
                 name=m.name,
                 element=m.element,
-                role=m.role,
                 hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
                 possess=getattr(m, "possess", None),
                 type=getattr(m, "type", None),
                 method=getattr(m, "method", None),
                 tags=[t.name for t in (m.tags or [])],
-                explain_json=m.explain_json or {},
+                explain_json=getattr(m, "explain_json", {}),
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
                 derived={},

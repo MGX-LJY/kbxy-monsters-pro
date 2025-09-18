@@ -88,7 +88,6 @@ def warehouse_list(
     possess: Optional[bool] = Query(True, description="True=仅已拥有；False=仅未拥有；None=全部"),
     q: Optional[str] = Query(None),
     element: Optional[str] = Query(None),
-    role: Optional[str] = Query(None),
     # 旧：单标签
     tag: Optional[str] = Query(None),
     # 新：多标签筛选（向后兼容）
@@ -119,7 +118,7 @@ def warehouse_list(
     """
     支持参数：
     - possess: True 仅已拥有；False 仅未拥有（含 None）；None 全部
-    - q / element / role
+    - q / element
     - 标签筛选：
         * tag（单标签）
         * tags_all（AND 多标签）、tags_any（OR 多标签）
@@ -179,8 +178,6 @@ def warehouse_list(
         base_q = base_q.filter(Monster.name.ilike(like))
     if element:
         base_q = base_q.filter(Monster.element == element)
-    if role:
-        base_q = base_q.filter(Monster.role == role)
 
     # —— 汇总多标签参数（兼容分组）—— #
     resolved_tags_all: List[str] = []
@@ -267,7 +264,7 @@ def warehouse_list(
         q_sorted = base_q.order_by(asc(col) if is_asc else desc(col), Monster.id.asc())
         items = q_sorted.offset((page - 1) * page_size).limit(page_size).all()
 
-    elif s_key in {"name", "element", "role", "created_at", "updated_at"}:
+    elif s_key in {"name", "element", "created_at", "updated_at"}:
         col = getattr(Monster, s_key)
         q_sorted = base_q.order_by(asc(col) if is_asc else desc(col), Monster.id.asc())
         items = q_sorted.offset((page - 1) * page_size).limit(page_size).all()
@@ -309,13 +306,12 @@ def warehouse_list(
                 id=m.id,
                 name=m.name,
                 element=m.element,
-                role=m.role,
                 hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
                 possess=getattr(m, "possess", None),
                 type=getattr(m, "type", None),
                 method=getattr(m, "method", None),
                 tags=[t.name for t in (m.tags or [])],
-                explain_json=m.explain_json or {},
+                explain_json=getattr(m, "explain_json", {}),
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
                 derived=d,

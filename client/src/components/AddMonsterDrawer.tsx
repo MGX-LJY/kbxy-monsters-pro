@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import SideDrawer from './SideDrawer'
+import TagSelector from './TagSelector'
 import api from '../api'
 
 type SkillRow = { name: string; description: string }
@@ -225,8 +226,12 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
               </select>
             </div>
             <div className="md:col-span-2">
-              <label className="label">标签（空格/逗号分隔）</label>
-              <input className="input" value={tagsInput} onChange={e => setTagsInput(e.target.value)} placeholder="如：强攻 控场 PP压制" />
+              <TagSelector
+                value={tagsInput}
+                onChange={setTagsInput}
+                placeholder="如：强攻 控场 PP压制"
+                className="w-full"
+              />
             </div>
           </div>
         </div>

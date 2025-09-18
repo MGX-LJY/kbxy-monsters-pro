@@ -285,7 +285,6 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         type=getattr(m, "type", None),
         method=getattr(m, "method", None),
         tags=[t.name for t in (m.tags or [])],
-        explain_json=m.explain_json or {},
         created_at=getattr(m, "created_at", None),
         updated_at=getattr(m, "updated_at", None),
     )
@@ -372,9 +371,9 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
                 ms.selected = bool(s_in.selected)
 
     # explain_json 快照
-    ex = m.explain_json or {}
+    ex = getattr(m, "explain_json", {})
     ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
-    m.explain_json = ex
+    setattr(m, "explain_json", ex)
 
     db.commit()
     return {"ok": True, "monster_id": m.id, "skills": ex["skill_names"]}
@@ -396,7 +395,7 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     m.resist = float(payload.resist)
 
     # explain_json.raw_stats
-    ex = m.explain_json or {}
+    ex = getattr(m, "explain_json", {})
     ex["raw_stats"] = {
         "hp": float(payload.hp),
         "speed": float(payload.speed),
@@ -406,7 +405,7 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
         "resist": float(payload.resist),
         "sum": float(payload.hp + payload.speed + payload.attack + payload.defense + payload.magic + payload.resist),
     }
-    m.explain_json = ex
+    setattr(m, "explain_json", ex)
 
 
     db.commit()
@@ -477,9 +476,9 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
             db.add(ms)
 
         # explain 快照
-        ex = m.explain_json or {}
+        ex = getattr(m, "explain_json", {})
         ex["skill_names"] = [s.name for s in skills]
-        m.explain_json = ex
+        setattr(m, "explain_json", ex)
 
     db.commit(); db.refresh(m)
     return detail(m.id, db)
@@ -500,7 +499,7 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
 
     # explain_json（可整体替换）
     if hasattr(payload, "explain_json") and (payload.explain_json is not None):
-        m.explain_json = payload.explain_json
+        setattr(m, "explain_json", payload.explain_json)
 
     # 标签
     m.tags = upsert_tags(db, payload.tags or [])
@@ -542,9 +541,9 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
                     ms.selected = bool(s_in.selected)
 
         # explain 快照
-        ex = m.explain_json or {}
+        ex = getattr(m, "explain_json", {})
         ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
-        m.explain_json = ex
+        setattr(m, "explain_json", ex)
 
     db.commit()
     return detail(monster_id, db)

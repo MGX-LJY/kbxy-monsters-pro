@@ -336,7 +336,6 @@ def list_collection_members(
         "id": Monster.id,
         "name": Monster.name,
         "element": Monster.element,
-        "role": Monster.role,
         "updated_at": Monster.updated_at,
         "created_at": Monster.created_at,
     }

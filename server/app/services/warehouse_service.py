@@ -71,7 +71,6 @@ def list_warehouse(
     possess: Optional[bool] = True,         # True=仅已拥有；False=仅未拥有；None=全部
     q: Optional[str] = None,
     element: Optional[str] = None,
-    role: Optional[str] = None,
     tag: Optional[str] = None,
     tags_all: Iterable[str] | None = None,  # 多标签 AND
     type: Optional[str] = None,             # 获取渠道（兼容）
@@ -83,7 +82,7 @@ def list_warehouse(
 ) -> Tuple[List[Monster], int]:
     """
     支持按 possess 过滤与多条件筛选；排序支持：
-      - 基础列：updated_at / created_at / name / element / role
+      - 基础列：updated_at / created_at / name / element
       - 原生六维：hp / speed / attack / defense / magic / resist / raw_sum（六维总和）
     """
     page = max(1, int(page))
@@ -108,8 +107,6 @@ def list_warehouse(
     # 基础筛选
     if element:
         base = base.where(Monster.element == element)
-    if role:
-        base = base.where(Monster.role == role)
 
     # 获取渠道（兼容 type / acq_type），使用包含匹配
     type_value = (type or acq_type or "").strip()
@@ -150,7 +147,7 @@ def list_warehouse(
     elif s == "raw_sum":
         base = base.order_by(direction(raw_sum_expr), asc(Monster.id))
     else:
-        if s not in {"updated_at", "created_at", "name", "element", "role"}:
+        if s not in {"updated_at", "created_at", "name", "element"}:
             s = "updated_at"
         col = getattr(Monster, s)
         base = base.order_by(direction(col), asc(Monster.id))

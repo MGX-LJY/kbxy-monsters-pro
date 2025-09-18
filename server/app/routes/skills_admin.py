@@ -44,7 +44,7 @@ def skills_stats(db: Session = Depends(get_db)):
     # 收集 summary 集合用于“疑似”判定
     summaries = set()
     for m in db.query(Monster).all():
-        ex = (m.explain_json or {})
+        ex = getattr(m, "explain_json", {})
         s = (ex.get("summary") or "").strip()
         if s:
             summaries.add(s)
@@ -77,7 +77,7 @@ def clear_descriptions(mode: str = Query("suspicious", regex="^(suspicious|all)$
     # suspicious
     summaries = set()
     for m in db.query(Monster).all():
-        ex = (m.explain_json or {})
+        ex = getattr(m, "explain_json", {})
         s = (ex.get("summary") or "").strip()
         if s:
             summaries.add(s)
