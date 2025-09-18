@@ -22,11 +22,6 @@ from ..services.tags_service import (
     load_catalog,          # 热加载 tags_catalog.json （实现于 tags_service）
     get_i18n_map,          # 返回 {code: "中文"} 映射（实现于 tags_service）
 )
-# 仅从 derive_service 引入“新五轴派生”的入口（不再做定位）
-from ..services.derive_service import (
-    compute_and_persist,
-    compute_derived_out,
-)
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -143,7 +138,7 @@ def suggest(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(404, "monster not found")
     tags = suggest_tags_for_monster(m)
-    derived_preview = compute_derived_out(m)
+    derived_preview = {}
     return {
         "monster_id": m.id,
         "tags": tags,                 # code list
@@ -159,8 +154,7 @@ def suggest(monster_id: int, db: Session = Depends(get_db)):
 def retag(monster_id: int, db: Session = Depends(get_db)):
     """
     正则计算并落库：
-      1) m.tags = upsert_tags(...)
-      2) compute_and_persist(db, m) → 计算并落库“新五轴派生”
+      m.tags = upsert_tags(...)
     """
     m = db.execute(select(Monster).where(Monster.id == monster_id)).scalar_one_or_none()
     if not m:
@@ -169,14 +163,13 @@ def retag(monster_id: int, db: Session = Depends(get_db)):
     tags = suggest_tags_for_monster(m)
     m.tags = upsert_tags(db, tags)
 
-    compute_and_persist(db, m)
     db.commit()
 
     return {
         "ok": True,
         "monster_id": m.id,
         "tags": tags,                       # code list
-        "derived": compute_derived_out(m),  # 0~120
+        "derived": {},  # 0~120
         "i18n": get_i18n_map(),             # 便于前端立即显示
     }
 
@@ -188,8 +181,7 @@ def retag(monster_id: int, db: Session = Depends(get_db)):
 def retag_ai(monster_id: int, db: Session = Depends(get_db)):
     """
     AI 识别并落库（内部已做审计/修复/自由候选写盘——见 tags_service）：
-      1) m.tags = upsert_tags(...)
-      2) compute_and_persist(db, m) → 计算并落库“新五轴派生”
+      m.tags = upsert_tags(...)
     """
     m = db.execute(select(Monster).where(Monster.id == monster_id)).scalar_one_or_none()
     if not m:
@@ -201,14 +193,13 @@ def retag_ai(monster_id: int, db: Session = Depends(get_db)):
         raise HTTPException(500, f"AI 标签识别失败：{e}")
 
     m.tags = upsert_tags(db, tags)
-    compute_and_persist(db, m)
     db.commit()
 
     return {
         "ok": True,
         "monster_id": m.id,
         "tags": tags,
-        "derived": compute_derived_out(m),
+        "derived": {},
         "i18n": get_i18n_map(),
     }
 
@@ -226,7 +217,6 @@ def ai_batch(payload: BatchIds = Body(...), db: Session = Depends(get_db)):
       - 未传 ids 或传空数组 => 对全部 Monster
       - 对每个目标：
           m.tags = upsert_tags(...)
-          compute_and_persist(db, m)
       - 返回成功/失败明细（最多 200 条）
     """
     if payload.ids:
@@ -247,14 +237,13 @@ def ai_batch(payload: BatchIds = Body(...), db: Session = Depends(get_db)):
                 continue
             tags = ai_suggest_tags_for_monster(m)
             m.tags = upsert_tags(db, tags)
-            compute_and_persist(db, m)
             db.commit()
             success += 1
             details.append({
                 "id": mid,
                 "ok": True,
                 "tags": tags,
-                "derived": compute_derived_out(m),
+                "derived": {},
             })
         except Exception as e:
             db.rollback()

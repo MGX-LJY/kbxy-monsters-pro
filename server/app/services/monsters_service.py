@@ -6,26 +6,14 @@ from typing import List, Tuple, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, asc, desc, outerjoin, case, distinct, or_
 
-from ..models import Monster, Tag, MonsterDerived, MonsterSkill, Skill, CollectionItem
+from ..models import Monster, Tag, MonsterSkill, Skill, CollectionItem
 
 
-# ---- 排序字段解析：支持“新五轴” + 原始六维 + 六维总和 ----
+# ---- 排序字段解析：支持原始六维 + 六维总和 ----
 def _get_sort_target(sort: str):
     s = (sort or "updated_at").lower()
-    md = MonsterDerived
     m = Monster
-    # 新五轴（仅保留这些键，不再保留旧映射）
-    derived_map = {
-        "body_defense": md.body_defense,      # 体防
-        "body_resist": md.body_resist,        # 体抗
-        "debuff_def_res": md.debuff_def_res,  # 削防抗
-        "debuff_atk_mag": md.debuff_atk_mag,  # 削攻法
-        "special_tactics": md.special_tactics # 特殊
-    }
-    if s in derived_map:
-        # 需要派生表参与排序 -> 需要 join
-        return derived_map[s], True
-
+    
     # 原始六维（不需要 join）
     raw_map = {
         "hp": m.hp,
@@ -219,10 +207,7 @@ def list_monsters(
 
     # 排序依赖（仅影响 SELECT FROM 的 JOIN，计数不需要 order_by）
     sort_col, need_join = _get_sort_target(sort or "updated_at")
-    if need_join:
-        base_stmt = base_stmt.select_from(
-            outerjoin(Monster, MonsterDerived, MonsterDerived.monster_id == Monster.id)
-        )
+    # 没有派生字段排序，不需要 join
 
     subq = base_stmt.subquery()
     total = db.scalar(select(func.count()).select_from(subq)) or 0
@@ -268,11 +253,7 @@ def list_monsters(
             .where(CollectionItem.collection_id == int(collection_id))
         )
 
-    # 排序（新五轴排序需要 OUTER JOIN）
-    if need_join:
-        rows_stmt = rows_stmt.select_from(
-            outerjoin(Monster, MonsterDerived, MonsterDerived.monster_id == Monster.id)
-        )
+    # 排序（原始六维排序，不需要 join）
 
     is_asc = (order or "desc").lower() == "asc"
     rows_stmt = rows_stmt.order_by(asc(sort_col) if is_asc else desc(sort_col), asc(Monster.id))
@@ -306,7 +287,7 @@ def upsert_tags(db: Session, names: List[str]) -> List[Tag]:
     return result
 
 
-# ---- 设置标签并重算派生：仅写新五轴，不再自动写 role ----
+# ---- 设置标签：仅更新标签，不再计算派生 ----
 def set_tags_and_rederive(
     db: Session,
     monster: Monster,
@@ -315,14 +296,10 @@ def set_tags_and_rederive(
     commit: bool = True,
 ) -> None:
     """
-    写入规范化标签并立刻调用 recompute_derived_only：
+    写入规范化标签：
       - 会更新 monster.tags
-      - 会计算并持久化“新五轴”（MonsterDerived.*）
-      - 不再自动写回 monster.role
     """
-    from .derive_service import recompute_derived_only  # 延迟导入，避免循环依赖
     monster.tags = upsert_tags(db, names or [])
-    recompute_derived_only(db, monster, ensure_prefix_tags=False)
     if commit:
         db.commit()
 

@@ -15,7 +15,6 @@ from ..services.crawler_service import (
     normalize_skill_element, normalize_skill_kind,   # 复用统一映射
 )
 from ..services.skills_service import upsert_skills
-from ..services.derive_service import compute_and_persist  # ✅ 仅保留派生计算/落库
 
 router = APIRouter(prefix="/api/v1/crawl", tags=["crawl_4399"])
 log = logging.getLogger(__name__)
@@ -182,10 +181,7 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
                         db.flush()
                         affected += 1
 
-    # 3) 可选：重算“新五轴”派生并落库
-    if do_derive:
-        compute_and_persist(db, m)
-        db.flush()
+    # 3) 派生计算已移除
 
     return is_insert, affected
 

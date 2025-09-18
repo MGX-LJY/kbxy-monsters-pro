@@ -10,13 +10,12 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, or_, desc, asc
 
 from ..db import SessionLocal
-from ..models import Monster, MonsterSkill, Tag, CollectionItem, MonsterDerived
+from ..models import Monster, MonsterSkill, Tag, CollectionItem
 from ..schemas import MonsterOut, MonsterList
 from ..services.warehouse_service import (
     add_to_warehouse, remove_from_warehouse, bulk_set_warehouse,
     list_warehouse, warehouse_stats,
 )
-from ..services.derive_service import compute_derived_out
 # ⬇️ 新增：图片解析器（若未引入图片服务，可去掉两行 import 和下文 img_url 相关三行）
 from ..services.image_service import get_image_resolver
 
@@ -52,6 +51,11 @@ def pick_derived_value(d: dict, key: str):
         if isinstance(lv, (int, float)):
             return float(lv)
     return None
+
+
+def compute_derived_out(monster) -> dict:
+    """Derived stats functionality has been removed."""
+    return {}
 
 
 def enrich_new_keys(d: dict) -> dict:

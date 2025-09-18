@@ -28,26 +28,12 @@ type WarehouseStatsDTO = {
   in_warehouse?: number // 兼容字段
 }
 
-// ===== 新增：排序键类型（含新五轴 + 旧键兼容） =====
-type NewDerivedKey =
-  | 'body_defense' | 'body_resist' | 'debuff_def_res' | 'debuff_atk_mag' | 'special_tactics'
-type LegacyDerivedKey =
-  | 'offense' | 'survive' | 'control' | 'tempo' | 'pp_pressure' | 'pp'
 
-// ✅ 扩充排序键：加入原生六维与六维总和 + 新五轴（兼容旧键）
+// 排序键：原生六维与六维总和
 type SortKey =
   | 'updated_at'
-  | NewDerivedKey | LegacyDerivedKey
   | 'hp' | 'speed' | 'attack' | 'defense' | 'magic' | 'resist' | 'raw_sum'
 
-// —— 派生值兜底（后端未完全回填新五轴时，用老值应急） —— //
-const getDerivedValue = (m: any, key: string): number => {
-  const d = (m?.derived ?? {}) as Record<string, any>
-  if (typeof d[key] === 'number') return d[key]!
-  if (key === 'body_defense' && typeof d['survive'] === 'number') return d['survive']!
-  if (key === 'special_tactics' && typeof d['pp_pressure'] === 'number') return d['pp_pressure']!
-  return 0
-}
 
 const BTN_FX = 'transition active:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-300'
 const LIMIT_TAGS_PER_CELL = 3
@@ -122,14 +108,6 @@ type OverlayState = {
   closing?: boolean
 }
 
-// ✅ 新增：模式相关的列定义（改为新五轴）
-const DERIVED_COLUMNS = [
-  { key: 'body_defense',    label: '体防' },
-  { key: 'body_resist',     label: '体抗' },
-  { key: 'debuff_def_res',  label: '防抗' },
-  { key: 'debuff_atk_mag',  label: '攻法' },
-  { key: 'special_tactics', label: '特殊' },
-] as const
 
 const RAW_COLUMNS = [
   { key: 'hp', label: '体' },
@@ -161,7 +139,6 @@ export default function MonstersPage() {
   const selectedTags = useMemo(() => [tagBuf, tagDeb, tagUtil].filter(Boolean) as string[], [tagBuf, tagDeb, tagUtil])
 
   // ✅ 原始六维默认展示 + 默认按六维总和排序
-  const [showRaw, setShowRaw] = useState(true)
   const [sort, setSort] = useState<SortKey>('raw_sum')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const sortForApi = sort
@@ -823,7 +800,6 @@ export default function MonstersPage() {
         const ids = target.map((x: any) => x.id)
         for (const id of ids) {
           try { await api.post(`/tags/monsters/${id}/retag`) } catch {}
-          try { await api.get(`/monsters/${id}/derived`) } catch {}
         }
       }
       await list.refetch()
@@ -933,21 +909,10 @@ export default function MonstersPage() {
         setOverlay({
           show: true,
           title: '分析中…',
-          sub: '正在计算派生维度与定位',
+          sub: '正在分析妖怪数据',
           cancelable: false,
           closing: true
         })
-        try {
-          await api.post('/api/v1/derived/batch', { ids: targetIds })
-        } catch {
-          try {
-            await api.post('/derived/batch', { ids: targetIds })
-          } catch {
-            for (const id of targetIds) {
-              try { await api.get(`/monsters/${id}/derived`) } catch {}
-            }
-          }
-        }
       }
     } finally {
       try {
@@ -971,38 +936,6 @@ export default function MonstersPage() {
   }
 
   // —— 一键全部分析（成功静默） —— //
-  const deriveBatch = async () => {
-    const items = (list.data?.items as any[]) || []
-    const ids = selectedIds.size ? Array.from(selectedIds) : await collectAllTargetIds()
-    if (!ids.length && !items.length) return alert('当前没有可处理的记录')
-
-    const showOverlay = ids.length > 1
-    if (showOverlay) setOverlay({ show: true, title: '计算中…', sub: '可爱的等等呦 (=^･ω･^=)', closing: true })
-    try {
-      try {
-        await api.post('/api/v1/derived/batch', { ids: ids.length ? ids : undefined })
-      } catch {
-        try {
-          await api.post('/derived/batch', { ids: ids.length ? ids : undefined })
-        } catch {
-          const fallbackIds = ids.length ? ids : (items.map(i => i.id) as number[])
-          for (const id of fallbackIds) {
-            try { await api.get(`/monsters/${id}/derived`) } catch {}
-          }
-        }
-      }
-
-      await list.refetch()
-      if (selected) {
-        const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
-        setSelected(fresh)
-      }
-    } catch (e:any) {
-      alert(e?.response?.data?.detail || '分析失败')
-    } finally {
-      if (showOverlay) smoothCloseOverlay()
-    }
-  }
 
   // === 保留原始元素数组供“编辑表单/技能编辑”等处使用（纯文本，不带倍率） ===
   const elementOptions = elementOptionsFull
@@ -1242,28 +1175,19 @@ export default function MonstersPage() {
   }, [filteredItems, selectedIds])
 
   // ✅ 依据模式选择统计列、排序选项与骨架列数
-  const STAT_COLS = showRaw ? RAW_COLUMNS : DERIVED_COLUMNS
+  const STAT_COLS = RAW_COLUMNS  // Always show raw stats now
   const totalCols = 4 /* 选择+ID+名称+元素 */ + STAT_COLS.length + 3 /* 三组标签 */
 
-  const sortOptions = showRaw
-    ? ([
-        { value: 'updated_at', label: '更新时间' },
-        { value: 'raw_sum', label: '六维总和' },
-        { value: 'hp', label: '体力' },
-        { value: 'attack', label: '攻击' },
-        { value: 'magic', label: '法术' },
-        { value: 'defense', label: '防御' },
-        { value: 'resist', label: '抗性' },
-        { value: 'speed', label: '速度' },
-      ] as {value: SortKey, label: string}[])
-    : ([
-        { value: 'updated_at',      label: '更新时间' },
-        { value: 'body_defense',    label: '体防' },
-        { value: 'body_resist',     label: '体抗' },
-        { value: 'debuff_def_res',  label: '防抗' },
-        { value: 'debuff_atk_mag',  label: '攻法' },
-        { value: 'special_tactics', label: '特殊' },
-      ] as {value: SortKey, label: string}[])
+  const sortOptions = [
+    { value: 'updated_at', label: '更新时间' },
+    { value: 'raw_sum', label: '六维总和' },
+    { value: 'hp', label: '体力' },
+    { value: 'attack', label: '攻击' },
+    { value: 'magic', label: '法术' },
+    { value: 'defense', label: '防御' },
+    { value: 'resist', label: '抗性' },
+    { value: 'speed', label: '速度' },
+  ] as {value: SortKey, label: string}[]
 
   // —— 获取途径角标：基于新的12类分类，优先级：无双 > 神宠 > 珍宠 > 罗盘 > VIP > 超进化 > BOSS > 活动 > 任务 > 可捕捉 —— //
   const computeRibbon = (m: Monster) => {
@@ -1286,21 +1210,6 @@ export default function MonstersPage() {
     return null
   }
 
-  // —— 刷新单体派生（用于详细页“派生五维”卡片） —— //
-  const refreshDerived = async () => {
-    if (!selected) return
-    try {
-      try {
-        await api.post('/api/v1/derived/batch', { ids: [(selected as any).id] })
-      } catch {
-        try { await api.get(`/monsters/${(selected as any).id}/derived`) } catch {}
-      }
-      const fresh = (await api.get(`/monsters/${(selected as any).id}`)).data as Monster
-      setSelected(fresh)
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || '刷新失败')
-    }
-  }
 
   return (
     <div className="container my-6 space-y-4">
@@ -1352,23 +1261,6 @@ export default function MonstersPage() {
               未获取妖怪
             </button>
 
-            {/* 显示模式切换（原始六维 / 派生五维） */}
-            <button
-              className={`btn ${!showRaw ? 'btn-primary' : ''} ${BTN_FX}`}
-              title="切换显示：原始六维 / 派生五维"
-              onClick={() => {
-                setShowRaw(v => {
-                  const next = !v
-                  if (next) setSort('raw_sum')
-                  else setSort('body_defense')
-                  setOrder('desc')
-                  return next
-                })
-                setPage(1)
-              }}
-            >
-              {showRaw ? '派生五维' : '恢复六维'}
-            </button>
 
             {/* 新增：视图切换（列表/卡片） */}
             <button
@@ -1541,7 +1433,7 @@ export default function MonstersPage() {
                   selectedIds={selectedIds}
                   onToggleSelect={toggleOne}
                   onOpenDetail={openDetail}
-                  showRawSummary={showRaw}
+                  showRawSummary={true}
                   computeRibbon={computeRibbon}
                 />
               )}
@@ -1563,7 +1455,7 @@ export default function MonstersPage() {
                     <th className="w-16 text-center">ID</th>
                     <th className="text-left">名称</th>
                     <th className="w-20 min-w-[64px] text-center">元素</th>
-                    {/* ✅ 动态：派生五维 / 原生六维 表头 */}
+                    {/* ✅ 原始六维表头 */}
                     {STAT_COLS.map(col => (
                       <th key={col.key} className="w-14 text-center">{col.label}</th>
                     ))}
@@ -1602,9 +1494,9 @@ export default function MonstersPage() {
                           <td className="text-center align-middle py-2.5 whitespace-nowrap break-keep" title={m.element}>
                             {m.element}
                           </td>
-                          {/* ✅ 动态：派生五维 / 原始六维 单元格 */}
+                          {/* Raw stats only */}
                           {STAT_COLS.map(col => {
-                            const val = showRaw ? (m as any)[col.key] ?? 0 : getDerivedValue(m, col.key)
+                            const val = (m as any)[col.key] ?? 0
                             return (
                               <td key={col.key} className="text-center align-middle py-2.5">{val}</td>
                             )
@@ -1657,25 +1549,11 @@ export default function MonstersPage() {
                     {(selected as any)?.new_type === false && <span className="badge badge-warning mr-2">暂不可</span>}
                     {(selected as any)?.possess && <span className="badge badge-info">已拥有</span>}
                   </span>
-                  <button className={`btn ${BTN_FX}`} onClick={async () => {
-                    try { await api.get(`/monsters/${(selected as any).id}/derived`) } catch {}
-                    enterEdit()
-                  }}>编辑</button>
+                  <button className={`btn ${BTN_FX}`} onClick={enterEdit}>编辑</button>
                   <button className={`btn ${BTN_FX}`} onClick={() => deleteOne((selected as any).id)}>删除</button>
                 </>
               ) : (
                 <>
-                  {!isCreating && (
-                    <button className={`btn ${BTN_FX}`} onClick={async () => {
-                      const d = (await api.get(`/monsters/${(selected as any).id}/derived`)).data as {
-                        role_suggested?: string, tags?: string[]
-                      }
-                      if (Array.isArray(d?.tags)) {
-                        const filtered = d.tags.filter(t => t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))
-                        setEditTags(filtered.join(' '))
-                      }
-                    }}>一键匹配（填充）</button>
-                  )}
                   <button className={`btn ${BTN_FX}`} onClick={cancelEdit}>取消</button>
                   <button className={`btn btn-primary ${BTN_FX}`} onClick={isCreating ? saveCreate : saveEdit} disabled={saving}>
                     {saving ? '保存中…' : '保存'}
@@ -1853,38 +1731,6 @@ export default function MonstersPage() {
                   </div>
                 </div>
 
-                {/* 新增：派生五维展示 + 刷新 */}
-                <div className="card p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-semibold">派生五维</h4>
-                    <button className={`btn ${BTN_FX}`} onClick={refreshDerived}>刷新派生</button>
-                  </div>
-                  {(() => {
-                    const d = (selected as any)?.derived || {}
-                    const vals = [
-                      ['体防', getDerivedValue(selected, 'body_defense')],
-                      ['体抗', getDerivedValue(selected, 'body_resist')],
-                      ['防抗', getDerivedValue(selected, 'debuff_def_res')],
-                      ['攻法', getDerivedValue(selected, 'debuff_atk_mag')],
-                      ['特殊', getDerivedValue(selected, 'special_tactics')],
-                    ]
-                    const hasAny = vals.some(([, v]) => Number(v) > 0)
-                    return hasAny ? (
-                      <div className="grid grid-cols-5 gap-2 text-sm">
-                        {vals.map(([label, v]) => (
-                          <div key={label as string} className="p-2 bg-gray-50 rounded text-center">
-                            {label}：<b>{v as number}</b>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-sm text-gray-500">未计算；点击“刷新派生”尝试计算。</div>
-                    )
-                  })()}
-                  <div className="text-xs text-gray-400">
-                    派生五维由技能与标签推导，和原始六维不同。
-                  </div>
-                </div>
 
                 <div>
                   <h4 className="font-semibold mb-2">技能</h4>

@@ -10,10 +10,6 @@ from ..models import Monster, MonsterSkill, Skill, Tag, CollectionItem
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
-from ..services.derive_service import (
-    compute_derived_out,
-    compute_and_persist,
-)
 
 router = APIRouter()
 
@@ -37,6 +33,10 @@ class RawStatsIn(BaseModel):
 
 
 class AutoMatchIdsIn(BaseModel):
+    ids: List[int]
+
+
+class BulkDeleteIn(BaseModel):
     ids: List[int]
 
 
@@ -237,40 +237,12 @@ def list_api(
             .options(
                 selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
                 selectinload(Monster.tags),
-                selectinload(Monster.derived),
             )
         ).scalars().all()
 
     result = []
-    changed = False
 
     for m in items:
-        # 仅确保派生存在与最新（不做自动定位/标签）
-        if not m.derived:
-            compute_and_persist(db, m)
-            changed = True
-
-        fresh = compute_derived_out(m)
-        need_update = (
-            (not m.derived)
-            or m.derived.body_defense != fresh["body_defense"]
-            or m.derived.body_resist != fresh["body_resist"]
-            or m.derived.debuff_def_res != fresh["debuff_def_res"]
-            or m.derived.debuff_atk_mag != fresh["debuff_atk_mag"]
-            or m.derived.special_tactics != fresh["special_tactics"]
-        )
-        if need_update:
-            compute_and_persist(db, m)
-            changed = True
-
-        d = fresh if need_update else {
-            "body_defense": m.derived.body_defense,
-            "body_resist": m.derived.body_resist,
-            "debuff_def_res": m.derived.debuff_def_res,
-            "debuff_atk_mag": m.derived.debuff_atk_mag,
-            "special_tactics": m.derived.special_tactics,
-        }
-
         result.append(
             MonsterOut(
                 id=m.id,
@@ -286,12 +258,8 @@ def list_api(
                 explain_json=m.explain_json or {},
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
-                derived=d,
             )
         )
-
-    if changed:
-        db.commit()
 
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
@@ -304,26 +272,10 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         select(Monster).where(Monster.id == monster_id).options(
             selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
             selectinload(Monster.tags),
-            selectinload(Monster.derived),
         )
     ).scalar_one_or_none()
     if not m:
         raise HTTPException(status_code=404, detail="not found")
-
-    # 仅计算派生
-    if not m.derived:
-        compute_and_persist(db, m)
-
-    fresh = compute_derived_out(m)
-    if (not m.derived) or (
-        m.derived.body_defense != fresh["body_defense"]
-        or m.derived.body_resist != fresh["body_resist"]
-        or m.derived.debuff_def_res != fresh["debuff_def_res"]
-        or m.derived.debuff_atk_mag != fresh["debuff_atk_mag"]
-        or m.derived.special_tactics != fresh["special_tactics"]
-    ):
-        compute_and_persist(db, m)
-        db.commit()
 
     return MonsterOut(
         id=m.id, name=m.name, element=m.element, role=m.role,
@@ -336,13 +288,6 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         explain_json=m.explain_json or {},
         created_at=getattr(m, "created_at", None),
         updated_at=getattr(m, "updated_at", None),
-        derived={
-            "body_defense": m.derived.body_defense,
-            "body_resist": m.derived.body_resist,
-            "debuff_def_res": m.derived.debuff_def_res,
-            "debuff_atk_mag": m.derived.debuff_atk_mag,
-            "special_tactics": m.derived.special_tactics,
-        },
     )
 
 
@@ -433,8 +378,6 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
     ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
     m.explain_json = ex
 
-    # 仅重算派生（不做定位/自动打标）
-    compute_and_persist(db, m)
     db.commit()
     return {"ok": True, "monster_id": m.id, "skills": ex["skill_names"]}
 
@@ -467,45 +410,11 @@ def save_raw_stats(monster_id: int, payload: RawStatsIn, db: Session = Depends(g
     }
     m.explain_json = ex
 
-    # 重算派生（数值变化）
-    compute_and_persist(db, m)
 
     db.commit()
     return {"ok": True, "monster_id": m.id}
 
 
-# ---------- 仅派生 ----------
-@router.get("/monsters/{monster_id}/derived")
-def derived_values(monster_id: int, db: Session = Depends(get_db)):
-    """
-    返回当前怪物的“新五轴”派生（不包含定位/建议标签）：
-      - body_defense     体防
-      - body_resist      体抗
-      - debuff_def_res   削防抗
-      - debuff_atk_mag   削攻法
-      - special_tactics  特殊
-    """
-    m = db.execute(
-        select(Monster)
-        .where(Monster.id == monster_id)
-        .options(
-            selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
-            selectinload(Monster.tags),
-            selectinload(Monster.derived),
-        )
-    ).scalar_one_or_none()
-    if not m:
-        raise HTTPException(status_code=404, detail="not found")
-
-    # 统一计算与落库
-    compute_and_persist(db, m)
-    db.commit()
-
-    derived_now = compute_derived_out(m)
-    return {
-        "monster_id": m.id,
-        "derived": derived_now,
-    }
 
 
 # ---------- 批量自动匹配（仅保留接口，内部不做定位） ----------
@@ -526,8 +435,7 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
 
     n = 0
     for m in mons:
-        # 仅重算派生
-        compute_and_persist(db, m)
+        pass  # No longer computing derived values
         n += 1
 
     db.commit()
@@ -580,8 +488,6 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [s.name for s in skills]
         m.explain_json = ex
 
-    # 初次派生（仅计算落库）
-    compute_and_persist(db, m)
     db.commit(); db.refresh(m)
     return detail(m.id, db)
 
@@ -649,8 +555,6 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
         ex["skill_names"] = [ms.skill.name for ms in (m.monster_skills or []) if ms.skill]
         m.explain_json = ex
 
-    # 更新后：仅重算派生
-    compute_and_persist(db, m)
     db.commit()
     return detail(monster_id, db)
 
@@ -669,6 +573,40 @@ def delete(monster_id: int, db: Session = Depends(get_db)):
         m.tags.clear()
     db.flush()
 
-    db.delete(m)  # MonsterDerived 通过 delete-orphan 一并删除
+    db.delete(m)
     db.commit()
     return {"ok": True}
+
+
+# ---------- 批量删除 ----------
+@router.delete("/monsters/bulk_delete")
+def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db)):
+    if not payload.ids:
+        return {"ok": True, "deleted": 0}
+    
+    # 查找需要删除的妖怪
+    monsters = db.execute(
+        select(Monster).where(Monster.id.in_(payload.ids))
+    ).scalars().all()
+    
+    deleted_count = 0
+    for m in monsters:
+        # 清理关系
+        for ms in (m.monster_skills or []):
+            db.delete(ms)
+        if m.tags is not None:
+            m.tags.clear()
+        db.flush()
+        
+        # 删除妖怪本身
+        db.delete(m)
+        deleted_count += 1
+    
+    db.commit()
+    return {"ok": True, "deleted": deleted_count}
+
+
+# ---------- 批量删除 (POST方法兼容) ----------
+@router.post("/monsters/bulk_delete")
+def bulk_delete_post(payload: BulkDeleteIn, db: Session = Depends(get_db)):
+    return bulk_delete(payload, db)

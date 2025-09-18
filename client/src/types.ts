@@ -1,27 +1,5 @@
 // client/src/types.ts
 
-/** ===== Derived（派生维度） =====
- * 新后端五轴：
- *  - body_defense / body_resist / debuff_def_res / debuff_atk_mag / special_tactics
- * 为兼容老数据，保留旧键（offense/survive/control/tempo/pp_pressure）为可选。
- */
-export interface DerivedNew {
-  body_defense?: number
-  body_resist?: number
-  debuff_def_res?: number
-  debuff_atk_mag?: number
-  special_tactics?: number
-}
-
-export interface DerivedLegacy {
-  offense?: number
-  survive?: number
-  control?: number
-  tempo?: number
-  pp_pressure?: number
-}
-
-export type Derived = DerivedNew & Partial<DerivedLegacy>
 
 /** ===== Monster（已适配新后端） =====
  * - name_final → name
@@ -55,8 +33,6 @@ export interface Monster {
   tags: string[]
   explain_json?: Record<string, any>
 
-  // 派生维度（新五轴为主；旧键可作为兜底）
-  derived?: Derived
 
   created_at?: string | null
   updated_at?: string | null

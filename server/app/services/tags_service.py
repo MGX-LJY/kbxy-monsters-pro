@@ -719,12 +719,12 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
 # ======================
 
 def infer_role_for_monster(monster: Monster) -> str:
-    from .derive_service import infer_role_for_monster as _infer
-    return _infer(monster)
+    """Role inference functionality has been removed."""
+    return ""
 
 def derive(monster: Monster) -> Dict[str, int]:
-    from .derive_service import compute_derived_out
-    return compute_derived_out(monster)
+    """Derived stats functionality has been removed."""
+    return {}
 
 __all__ = [
     # 目录接口

@@ -9,7 +9,7 @@ from sqlalchemy import select, func, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import SessionLocal
-from ..models import Collection, CollectionItem, Monster, MonsterSkill, MonsterDerived
+from ..models import Collection, CollectionItem, Monster, MonsterSkill
 from ..schemas import (
     CollectionCreateIn, CollectionUpdateIn,
     CollectionOut, CollectionList,
@@ -20,7 +20,6 @@ from ..services.collection_service import (
     list_collections, get_or_create_collection, update_collection, delete_collection,
     bulk_set_members, list_collection_members, get_collection_by_id,
 )
-from ..services.derive_service import compute_derived_out
 
 
 router = APIRouter(prefix="/collections", tags=["collections"])
@@ -283,13 +282,6 @@ def api_list_collection_members(
         )
 
         # 排序键解析
-        derived_map = {
-            "body_defense":   MonsterDerived.body_defense,
-            "body_resist":    MonsterDerived.body_resist,
-            "debuff_def_res": MonsterDerived.debuff_def_res,
-            "debuff_atk_mag": MonsterDerived.debuff_atk_mag,
-            "special_tactics": MonsterDerived.special_tactics,
-        }
         raw_map = {
             "hp": Monster.hp,
             "speed": Monster.speed,
@@ -307,10 +299,7 @@ def api_list_collection_members(
             + func.coalesce(Monster.resist, 0)
         )
 
-        if s in derived_map:
-            base = base.outerjoin(MonsterDerived, MonsterDerived.monster_id == Monster.id)
-            base = base.order_by(direction(derived_map[s]), asc(Monster.id))
-        elif s in raw_map:
+        if s in raw_map:
             base = base.order_by(direction(raw_map[s]), asc(Monster.id))
         elif s == "raw_sum":
             base = base.order_by(direction(raw_sum_expr), asc(Monster.id))
@@ -347,7 +336,6 @@ def api_list_collection_members(
 
     out: List[MonsterOut] = []
     for m in items:
-        d = compute_derived_out(m)
         out.append(
             MonsterOut(
                 id=m.id,
@@ -363,7 +351,7 @@ def api_list_collection_members(
                 explain_json=m.explain_json or {},
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
-                derived=d,
+                derived={},
             )
         )
 

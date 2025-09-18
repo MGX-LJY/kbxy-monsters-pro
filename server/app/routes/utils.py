@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..db import SessionLocal
 from ..models import Monster
-from ..services.derive_service import compute_and_persist
 
 router = APIRouter()
 
@@ -37,7 +36,6 @@ def backfill_raw_to_columns(db: Session = Depends(get_db)):
             if need(m.resist)  and raw.get("resist")  is not None: m.resist  = float(raw["resist"]); changed = True
 
         if changed:
-            compute_and_persist(db, m)
             touched += 1
     db.commit()
     return {"updated_rows": touched}

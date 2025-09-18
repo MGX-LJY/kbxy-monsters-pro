@@ -24,13 +24,6 @@ class SkillOut(BaseModel):
     class Config:
         from_attributes = True
 
-# —— Derived 新五轴 —— #
-class DerivedOut(BaseModel):
-    body_defense: int = 0
-    body_resist: int = 0
-    debuff_def_res: int = 0
-    debuff_atk_mag: int = 0
-    special_tactics: int = 0
 
 # —— AutoMatch —— #
 class AutoMatchIn(BaseModel):
@@ -39,7 +32,6 @@ class AutoMatchIn(BaseModel):
 class AutoMatchOut(BaseModel):
     monster_id: int
     tags: List[str]
-    derived: DerivedOut
     committed: bool = False
 
 # —— Monsters —— #
@@ -87,7 +79,6 @@ class MonsterOut(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    derived: Optional[DerivedOut] = None
 
     # ---- 新增：图片 URL ----
     image_url: Optional[str] = None

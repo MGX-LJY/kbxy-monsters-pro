@@ -15,7 +15,7 @@ from .db import Base, engine, startup_db_report_lines, DB_INFO
 from .middleware import TraceIDMiddleware
 
 from .routes import (
-    health, monsters, skills, utils, derive, crawl,
+    health, monsters, skills, utils, crawl,
     warehouse, types, collections,
 )
 from .routes import images as images_routes  # ← 新增
@@ -69,7 +69,6 @@ app.include_router(health.router)
 app.include_router(monsters.router)
 app.include_router(utils.router)
 app.include_router(skills.router)
-app.include_router(derive.router)
 app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])
 app.include_router(types.router)

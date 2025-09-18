@@ -6,8 +6,7 @@ from typing import Iterable, List, Tuple, Optional
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, asc, desc, or_
 
-from ..models import Monster, MonsterSkill, Skill, Tag, MonsterDerived
-from ..services.derive_service import compute_derived_out, recompute_derived_only
+from ..models import Monster, MonsterSkill, Skill, Tag
 
 
 # -------- 基础操作：加入/移出/批量设置 --------
@@ -86,8 +85,6 @@ def list_warehouse(
     支持按 possess 过滤与多条件筛选；排序支持：
       - 基础列：updated_at / created_at / name / element / role
       - 原生六维：hp / speed / attack / defense / magic / resist / raw_sum（六维总和）
-      - 新五轴（派生，需 OUTER JOIN MonsterDerived）：
-          body_defense / body_resist / debuff_def_res / debuff_atk_mag / special_tactics
     """
     page = max(1, int(page))
     page_size = min(200, max(1, int(page_size)))
@@ -130,15 +127,6 @@ def list_warehouse(
     # ---- 排序键解析 ----
     s = (sort or "updated_at").lower()
 
-    # 新五轴（派生）
-    derived_map = {
-        "body_defense":   MonsterDerived.body_defense,    # 体防
-        "body_resist":    MonsterDerived.body_resist,     # 体抗
-        "debuff_def_res": MonsterDerived.debuff_def_res,  # 削防抗
-        "debuff_atk_mag": MonsterDerived.debuff_atk_mag,  # 削攻法
-        "special_tactics": MonsterDerived.special_tactics # 特殊
-    }
-
     # 原生六维
     raw_map = {
         "hp": Monster.hp,
@@ -157,10 +145,7 @@ def list_warehouse(
         + func.coalesce(Monster.resist, 0)
     )
 
-    if s in derived_map:
-        base = base.outerjoin(MonsterDerived, MonsterDerived.monster_id == Monster.id)
-        base = base.order_by(direction(derived_map[s]), asc(Monster.id))
-    elif s in raw_map:
+    if s in raw_map:
         base = base.order_by(direction(raw_map[s]), asc(Monster.id))
     elif s == "raw_sum":
         base = base.order_by(direction(raw_sum_expr), asc(Monster.id))
@@ -176,23 +161,9 @@ def list_warehouse(
     # ---- 分页 + 预加载 ----
     stmt = base.limit(page_size).offset((page - 1) * page_size).options(
         selectinload(Monster.tags),
-        selectinload(Monster.derived),
         selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
     )
     items = db.execute(stmt).scalars().all()
 
-    # 可选：确保派生落库最新（不会影响排序，因为排序已在 SQL 完成）
-    changed = False
-    for m in items:
-        fresh = compute_derived_out(m)  # 新五轴 0~120（由 derive_service 决定范围）
-        if (not m.derived) or any(
-            getattr(m.derived, k, None) != fresh[k]
-            for k in ("body_defense", "body_resist", "debuff_def_res", "debuff_atk_mag", "special_tactics")
-        ):
-            # 仅重算并持久化新五轴；不做定位写回
-            recompute_derived_only(db, m, ensure_prefix_tags=False)
-            changed = True
-    if changed:
-        db.flush()
 
     return items, int(total)
