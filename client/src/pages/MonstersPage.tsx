@@ -132,11 +132,14 @@ export default function MonstersPage() {
   // === 新增：对面属性（vs）用于标注倍率（仅文本，不着色） ===
   const [vsElement, setVsElement] = useState('')       // 对面属性（中文，空则不启用）
 
-  // 三组标签（替代原单一 tag）
-  const [tagBuf, setTagBuf] = useState('')
-  const [tagDeb, setTagDeb] = useState('')
-  const [tagUtil, setTagUtil] = useState('')
-  const selectedTags = useMemo(() => [tagBuf, tagDeb, tagUtil].filter(Boolean) as string[], [tagBuf, tagDeb, tagUtil])
+  // 三组标签（多选支持）
+  const [tagBufList, setTagBufList] = useState<string[]>([])
+  const [tagDebList, setTagDebList] = useState<string[]>([])
+  const [tagUtilList, setTagUtilList] = useState<string[]>([])
+  const [tagBufMode, setTagBufMode] = useState<'all' | 'any'>('all')
+  const [tagDebMode, setTagDebMode] = useState<'all' | 'any'>('all')
+  const [tagUtilMode, setTagUtilMode] = useState<'all' | 'any'>('all')
+  const selectedTags = useMemo(() => [...tagBufList, ...tagDebList, ...tagUtilList], [tagBufList, tagDebList, tagUtilList])
 
   // ✅ 原始六维默认展示 + 默认按六维总和排序
   const [sort, setSort] = useState<SortKey>('raw_sum')
@@ -458,7 +461,7 @@ export default function MonstersPage() {
   // —— 列表数据 —— //
   const list = useQuery({
     queryKey: ['monsters', {
-      q, element, tagBuf, tagDeb, tagUtil, acqType, sort: sortForApi, order,
+      q, element, tagBufList, tagDebList, tagUtilList, tagBufMode, tagDebMode, tagUtilMode, acqType, sort: sortForApi, order,
       page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
     }],
     queryFn: async () => {
@@ -472,8 +475,19 @@ export default function MonstersPage() {
         page_size: pageSize,
         collection_id: collectionId || undefined,  // ← 收藏筛选
       }
-      if (selectedTags.length >= 2) baseParams.tags_all = selectedTags
-      else if (selectedTags.length === 1) baseParams.tag = selectedTags[0]
+      // 使用新的多选标签系统
+      if (tagBufList.length > 0) {
+        if (tagBufMode === 'all') baseParams.buf_tags_all = tagBufList
+        else baseParams.buf_tags_any = tagBufList
+      }
+      if (tagDebList.length > 0) {
+        if (tagDebMode === 'all') baseParams.deb_tags_all = tagDebList
+        else baseParams.deb_tags_any = tagDebList
+      }
+      if (tagUtilList.length > 0) {
+        if (tagUtilMode === 'all') baseParams.util_tags_all = tagUtilList
+        else baseParams.util_tags_any = tagUtilList
+      }
 
       // ✅ 只要“仓库”或“未获取”任一开启，就走 /warehouse
       if (warehouseOnly || notOwnedOnly) {
@@ -835,8 +849,19 @@ export default function MonstersPage() {
         page_size: pageSizeFetch,
         collection_id: collectionId || undefined, // ← 收藏筛选透传
       }
-      if (selectedTags.length >= 2) params.tags_all = selectedTags
-      else if (selectedTags.length === 1) params.tag = selectedTags[0]
+      // 使用新的多选标签系统
+      if (tagBufList.length > 0) {
+        if (tagBufMode === 'all') params.buf_tags_all = tagBufList
+        else params.buf_tags_any = tagBufList
+      }
+      if (tagDebList.length > 0) {
+        if (tagDebMode === 'all') params.deb_tags_all = tagDebList
+        else params.deb_tags_any = tagDebList
+      }
+      if (tagUtilList.length > 0) {
+        if (tagUtilMode === 'all') params.util_tags_all = tagUtilList
+        else params.util_tags_any = tagUtilList
+      }
 
       if (useWarehouse) {
         if (warehouseOnly) params.possess = true
@@ -1289,15 +1314,15 @@ export default function MonstersPage() {
           </div>
         </div>
 
-        {/* 2 行：对面属性（vs） + 元素 + 获取途径 + 三组标签（多选） + 定位 + 收藏分组 + 排序 */}
-        <div className="grid grid-cols-2 md:grid-cols-10 gap-3">
-          {/* 对面属性——仅用于给“元素下拉”标注百分比并排序 */}
+        {/* 2 行：基础筛选器 */}
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-3">
+          {/* 对面属性——仅用于给"元素下拉"标注百分比并排序 */}
           <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
             <option value="">对面属性</option>
             {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
 
-          {/* 元素筛选（使用“百分比”的 label；value 仍是中文元素名） */}
+          {/* 元素筛选（使用"百分比"的 label；value 仍是中文元素名） */}
           <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
             <option value="">全部元素</option>
             {filterElementOptionsLabeled.map(opt => (
@@ -1308,32 +1333,6 @@ export default function MonstersPage() {
           <select className="select" value={acqType} onChange={e => { setAcqType(e.target.value); setPage(1) }}>
             <option value="">获取途径</option>
             {acquireTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-
-          {/* 三枚标签下拉 */}
-          <select className="select" value={tagBuf} onChange={e => { setTagBuf(e.target.value); setPage(1) }}>
-            <option value="">🟢 增强</option>
-            {bufCounts.map(t =>
-              <option key={t.name} value={t.name}>
-                {`🟢${tagLabel(t.name)}（${t.count}）`}
-              </option>
-            )}
-          </select>
-          <select className="select" value={tagDeb} onChange={e => { setTagDeb(e.target.value); setPage(1) }}>
-            <option value="">🔴 削弱</option>
-            {debCounts.map(t =>
-              <option key={t.name} value={t.name}>
-                {`🔴${tagLabel(t.name)}（${t.count}）`}
-              </option>
-            )}
-          </select>
-          <select className="select" value={tagUtil} onChange={e => { setTagUtil(e.target.value); setPage(1) }}>
-            <option value="">🟣 特殊</option>
-            {utilCounts.map(t =>
-              <option key={t.name} value={t.name}>
-                {`🟣${tagLabel(t.name)}（${t.count}）`}
-              </option>
-            )}
           </select>
 
           {/* 收藏分组筛选 */}
@@ -1351,21 +1350,152 @@ export default function MonstersPage() {
             ))}
           </select>
 
-          <div className="grid grid-cols-2 gap-3 col-span-2">
-            {/* ✅ 排序选项随模式切换 */}
-            <select
-              className="select"
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-            >
-              {sortOptions.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-            <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
-              <option value="desc">降序</option>
-              <option value="asc">升序</option>
-            </select>
+          {/* 排序选项 */}
+          <select
+            className="select"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+          >
+            {sortOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+
+          <select className="select" value={order} onChange={e => setOrder(e.target.value as any)}>
+            <option value="desc">降序</option>
+            <option value="asc">升序</option>
+          </select>
+        </div>
+
+        {/* 3 行：标签多选区域 */}
+        <div className="mb-3">
+          <div className="text-sm text-gray-600 mb-2">技能标签筛选</div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* 增强标签 */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <select className="select flex-1" value="" onChange={e => {
+                  if (e.target.value && !tagBufList.includes(e.target.value)) {
+                    setTagBufList([...tagBufList, e.target.value])
+                    setPage(1)
+                  }
+                  e.target.value = ''
+                }}>
+                  <option value="">🟢 增强 (+)</option>
+                  {bufCounts.filter(t => !tagBufList.includes(t.name)).map(t =>
+                    <option key={t.name} value={t.name}>
+                      {`${tagLabel(t.name)}（${t.count}）`}
+                    </option>
+                  )}
+                </select>
+                <select className="select w-20" value={tagBufMode} onChange={e => { setTagBufMode(e.target.value as 'all' | 'any'); setPage(1) }}>
+                  <option value="all">AND</option>
+                  <option value="any">OR</option>
+                </select>
+              </div>
+              {tagBufList.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {tagBufList.map(tag => (
+                    <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded text-sm">
+                      🟢{tagLabel(tag)}
+                      <button 
+                        onClick={() => { 
+                          setTagBufList(tagBufList.filter(t => t !== tag))
+                          setPage(1)
+                        }}
+                        className="text-green-600 hover:text-green-800"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 削弱标签 */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <select className="select flex-1" value="" onChange={e => {
+                  if (e.target.value && !tagDebList.includes(e.target.value)) {
+                    setTagDebList([...tagDebList, e.target.value])
+                    setPage(1)
+                  }
+                  e.target.value = ''
+                }}>
+                  <option value="">🔴 削弱 (+)</option>
+                  {debCounts.filter(t => !tagDebList.includes(t.name)).map(t =>
+                    <option key={t.name} value={t.name}>
+                      {`${tagLabel(t.name)}（${t.count}）`}
+                    </option>
+                  )}
+                </select>
+                <select className="select w-20" value={tagDebMode} onChange={e => { setTagDebMode(e.target.value as 'all' | 'any'); setPage(1) }}>
+                  <option value="all">AND</option>
+                  <option value="any">OR</option>
+                </select>
+              </div>
+              {tagDebList.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {tagDebList.map(tag => (
+                    <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded text-sm">
+                      🔴{tagLabel(tag)}
+                      <button 
+                        onClick={() => { 
+                          setTagDebList(tagDebList.filter(t => t !== tag))
+                          setPage(1)
+                        }}
+                        className="text-red-600 hover:text-red-800"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 特殊标签 */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <select className="select flex-1" value="" onChange={e => {
+                  if (e.target.value && !tagUtilList.includes(e.target.value)) {
+                    setTagUtilList([...tagUtilList, e.target.value])
+                    setPage(1)
+                  }
+                  e.target.value = ''
+                }}>
+                  <option value="">🟣 特殊 (+)</option>
+                  {utilCounts.filter(t => !tagUtilList.includes(t.name)).map(t =>
+                    <option key={t.name} value={t.name}>
+                      {`${tagLabel(t.name)}（${t.count}）`}
+                    </option>
+                  )}
+                </select>
+                <select className="select w-20" value={tagUtilMode} onChange={e => { setTagUtilMode(e.target.value as 'all' | 'any'); setPage(1) }}>
+                  <option value="all">AND</option>
+                  <option value="any">OR</option>
+                </select>
+              </div>
+              {tagUtilList.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {tagUtilList.map(tag => (
+                    <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-800 rounded text-sm">
+                      🟣{tagLabel(tag)}
+                      <button 
+                        onClick={() => { 
+                          setTagUtilList(tagUtilList.filter(t => t !== tag))
+                          setPage(1)
+                        }}
+                        className="text-purple-600 hover:text-purple-800"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
