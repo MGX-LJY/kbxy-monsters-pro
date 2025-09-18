@@ -22,7 +22,7 @@ graph TB
         MonstersLogic[monsters_service<br/>妖怪业务逻辑]
         SkillsLogic[skills_service<br/>技能管理]
         TagsLogic[tags_service<br/>标签识别]
-        DeriveLogic[derive_service<br/>派生计算]
+
         ImageLogic[image_service<br/>图片处理]
         CollectionLogic[collection_service<br/>收藏管理]
     end
@@ -59,8 +59,7 @@ graph TB
     Normalizer --> SkillsLogic
     Normalizer --> TagsLogic
     
-    MonstersLogic --> DeriveLogic
-    TagsLogic --> DeriveLogic
+
     
     FileUpload --> ImageLogic
     ImageLogic --> AIModel
@@ -69,7 +68,7 @@ graph TB
     MonstersLogic --> SQLiteDB
     SkillsLogic --> SQLiteDB
     TagsLogic --> SQLiteDB
-    DeriveLogic --> SQLiteDB
+
     CollectionLogic --> SQLiteDB
     ImageLogic --> FileSystem
     
@@ -99,7 +98,7 @@ graph TB
     
     class ExtAPI,UserInput,FileUpload,AIModel sourceLayer
     class Crawler,Parser,Validator,Normalizer acquireLayer
-    class MonstersLogic,SkillsLogic,TagsLogic,DeriveLogic,ImageLogic,CollectionLogic businessLayer
+    class MonstersLogic,SkillsLogic,TagsLogic,ImageLogic,CollectionLogic businessLayer
     class SQLiteDB,FileSystem,Cache storageLayer
     class RestAPI,JSONResponse,FileExport,ImageURL outputLayer
     class ReactApp,Browser,UserUI clientLayer
@@ -134,22 +133,18 @@ graph TD
         N --> O[Tag标签关联]
     end
     
-    subgraph "派生计算流程"
-        O --> P[derive_service.compute_and_persist]
-        P --> Q[新五轴属性计算]
-        Q --> R[MonsterDerived表存储]
-    end
+
     
     %% 样式
     classDef crawlerFlow fill:#e8f5e8
     classDef cleanFlow fill:#fff3e0
     classDef storeFlow fill:#e3f2fd
-    classDef deriveFlow fill:#f3e5f5
+
     
     class A,B,C,D,E,F crawlerFlow
     class G,H,I,J cleanFlow
     class K,L,M,N,O storeFlow
-    class P,Q,R deriveFlow
+
 ```
 
 ### 2. 用户查询与展示流程
@@ -261,44 +256,11 @@ graph TD
         N --> O[用户确认/自动应用]
         O --> P[monsters_service.upsert_tags]
         P --> Q[Monster-Tag关联更新]
-        Q --> R[派生属性重新计算]
+
     end
 ```
 
-### 5. 派生属性计算流程
 
-```mermaid
-graph LR
-    subgraph "输入数据收集"
-        A[Monster基础六维] --> D[derive_service.compute_derived]
-        B[Monster关联标签] --> D
-        C[配置权重参数] --> D
-    end
-    
-    subgraph "信号检测分析"
-        D --> E[_detect_signals_v3]
-        E --> F[29种战斗能力信号识别]
-        F --> G[生存/抑制/资源信号分类]
-    end
-    
-    subgraph "五轴属性计算"
-        G --> H[体防轴计算]
-        G --> I[体抗轴计算]
-        G --> J[削防抗轴计算]
-        G --> K[削攻法轴计算]
-        G --> L[特殊战术轴计算]
-    end
-    
-    subgraph "结果存储"
-        H --> M[MonsterDerived对象]
-        I --> M
-        J --> M
-        K --> M
-        L --> M
-        M --> N[数据库持久化]
-        N --> O[API响应返回]
-    end
-```
 
 ### 6. 收藏夹管理流程
 
@@ -503,13 +465,7 @@ graph LR
             "description": "string"
           }
         ],
-        "derived": {
-          "body_defense": "integer",
-          "body_resist": "integer", 
-          "debuff_def_res": "integer",
-          "debuff_atk_mag": "integer",
-          "special_tactics": "integer"
-        },
+
         "image_url": "string|null"
       }
     ],
@@ -523,7 +479,7 @@ graph LR
 ### 数据库存储格式
 
 - **Monster表**: 妖怪基础信息和六维属性
-- **MonsterDerived表**: 计算得出的五轴派生属性
+
 - **Skill表**: 技能基础信息
 - **MonsterSkill表**: 妖怪-技能多对多关联
 - **Tag表**: 标签分类信息

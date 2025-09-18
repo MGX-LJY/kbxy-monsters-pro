@@ -27,7 +27,7 @@ KBXY Monsters Pro是一个功能完整的口袋妖怪图鉴管理系统，采用
 - **格式支持**：支持多种图片格式的处理和转换
 
 ### 🧠 智能分析系统
-- **派生属性计算**：基于基础属性计算五维评估和潜力分析
+
 - **评分引擎**：智能评分系统，输出详细的解释信息
 - **标签系统**：支持buf/deb/util等多种标签分类
 - **数据挖掘**：从大量数据中发现有价值的模式和关系
@@ -158,7 +158,7 @@ FastAPI Application
 ├── Business Logic Layer
 │   ├── Services (monsters_service, crawler_service, etc.)
 │   ├── AI Processing (image_service, Real-ESRGAN)
-│   └── Data Processing (normalization, derive_service)
+│   └── Data Processing (normalization)
 ├── Data Access Layer
 │   ├── ORM Models (SQLAlchemy)
 │   ├── Database Connection (SQLite)

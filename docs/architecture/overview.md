@@ -24,7 +24,7 @@ graph TB
             TypesR[types.py<br/>属性系统API]
             WarehouseR[warehouse.py<br/>仓库API]
             CollectionsR[collections.py<br/>收藏API]
-            DeriveR[derive.py<br/>派生属性API]
+
             ImagesR[images.py<br/>图片API]
             HealthR[health.py<br/>健康检查API]
             TagsR[tags.py<br/>标签API]
@@ -36,7 +36,7 @@ graph TB
             Services{Business Services}
             MonstersS[monsters_service.py<br/>妖怪核心业务逻辑]
             CrawlerS[crawler_service.py<br/>网络爬虫服务]
-            DeriveS[derive_service.py<br/>派生属性计算]
+
             SkillsS[skills_service.py<br/>技能管理服务]
             TypesS[types_service.py<br/>属性系统服务]
             TagsS[tags_service.py<br/>标签体系服务]
@@ -81,7 +81,7 @@ graph TB
     Routes --> TypesR
     Routes --> WarehouseR
     Routes --> CollectionsR
-    Routes --> DeriveR
+
     Routes --> ImagesR
     Routes --> HealthR
     Routes --> TagsR
@@ -93,7 +93,7 @@ graph TB
     
     Services --> MonstersS
     Services --> CrawlerS
-    Services --> DeriveS
+
     Services --> SkillsS
     Services --> TypesS
     Services --> TagsS
@@ -109,7 +109,7 @@ graph TB
     TypesR --> TypesS
     WarehouseR --> WarehouseS
     CollectionsR --> CollectionS
-    DeriveR --> DeriveS
+
     ImagesR --> ImageS
     TagsR --> TagsS
     
@@ -117,8 +117,7 @@ graph TB
     MonstersS --> Schemas
     CrawlerS --> Models
     CrawlerS --> Schemas
-    DeriveS --> Models
-    DeriveS --> Schemas
+
     
     Models --> DB
     Schemas --> DB
@@ -130,10 +129,10 @@ graph TB
     ImageS --> AI
     
     %% 关键业务流程连接
-    MonstersS --> DeriveS
+
     MonstersS --> TagsS
     MonstersS --> NormS
-    DeriveS --> TagsS
+
     SkillsS --> NormS
     
     %% 样式设置
@@ -144,8 +143,8 @@ graph TB
     classDef externalLayer fill:#fce4ec
     
     class UI,Browser clientLayer
-    class Routes,MonstersR,CrawlR,SkillsR,SkillsAdminR,TypesR,WarehouseR,CollectionsR,DeriveR,ImagesR,HealthR,TagsR,RolesR,UtilsR routeLayer
-    class Services,MonstersS,CrawlerS,DeriveS,SkillsS,TypesS,TagsS,WarehouseS,CollectionS,ImageS,NormS serviceLayer
+    class Routes,MonstersR,CrawlR,SkillsR,SkillsAdminR,TypesR,WarehouseR,CollectionsR,ImagesR,HealthR,TagsR,RolesR,UtilsR routeLayer
+    class Services,MonstersS,CrawlerS,SkillsS,TypesS,TagsS,WarehouseS,CollectionS,ImageS,NormS serviceLayer
     class Models,Schemas,DB,SQLite,Config dataLayer
     class WebSource,FileSystem,AI externalLayer
 ```
@@ -171,13 +170,7 @@ graph TB
         L --> G
     end
     
-    subgraph "派生属性计算"
-        M[基础六维属性] --> N[derive_service]
-        N --> O[标签信号检测]
-        O --> P[新五轴计算]
-        P --> Q[体防/体抗/削防抗/削攻法/特殊]
-        Q --> R[MonsterDerived表存储]
-    end
+
     
     subgraph "标签处理流程"
         S[标签识别需求] --> T[tags_service]
@@ -185,7 +178,7 @@ graph TB
         T --> V[AI智能建议]
         U --> W[标签关联更新]
         V --> W
-        W --> X[重新计算派生属性]
+
     end
 ```
 
@@ -262,7 +255,7 @@ graph LR
 ```mermaid
 erDiagram
     Monster ||--o{ MonsterSkill : has
-    Monster ||--o{ MonsterDerived : has
+
     Monster ||--o{ CollectionItem : in
     Monster }o--o{ Tag : tagged
     
@@ -288,20 +281,7 @@ erDiagram
         datetime updated_at
     }
     
-    MonsterDerived {
-        int id PK
-        int monster_id FK
-        int body_defense
-        int body_resist
-        int debuff_def_res
-        int debuff_atk_mag
-        int special_tactics
-        string formula
-        json inputs
-        json weights
-        json signals
-        datetime updated_at
-    }
+
     
     Skill {
         int id PK
@@ -386,11 +366,7 @@ erDiagram
 - **数据标准化**: 统一的格式转换和清洗
 - **批量处理**: 支持大规模数据导入
 
-#### 派生属性计算
-- **新五轴评估**: 从传统六围转换为战术维度
-- **信号检测**: 基于标签的29种战斗能力识别
-- **权重配置**: 灵活的计算权重和公式系统
-- **实时更新**: 数据变更时自动重新计算
+
 
 #### 标签智能系统
 - **自动识别**: 正则表达式 + AI模型双重识别

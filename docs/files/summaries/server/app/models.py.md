@@ -52,7 +52,7 @@ from .db import Base
 | 类名 | 用途 | 主要属性 | 关系类型 | 索引设计 |
 |------|------|----------|----------|----------|
 | `Monster` | 妖怪主实体 | `name, element, hp, speed, attack, defense, magic, resist` | 一对多、多对多 | 名称唯一索引 |
-| `MonsterDerived` | 妖怪派生属性 | `body_defense, body_resist, debuff_def_res, debuff_atk_mag, special_tactics` | 一对一 | 五轴属性索引 |
+
 | `Tag` | 标签分类 | `name` | 多对多 | 名称唯一索引 |
 | `Skill` | 技能信息 | `name, element, kind, power, description` | 多对多 | 复合唯一约束 |
 | `MonsterSkill` | 妖怪-技能关联 | `selected, level, description` | 关联对象 | 复合唯一约束 |
@@ -76,18 +76,10 @@ from .db import Base
 - 关系设计：
   - 与Tag多对多关系（通过monster_tag表）
   - 与Skill多对多关系（通过MonsterSkill关联对象）
-  - 一对一关系到MonsterDerived（派生属性）
+
   - 一对多关系到CollectionItem（收藏关系）
 
-**MonsterDerived 派生属性类：**
-- 功能：存储基于基础属性计算的五轴战斗能力评估
-- 新五轴设计：
-  - `body_defense`: 体防轴（体力/防御+护盾/治疗等硬生存）
-  - `body_resist`: 体抗轴（体力/抗性+净化/状态免疫等抗异常）
-  - `debuff_def_res`: 削防抗轴（降防/降抗/破甲能力）
-  - `debuff_atk_mag`: 削攻法轴（降攻/降法/封技等输出压制）
-  - `special_tactics`: 特殊战术轴（PP压制/中毒/自爆等非常规博弈）
-- 追踪信息：记录计算公式、输入参数、权重配置和信号数据
+
 
 **Skill 技能类：**
 - 功能：定义妖怪技能的属性和效果
@@ -136,7 +128,7 @@ graph TD
     E --> G[创建CollectionItem表]
     
     H[妖怪数据操作] --> I[Monster CRUD]
-    I --> J[更新MonsterDerived]
+
     I --> K[管理MonsterSkill关联]
     
     L[收藏夹操作] --> M[Collection CRUD]
@@ -179,7 +171,7 @@ graph TD
 3. 关联对象(MonsterSkill, CollectionItem) → 复杂多对多关系管理
 
 **数据完整性依赖：**
-- Monster → MonsterDerived（一对一级联删除）
+
 - Monster → MonsterSkill（一对多级联删除）
 - Collection → CollectionItem（一对多级联删除）
 - 外键约束确保引用完整性
@@ -190,7 +182,7 @@ graph TD
 - 外键索引加速关联查询
 
 **业务逻辑依赖：**
-- MonsterDerived依赖Monster的六围属性进行计算
+
 - CollectionItem的创建/删除需要维护Collection的items_count
 - MonsterSkill的selected字段影响技能推荐逻辑
 

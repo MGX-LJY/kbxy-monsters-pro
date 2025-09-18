@@ -1,7 +1,7 @@
 # 文件分析报告：server/app/services/warehouse_service.py
 
 ## 文件概述
-这是妖怪仓库管理服务，提供完整的妖怪收藏管理功能，包括添加/移除妖怪、批量操作、统计查询和高级列表筛选。该服务支持基于拥有状态的过滤、多维度排序（包括新五轴派生属性）、分页查询和实时数据同步，是用户管理个人妖怪收藏的核心业务服务。
+这是妖怪仓库管理服务，提供完整的妖怪收藏管理功能，包括添加/移除妖怪、批量操作、统计查询和高级列表筛选。该服务支持基于拥有状态的过滤、多维度排序、分页查询和实时数据同步，是用户管理个人妖怪收藏的核心业务服务。
 
 ## 代码结构分析
 
@@ -11,7 +11,7 @@ from typing import Iterable, List, Tuple, Optional
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, asc, desc, or_
 from ..models import Monster, MonsterSkill, Skill, Tag, MonsterDerived
-from ..services.derive_service import compute_derived_out, recompute_derived_only
+
 ```
 
 ### 全局变量和常量
@@ -20,7 +20,7 @@ from ..services.derive_service import compute_derived_out, recompute_derived_onl
 ### 配置和设置
 - 默认分页大小：20条记录
 - 最大分页大小限制：200条记录
-- 支持多种排序方式：基础属性、六维属性、新五轴派生属性
+- 支持多种排序方式：基础属性、六维属性
 
 ## 函数详细分析
 
@@ -70,7 +70,7 @@ from ..services.derive_service import compute_derived_out, recompute_derived_onl
 | 类名 | 来源 | 用途 | 核心操作 |
 |------|------|------|----------|
 | `Monster` | `models` | 妖怪实体 | possess状态管理 |
-| `MonsterDerived` | `models` | 派生属性 | 五轴排序支持 |
+
 | `Tag` | `models` | 标签实体 | 标签筛选查询 |
 | `MonsterSkill` | `models` | 妖怪技能关联 | 技能数据预加载 |
 
@@ -82,10 +82,7 @@ from ..services.derive_service import compute_derived_out, recompute_derived_onl
 - 六围属性用于排序：hp, speed, attack, defense, magic, resist
 - 关联关系：tags用于标签筛选
 
-**MonsterDerived类的集成：**
-- 新五轴排序支持：body_defense, body_resist等
-- OUTER JOIN确保无派生数据的妖怪也能显示
-- 实时数据同步：自动更新过期的派生属性
+
 
 ## 函数调用流程图
 ```mermaid
