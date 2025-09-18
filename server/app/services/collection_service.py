@@ -351,7 +351,6 @@ def list_collection_members(
         .offset((page - 1) * page_size)
         .options(
             selectinload(Monster.tags),
-            selectinload(Monster.derived),
             selectinload(Monster.monster_skills),
         )
     )

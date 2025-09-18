@@ -429,7 +429,6 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
         .options(
             selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
             selectinload(Monster.tags),
-            selectinload(Monster.derived),
         )
     ).scalars().all()
 

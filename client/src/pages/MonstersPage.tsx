@@ -1089,20 +1089,10 @@ export default function MonstersPage() {
   // 计算进度百分比
   const progressPct = overlay.total ? Math.floor(((overlay.done || 0) / overlay.total) * 100) : null
 
-  // —— 列表前端兜底过滤（获取途径 + 多标签 AND） —— //
+  // —— 列表数据（现在由后端完全处理标签过滤） —— //
   const filteredItems = useMemo(() => {
-    let arr = (list.data?.items as any[]) || []
-
-    // 多标签 AND：用 (m.tags || []) 兜底
-    if (selectedTags.length > 0) {
-      arr = arr.filter(m => {
-        const mtags: string[] = Array.isArray(m.tags) ? m.tags : []
-        return selectedTags.every(t => mtags.includes(t))
-      })
-    }
-
-    return arr
-  }, [list.data, warehouseOnly, notOwnedOnly, selectedTags])
+    return (list.data?.items as any[]) || []
+  }, [list.data])
 
   // —— 新建：初始化清空并打开编辑抽屉 —— //
   const startCreate = () => {
@@ -1242,7 +1232,7 @@ export default function MonstersPage() {
       <div className="card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            {/* ← 新增：收藏组管理，放在"一键匹配"左侧 */}
+            {/* 收藏组管理 */}
             {collectionId && (
               <>
                 <button
@@ -1259,11 +1249,11 @@ export default function MonstersPage() {
                 >
                   删除收藏组
                 </button>
-                {/* 可选：分隔线，让分组管理与其它操作区隔开 */}
-                <span className="hidden md:inline-block w-px h-5 bg-gray-200 mx-1" aria-hidden />
               </>
             )}
+          </div>
 
+          <div className="flex flex-wrap items-center gap-2">
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
             </button>
@@ -1285,7 +1275,6 @@ export default function MonstersPage() {
             >
               未获取妖怪
             </button>
-
 
             {/* 新增：视图切换（列表/卡片） */}
             <button

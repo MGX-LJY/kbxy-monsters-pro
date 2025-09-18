@@ -89,9 +89,22 @@ def warehouse_list(
     q: Optional[str] = Query(None),
     element: Optional[str] = Query(None),
     role: Optional[str] = Query(None),
+    # 旧：单标签
     tag: Optional[str] = Query(None),
-    # 多标签 AND + 获取渠道（兼容两个参数名）
-    tags_all: Optional[List[str]] = Query(None),
+    # 新：多标签筛选（向后兼容）
+    tags_all: Optional[List[str]] = Query(None, description="AND：必须同时包含的标签（可重复）"),
+    tags_any: Optional[List[str]] = Query(None, description="OR：任意包含的标签之一（可重复）"),
+    tag_mode: Optional[str] = None,  # 当仅提供 tags（数组）时的模式 and/or
+    # 预留分组（当前每组单选也兼容）
+    buf_tags_all: Optional[List[str]] = Query(None),
+    buf_tags_any: Optional[List[str]] = Query(None),
+    deb_tags_all: Optional[List[str]] = Query(None),
+    deb_tags_any: Optional[List[str]] = Query(None),
+    util_tags_all: Optional[List[str]] = Query(None),
+    util_tags_any: Optional[List[str]] = Query(None),
+    # 可选：如果前端以后直接传 tags=[]
+    tags: Optional[List[str]] = Query(None),
+    # 获取途径（兼容两个参数名）
     type: Optional[str] = Query(None),
     acq_type: Optional[str] = Query(None),
     # ✅ 收藏分组筛选
@@ -107,7 +120,13 @@ def warehouse_list(
     支持参数：
     - possess: True 仅已拥有；False 仅未拥有（含 None）；None 全部
     - q / element / role
-    - tag（单标签）、tags_all（AND 多标签）
+    - 标签筛选：
+        * tag（单标签）
+        * tags_all（AND 多标签）、tags_any（OR 多标签）
+        * buf_tags_all/buf_tags_any（增强标签）
+        * deb_tags_all/deb_tags_any（削弱标签）
+        * util_tags_all/util_tags_any（特殊标签）
+        * tags + tag_mode（通用标签数组，配合 and/or 模式）
     - acq_type / type（获取途径，包含匹配）
     - collection_id：按收藏分组过滤
     - sort：
@@ -163,12 +182,37 @@ def warehouse_list(
     if role:
         base_q = base_q.filter(Monster.role == role)
 
-    # 标签筛选
-    if tags_all:
-        for t in tags_all:
-            if t:
-                base_q = base_q.filter(Monster.tags.any(Tag.name == t))
-    if tag:
+    # —— 汇总多标签参数（兼容分组）—— #
+    resolved_tags_all: List[str] = []
+    resolved_tags_any: List[str] = []
+
+    for arr in (tags_all, buf_tags_all, deb_tags_all, util_tags_all):
+        if arr:
+            resolved_tags_all.extend([t for t in arr if isinstance(t, str) and t])
+
+    for arr in (tags_any, buf_tags_any, deb_tags_any, util_tags_any):
+        if arr:
+            resolved_tags_any.extend([t for t in arr if isinstance(t, str) and t])
+
+    # 若仅提供了 tags=[]，根据 tag_mode 落到 AND/OR
+    if tags and not (resolved_tags_all or resolved_tags_any):
+        if (tag_mode or "").lower() == "or":
+            resolved_tags_any.extend(tags)
+        else:
+            resolved_tags_all.extend(tags)
+
+    # 标签筛选：AND 模式（所有标签都必须包含）
+    if resolved_tags_all:
+        for t in resolved_tags_all:
+            base_q = base_q.filter(Monster.tags.any(Tag.name == t))
+
+    # 标签筛选：OR 模式（包含任意一个标签即可）
+    if resolved_tags_any:
+        or_conditions = [Monster.tags.any(Tag.name == t) for t in resolved_tags_any]
+        base_q = base_q.filter(or_(*or_conditions))
+
+    # 旧单标签兼容
+    if tag and not (resolved_tags_all or resolved_tags_any):
         base_q = base_q.filter(Monster.tags.any(Tag.name == tag))
 
     # 获取途径（包含匹配）
@@ -192,7 +236,6 @@ def warehouse_list(
                   .filter(Monster.id.in_(id_list))
                   .options(
                       selectinload(Monster.tags),
-                      selectinload(Monster.derived),
                       selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
                   )
                   .all()
@@ -241,7 +284,6 @@ def warehouse_list(
             .where(Monster.id.in_(ids))
             .options(
                 selectinload(Monster.tags),
-                selectinload(Monster.derived),
                 selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
             )
         ).scalars().all()

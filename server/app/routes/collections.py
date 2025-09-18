@@ -316,7 +316,6 @@ def api_list_collection_members(
         # 分页 + 预加载
         stmt = base.limit(page_size).offset((page - 1) * page_size).options(
             selectinload(Monster.tags),
-            selectinload(Monster.derived),
             selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
         )
         items = db.execute(stmt).scalars().all()
@@ -329,7 +328,6 @@ def api_list_collection_members(
             .where(Monster.id.in_(ids))
             .options(
                 selectinload(Monster.tags),
-                selectinload(Monster.derived),
                 selectinload(Monster.monster_skills).selectinload(MonsterSkill.skill),
             )
         ).scalars().all()
