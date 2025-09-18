@@ -219,32 +219,35 @@ _init_static_exports()
 # 文本工具
 # ======================
 
-def _skills_iter(monster: Monster):
+def _skills_iter(monster: Monster, selected_only: bool = True):
     if getattr(monster, "skills", None):
         for s in monster.skills:
             yield getattr(s, "id", None), getattr(s, "name", None), getattr(s, "description", None)
         return
     if getattr(monster, "monster_skills", None):
         for ms in monster.monster_skills:
+            # 如果启用了只使用推荐技能，且该技能未被选择为推荐，则跳过
+            if selected_only and not getattr(ms, "selected", False):
+                continue
             s = getattr(ms, "skill", None)
             if s is None:
-                yield None, None, getattr(ms, "description", None)
+                yield None, None, None
             else:
-                desc = getattr(ms, "description", None) or getattr(s, "description", None)
+                desc = getattr(s, "description", None)
                 yield getattr(s, "id", None), getattr(s, "name", None), desc
 
-def _skill_texts(monster: Monster) -> List[Tuple[Optional[int], str, str]]:
+def _skill_texts(monster: Monster, selected_only: bool = True) -> List[Tuple[Optional[int], str, str]]:
     out = []
-    for sid, name, desc in _skills_iter(monster):
+    for sid, name, desc in _skills_iter(monster, selected_only):
         name = str(name) if name else ""
         desc = str(desc) if desc else ""
         if (name or desc):
             out.append((sid, name, (name + " " + desc).strip()))
     return out
 
-def _text_of_skills(monster: Monster) -> str:
+def _text_of_skills(monster: Monster, selected_only: bool = True) -> str:
     parts: List[str] = []
-    for _, n, d in _skill_texts(monster):
+    for _, n, d in _skill_texts(monster, selected_only):
         if n: parts.append(n)
         if d: parts.append(d)
     return " ".join(parts).strip()
@@ -292,8 +295,8 @@ def _pp_drain_strict(text: str) -> bool:
 # 正则标签建议
 # ======================
 
-def suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
-    text = _text_of_skills(monster)
+def suggest_tags_grouped(monster: Monster, selected_only: bool = True) -> Dict[str, List[str]]:
+    text = _text_of_skills(monster, selected_only)
     patt = get_patterns_from_catalog(compiled=True)
     out: Dict[str, List[str]] = {"buff": [], "debuff": [], "special": []}
     for cat in ("buff", "debuff", "special"):
@@ -313,8 +316,8 @@ def suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
     out["special"] = sorted(set(out["special"]))
     return out
 
-def suggest_tags_for_monster(monster: Monster) -> List[str]:
-    g = suggest_tags_grouped(monster)
+def suggest_tags_for_monster(monster: Monster, selected_only: bool = True) -> List[str]:
+    g = suggest_tags_grouped(monster, selected_only)
     flat: List[str] = []
     for cat in ("buff", "debuff", "special"):
         flat.extend(g.get(cat, []))
@@ -328,9 +331,9 @@ def suggest_tags_for_monster(monster: Monster) -> List[str]:
 # v2 信号（派生依赖）
 # ======================
 
-def extract_signals(monster: Monster) -> Dict[str, object]:
-    text = _text_of_skills(monster)
-    g = suggest_tags_grouped(monster)
+def extract_signals(monster: Monster, selected_only: bool = True) -> Dict[str, object]:
+    text = _text_of_skills(monster, selected_only)
+    g = suggest_tags_grouped(monster, selected_only)
     deb = set(g["debuff"]); buf = set(g["buff"]); util = set(g["special"])
 
     patt_text = get_patterns_from_catalog(compiled=False)
@@ -511,8 +514,8 @@ def ai_classify_text(text: str) -> Dict[str, List[str]]:
         return {"buff": [], "debuff": [], "special": []}
     return _ai_classify_cached(txt)
 
-def ai_suggest_tags_grouped(monster: Monster) -> Dict[str, List[str]]:
-    return ai_classify_text(_text_of_skills(monster))
+def ai_suggest_tags_grouped(monster: Monster, selected_only: bool = True) -> Dict[str, List[str]]:
+    return ai_classify_text(_text_of_skills(monster, selected_only))
 
 # ======================
 # 修复/并集策略（可选）
@@ -548,10 +551,10 @@ def _repair_union(text: str, re_flat: List[str], ai_flat: List[str]) -> Tuple[Li
             seen.add(c); res.append(c)
     return res, verified
 
-def ai_suggest_tags_for_monster(monster: Monster) -> List[str]:
-    text = _text_of_skills(monster)
+def ai_suggest_tags_for_monster(monster: Monster, selected_only: bool = True) -> List[str]:
+    text = _text_of_skills(monster, selected_only)
     ai_g = ai_classify_text(text)
-    re_g = suggest_tags_grouped(monster)
+    re_g = suggest_tags_grouped(monster, selected_only)
 
     # 拍平
     ai_flat = sorted(set(sum([ai_g.get(k, []) for k in ("buff","debuff","special")], [])))
@@ -698,7 +701,8 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
                         if not m:
                             _registry.update(_job_id, failed_inc=1, error={"id": mid, "error": "monster not found"})
                             continue
-                        tags = ai_suggest_tags_for_monster(m)
+                        from ..config import settings
+                        tags = ai_suggest_tags_for_monster(m, selected_only=settings.tag_use_selected_only)
                         m.tags = upsert_tags(session, tags)
                         session.commit()
                         _registry.update(_job_id, done_inc=1)

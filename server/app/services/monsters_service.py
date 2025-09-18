@@ -128,7 +128,6 @@ def list_monsters(
     # 获取途径 / 是否当前可获取
     acq_type: Optional[str] = None,      # Monster.type（包含匹配）
     type_: Optional[str] = None,         # 路由层 alias 透传
-    new_type: Optional[bool] = None,     # Monster.new_type
     # 修复筛选（技能名非空的技能数为 0 或 >5）
     need_fix: Optional[bool] = None,
     # ✅ 新增：收藏分组过滤（保持与路由一致，避免回退）
@@ -163,18 +162,22 @@ def list_monsters(
     # ---------- 计数 ----------
     base_stmt = select(Monster.id)
 
-    # 文本/基础条件
+    # 文本/基础条件 - 搜索name和all_forms字段
     if q:
         like = f"%{q}%"
-        base_stmt = base_stmt.where(Monster.name.ilike(like))
+        # 搜索name字段或all_forms JSON数组中的任何形态名称
+        base_stmt = base_stmt.where(
+            or_(
+                Monster.name.ilike(like),
+                func.json_extract(Monster.all_forms, '$').op('LIKE')(like)
+            )
+        )
     if element:
         base_stmt = base_stmt.where(Monster.element == element)
     if role:
         base_stmt = base_stmt.where(Monster.role == role)
     if acq:
         base_stmt = base_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
-    if isinstance(new_type, bool):
-        base_stmt = base_stmt.where(Monster.new_type == new_type)
 
     # 标签条件
     if use_multi and multi_subq is not None:
@@ -217,15 +220,19 @@ def list_monsters(
 
     if q:
         like = f"%{q}%"
-        rows_stmt = rows_stmt.where(Monster.name.ilike(like))
+        # 搜索name字段或all_forms JSON数组中的任何形态名称
+        rows_stmt = rows_stmt.where(
+            or_(
+                Monster.name.ilike(like),
+                func.json_extract(Monster.all_forms, '$').op('LIKE')(like)
+            )
+        )
     if element:
         rows_stmt = rows_stmt.where(Monster.element == element)
     if role:
         rows_stmt = rows_stmt.where(Monster.role == role)
     if acq:
         rows_stmt = rows_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
-    if isinstance(new_type, bool):
-        rows_stmt = rows_stmt.where(Monster.new_type == new_type)
 
     if use_multi and multi_subq is not None:
         rows_stmt = rows_stmt.where(Monster.id.in_(select(multi_subq.c.id)))
@@ -334,7 +341,8 @@ def auto_match_monsters(
             details.append({"id": mid, "ok": False, "error": "monster not found"})
             continue
         try:
-            tags = suggest_tags_for_monster(m)
+            from ..config import settings
+            tags = suggest_tags_for_monster(m, selected_only=settings.tag_use_selected_only)
             set_tags_and_rederive(db, m, tags, commit=False)
             success += 1
             details.append({"id": mid, "ok": True, "tags": tags})

@@ -110,34 +110,35 @@ def _norm_power(power: Optional[int | str]) -> Optional[int]:
     return int(m.group()) if m else None
 
 
-# ============== 核心：按 (name, element, kind, power) 唯一 upsert ==============
+# ============== 核心：按 (name, element, kind, power, pp) 唯一 upsert ==============
 
 def upsert_skills(
     db: Session,
-    items: List[Tuple[str, Optional[str], Optional[str], Optional[int], Optional[str]]],
+    items: List[Tuple[str, Optional[str], Optional[str], Optional[int], Optional[int], Optional[str]]],
 ) -> List[Skill]:
     """
-    批量 upsert 技能，唯一键为 (name, element, kind, power)。
+    批量 upsert 技能，唯一键为 (name, element, kind, power, pp)。
 
     参数
     ----
-    items : List[Tuple[name, element, kind, power, description]]
+    items : List[Tuple[name, element, kind, power, pp, description]]
         - name: 技能名（必填）
         - element: 技能属性（可空）
         - kind: 技能类型：物理/法术/特殊（可空）
         - power: 技能威力（可空）
+        - pp: 技能PP值（可空）
         - description: 技能描述（可空）
 
     策略
     ----
     - 过滤无效技能名（纯数字/标点等）。
-    - 查询条件：Skill.name == name AND Skill.element == element AND Skill.kind == kind AND Skill.power == power
-    - 不存在则创建；存在则仅在“新描述更像描述或更长”时覆盖旧描述。
+    - 查询条件：Skill.name == name AND Skill.element == element AND Skill.kind == kind AND Skill.power == power AND Skill.pp == pp
+    - 不存在则创建；存在则仅在"新描述更像描述或更长"时覆盖旧描述。
     - 返回所有成功入库（新建或找到）的 Skill 实体，供上层关系绑定。
     """
     results: List[Skill] = []
 
-    for name, element, kind, power, desc in items:
+    for name, element, kind, power, pp, desc in items:
         name = _clean(name)
         if not _is_valid_skill_name(name):
             continue
@@ -145,6 +146,7 @@ def upsert_skills(
         element = _norm_element(element)
         kind = _norm_kind(kind)
         power = _norm_power(power)
+        pp = _norm_power(pp)  # 复用相同的处理逻辑
         desc = _clean(desc)
 
         # 查找唯一键命中
@@ -153,22 +155,24 @@ def upsert_skills(
             Skill.element == element,
             Skill.kind == kind,
             Skill.power == power,
+            Skill.pp == pp,
         )
         skill = db.execute(stmt).scalar_one_or_none()
 
         if not skill:
-            # 新建：仅在描述“像描述”时保存，否则给空串
+            # 新建：仅在描述"像描述"时保存，否则给空串
             skill = Skill(
                 name=name,
                 element=element,
                 kind=kind,
                 power=power,
+                pp=pp,
                 description=desc if _is_meaningful_desc(desc) else "",
             )
             db.add(skill)
             db.flush()  # 拿到 id
         else:
-            # 更新策略：新描述更“像描述”，或（两者都像描述但新更长）才覆盖
+            # 更新策略：新描述更"像描述"，或（两者都像描述但新更长）才覆盖
             if _is_meaningful_desc(desc):
                 old = _clean(skill.description)
                 if (not _is_meaningful_desc(old)) or (len(desc) > len(old)):

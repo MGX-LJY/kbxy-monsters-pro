@@ -1,13 +1,31 @@
 # server/app/models.py
 from datetime import datetime
+import json
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Table, ForeignKey, JSON, Text,
-    UniqueConstraint, Boolean, Index
+    Column, Integer, String, Float, DateTime, Table, ForeignKey, Text,
+    UniqueConstraint, Boolean, Index, TypeDecorator
 )
+from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.ext.associationproxy import association_proxy
 
 from .db import Base
+
+
+class UTF8JSON(TypeDecorator):
+    """自定义JSON类型，确保中文字符正确存储"""
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            return json.loads(value)
+        return value
 
 # 多对多：怪物 <-> 标签
 monster_tag = Table(
@@ -28,11 +46,9 @@ class Monster(Base):
 
     # 基础属性
     element: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
-    role: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)
 
     # 新增获取/持有相关
     possess: Mapped[bool] = mapped_column(Boolean, default=False)         # 是否已拥有（本地勾选）
-    new_type: Mapped[bool | None] = mapped_column(Boolean, nullable=True) # 当前是否可获取（爬虫/人工判断）
     type: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)  # 获取渠道分类
     method: Mapped[str | None] = mapped_column(Text, nullable=True)       # 获取方式具体描述
 
@@ -44,8 +60,8 @@ class Monster(Base):
     magic: Mapped[float] = mapped_column(Float, default=0.0)
     resist: Mapped[float] = mapped_column(Float, default=0.0)
 
-    # 说明/附加信息
-    explain_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 所有形态名称列表（JSON格式）
+    all_forms: Mapped[list] = mapped_column(UTF8JSON, default=list)
 
     # 时间
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -103,6 +119,7 @@ class Skill(Base):
     element: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     kind: Mapped[str | None] = mapped_column(String(20), index=True, nullable=True)  # 物理/法术/特殊
     power: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)
+    pp: Mapped[int | None] = mapped_column(Integer, index=True, nullable=True)  # PP值
 
     # 描述
     description: Mapped[str] = mapped_column(Text, default="")
@@ -119,19 +136,19 @@ class Skill(Base):
     monsters = association_proxy("monster_skills", "monster")
 
     __table_args__ = (
-        UniqueConstraint("name", "element", "kind", "power", name="uq_skill_name_elem_kind_power"),
+        UniqueConstraint("name", "element", "kind", "power", "pp", name="uq_skill_name_elem_kind_power_pp"),
         Index("ix_skill_name_like", "name"),
     )
 
     def __repr__(self) -> str:
-        ekp = f"{self.element}/{self.kind}/{self.power}"
+        ekp = f"{self.element}/{self.kind}/{self.power}/{self.pp}"
         return f"<Skill id={self.id} name={self.name!r} {ekp}>"
 
 
 class MonsterSkill(Base):
     """
     关联对象：怪物-技能 多对多
-    - 记录是否精选（selected）与可选等级（level）以及关系级描述（可选）
+    - 记录是否精选（selected）
     """
     __tablename__ = "monster_skills"
 
@@ -141,8 +158,6 @@ class MonsterSkill(Base):
 
     # 关系级字段
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
-    level: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -200,7 +215,7 @@ class CollectionItem(Base):
         Integer, ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True, index=True
     )
     monster_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("monsters.id", ondelete="CASCADE"), primary_key=True, index=True
+        Integer, ForeignKey("monsters.id", ondelete="CASCADE"), primary_key=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -215,32 +230,6 @@ class CollectionItem(Base):
         return f"<CollectionItem collection_id={self.collection_id} monster_id={self.monster_id}>"
 
 
-# —— 任务/导入作业：保持不变 —— #
-
-class ImportJob(Base):
-    __tablename__ = "import_jobs"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    key: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="done")  # done/processing/failed
-    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-    def __repr__(self) -> str:
-        return f"<ImportJob id={self.id} key={self.key!r} status={self.status!r}>"
-
-
-class Task(Base):
-    __tablename__ = "tasks"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # uuid
-    type: Mapped[str] = mapped_column(String(50))
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending/running/done/failed
-    progress: Mapped[int] = mapped_column(Integer, default=0)
-    total: Mapped[int] = mapped_column(Integer, default=0)
-    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
-    def __repr__(self) -> str:
-        return f"<Task id={self.id} type={self.type!r} status={self.status!r}>"
 
 
 # ===================== 惰性建表工具 =====================

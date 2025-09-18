@@ -54,7 +54,6 @@ def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
         log.warning(f"Failed to download image {url}: {e}")
         return False
 
-
 def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
     """使用waifu2x进行图片超分"""
     try:
@@ -75,7 +74,6 @@ def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
     except subprocess.CalledProcessError as e:
         log.warning(f"waifu2x failed: {e}")
         return False
-
 
 def upscale_image(image_path: Path, scale: int = 2) -> bool:
     """对图片进行超分处理"""
@@ -107,7 +105,6 @@ def upscale_image(image_path: Path, scale: int = 2) -> bool:
             log.warning(f"Failed to upscale with PIL: {e}")
             return False
 
-
 def sanitize_filename(name: str) -> str:
     """清理文件名，移除非法字符"""
     # 移除或替换非法字符
@@ -118,17 +115,15 @@ def sanitize_filename(name: str) -> str:
     name = name.strip('.')
     return name
 
-
 # ---------- 数据模型 ----------
 @dataclass
 class SkillRow:
     name: str
-    level: Optional[int]
     element: str
     kind: str  # 物理 / 法术 / 特殊
     power: Optional[int]
+    pp: Optional[int]  # PP值
     description: str
-
 
 @dataclass
 class MonsterRow:
@@ -144,8 +139,9 @@ class MonsterRow:
     img_url: Optional[str] = None
     # 获取渠道
     type: Optional[str] = None
-    new_type: Optional[bool] = None
     method: Optional[str] = None
+    # 所有形态名称列表
+    all_forms: List[str] = field(default_factory=list)
     # 其它
     series_names: List[SkillRow] = field(default_factory=list)
     skills: List[SkillRow] = field(default_factory=list)
@@ -737,16 +733,17 @@ class Kabu4399Crawler:
             if len(tds) < 5:
                 continue
             vals = [_clean(td.text) for td in tds]
-            vals += [""] * (7 - len(vals))
+            vals += [""] * (8 - len(vals))
             name = vals[0]
             if not name or name == "无":
                 continue
-            level = _to_int(vals[1])
+            # Skip level (vals[1])
             element = vals[2]
             kind = vals[3]
             power = _to_int(vals[4])
+            pp = _to_int(vals[5]) if len(vals) > 5 else None
             desc = vals[6] if len(vals) > 6 else ""
-            skills.append(SkillRow(name, level, element, kind, power, desc))
+            skills.append(SkillRow(name, element, kind, power, pp, desc))
         return skills
 
     # ---- 纯 BeautifulSoup 解析（稳）----
@@ -864,16 +861,17 @@ class Kabu4399Crawler:
             if len(tds) < 4:
                 continue
             vals = [_clean(td.get_text(separator=" ", strip=True)) for td in tds]
-            vals += [""] * (7 - len(vals))
+            vals += [""] * (8 - len(vals))
             name = vals[0]
             if not name or name == "无":
                 continue
-            level = _to_int(vals[1])
+            # Skip level (vals[1])
             element = vals[2]
             kind = vals[3]
             power = _to_int(vals[4])
+            pp = _to_int(vals[5]) if len(vals) > 5 else None
             desc = vals[6] if len(vals) > 6 else ""
-            out.append(SkillRow(name, level, element, kind, power, desc))
+            out.append(SkillRow(name, element, kind, power, pp, desc))
         return out
 
     def _bs4_parse_recommended_names(self, soup: BeautifulSoup) -> List[str]:
@@ -926,7 +924,7 @@ class Kabu4399Crawler:
             if s:
                 out.append(s)
             else:
-                out.append(SkillRow(name=rec, level=None, element="", kind="", power=None, description=""))
+                out.append(SkillRow(name=rec, element="", kind="", power=None, pp=None, description=""))
         return out
 
     @staticmethod
@@ -957,10 +955,10 @@ class Kabu4399Crawler:
     def skill_to_public(s: SkillRow) -> Dict[str, object]:
         return {
             "name": (s.name or "").strip(),
-            "level": s.level,
             "element": normalize_skill_element(s.element),
             "kind": normalize_skill_kind(s.kind),
             "power": s.power,
+            "pp": s.pp,
             "description": (s.description or "").strip(),
         }
 
@@ -976,7 +974,6 @@ class Kabu4399Crawler:
             "magic": m.magic,
             "resist": m.resist,
             "type": m.type,
-            "new_type": m.new_type,
             "method": m.method,
             "selected_skills": [Kabu4399Crawler.skill_to_public(s) for s in (m.selected_skills or [])],
         }
@@ -1041,6 +1038,16 @@ class Kabu4399Crawler:
     # ---- 页面抓取（不触库）----
     def fetch_detail(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> \
             Optional[MonsterRow]:
+        """获取详情页的最高形态妖怪（向后兼容）"""
+        all_forms = self.fetch_all_forms(url, list_img_url, list_monster_name)
+        if not all_forms:
+            return None
+        # 返回种族值最高的形态
+        return max(all_forms, key=self._six_sum)
+
+    def fetch_all_forms(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> \
+            List[MonsterRow]:
+        """获取详情页的所有妖怪形态"""
         # 预热
         self._warm_up()
 
@@ -1061,21 +1068,21 @@ class Kabu4399Crawler:
                     timeout=self.timeout,
                 )
                 if not r.ok or not r.content:
-                    return None
+                    return []
                 dammit = UnicodeDammit(r.content)
                 html_text = dammit.unicode_markup
                 if not html_text:
-                    return None
+                    return []
                 self.sp.html = html_text
                 soup = BeautifulSoup(html_text, "lxml")
             except Exception as e:
                 log.warning("requests fallback failed %s -> %s", url, e)
-                return None
+                return []
 
         # 解析
         monsters = self._bs4_parse_stats_table(soup, url)
         if not monsters:
-            return None
+            return []
 
         skills = self._bs4_parse_skills_table(soup)
         rec_names = self._bs4_parse_recommended_names(soup)
@@ -1084,40 +1091,61 @@ class Kabu4399Crawler:
         if not selected:
             selected = self._all_skills_as_selected(skills, apply_filter=True)
 
-        best = max(monsters, key=self._six_sum)
         elem = self._infer_element(url, skills, soup)
-        best.element = elem
 
         # 获取渠道
         acq_type, acq_now, acq_method = self._parse_acquisition_info(soup)
-        best.type = acq_type
-        best.new_type = acq_now
-        best.method = acq_method
 
-        best.skills = skills
-        best.recommended_names = rec_names
-        best.selected_skills = selected
+        # 处理图片下载和超分（只处理一次，使用最高形态的名称）
+        shared_img_path = None
+        if monsters:
+            best_monster = max(monsters, key=self._six_sum)
+            monster_name = list_monster_name or best_monster.name
+            img_url_to_use = list_img_url or best_monster.img_url
 
-        # 处理图片下载和超分
-        monster_name = list_monster_name or best.name
-        img_url_to_use = list_img_url or best.img_url
+            if monster_name and img_url_to_use:
+                try:
+                    shared_img_path = self._process_monster_image(monster_name, img_url_to_use, enable_upscale=True)
+                    if shared_img_path:
+                        log.info(f"Successfully processed image for {monster_name}: {shared_img_path}")
+                    else:
+                        log.warning(f"Failed to process image for {monster_name}")
+                except Exception as e:
+                    log.error(f"Error in image processing for {monster_name}: {e}")
 
-        if monster_name and img_url_to_use:
-            try:
-                local_img_path = self._process_monster_image(monster_name, img_url_to_use, enable_upscale=True)
-                if local_img_path:
-                    # 更新img_url为本地路径
-                    best.img_url = local_img_path
-                    log.info(f"Successfully processed image for {monster_name}: {local_img_path}")
-                else:
-                    log.warning(f"Failed to process image for {monster_name}")
-            except Exception as e:
-                log.error(f"Error in image processing for {monster_name}: {e}")
+        # 为所有形态设置共同属性
+        for monster in monsters:
+            monster.element = elem
+            monster.type = acq_type
+            monster.method = acq_method
+            monster.skills = skills
+            monster.recommended_names = rec_names
+            monster.selected_skills = selected
+            # 所有形态共享同一个图片路径
+            if shared_img_path:
+                monster.img_url = shared_img_path
 
-        return best
+        return monsters
+
+    def fetch_best_with_all_forms(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> \
+            Optional[MonsterRow]:
+        """获取最高形态妖怪，但包含所有形态名称"""
+        all_forms = self.fetch_all_forms(url, list_img_url, list_monster_name)
+        if not all_forms:
+            return None
+        
+        # 选择种族值最高的形态作为主记录
+        best_monster = max(all_forms, key=self._six_sum)
+        
+        # 将所有形态名称存储在all_forms字段中
+        all_form_names = [monster.name for monster in all_forms]
+        best_monster.all_forms = all_form_names
+        
+        return best_monster
 
     # ---- 顶层遍历 ----
     def crawl_all(self, *, persist: Optional[callable] = None) -> Generator[MonsterRow, None, None]:
+        """爬取所有妖怪（只返回最高形态）"""
         for detail_url, img_url, monster_name in self.iter_detail_urls():
             m = self.fetch_detail(detail_url, list_img_url=img_url, list_monster_name=monster_name)
             if not m:
@@ -1130,14 +1158,43 @@ class Kabu4399Crawler:
             yield m
             time.sleep(random.uniform(*self.throttle_range))
 
+    def crawl_all_forms(self, *, persist: Optional[callable] = None) -> Generator[MonsterRow, None, None]:
+        """爬取所有妖怪的所有形态"""
+        for detail_url, img_url, monster_name in self.iter_detail_urls():
+            monsters = self.fetch_all_forms(detail_url, list_img_url=img_url, list_monster_name=monster_name)
+            if not monsters:
+                continue
+            for m in monsters:
+                if persist:
+                    try:
+                        persist(m)
+                    except Exception as e:
+                        log.exception("persist error: %s", e)
+                yield m
+            time.sleep(random.uniform(*self.throttle_range))
+
+    def crawl_best_with_all_forms(self, *, persist: Optional[callable] = None) -> Generator[MonsterRow, None, None]:
+        """爬取所有妖怪（只返回最高形态，但包含所有形态名称）"""
+        for detail_url, img_url, monster_name in self.iter_detail_urls():
+            best_monster = self.fetch_best_with_all_forms(detail_url, list_img_url=img_url, list_monster_name=monster_name)
+            if not best_monster:
+                continue
+            if persist:
+                try:
+                    persist(best_monster)
+                except Exception as e:
+                    log.exception("persist error: %s", e)
+            yield best_monster
+            time.sleep(random.uniform(*self.throttle_range))
+
 
 # ---------- 示例 ----------
 def example_persist(mon: MonsterRow) -> None:
     log.info(
-        "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s new=%s img=%s",
+        "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s img=%s",
         mon.name, mon.element or "-", mon.hp, mon.attack, mon.speed,
         len(mon.recommended_names), len(mon.selected_skills), len(mon.skills),
-                  mon.type or "-", str(mon.new_type),
+                  mon.type or "-",
         "✓" if mon.img_url and Path(mon.img_url).exists() else "✗"
     )
 

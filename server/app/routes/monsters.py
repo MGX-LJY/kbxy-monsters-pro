@@ -40,13 +40,24 @@ class BulkDeleteIn(BaseModel):
     ids: List[int]
 
 
+class SkillSelectionIn(BaseModel):
+    skill_id: int
+    selected: bool
+
+
+class BulkSkillSelectionIn(BaseModel):
+    selections: List[SkillSelectionIn]
+
+
 class SkillOut(BaseModel):
     id: int
     name: str
     element: Optional[str] = None
     kind: Optional[str] = None
     power: Optional[int] = None
+    pp: Optional[int] = None
     description: Optional[str] = None
+    selected: Optional[bool] = None
 
 
 class SkillIn(BaseModel):
@@ -54,6 +65,7 @@ class SkillIn(BaseModel):
     element: Optional[str] = None
     kind: Optional[str] = None
     power: Optional[int] = None
+    pp: Optional[int] = None
     description: Optional[str] = None
     selected: Optional[bool] = None  # 若模型含此列，则写入；否则忽略
 
@@ -63,7 +75,6 @@ class SkillIn(BaseModel):
 def list_api(
     q: Optional[str] = None,
     element: Optional[str] = None,
-    role: Optional[str] = None,
     # 旧：单标签
     tag: Optional[str] = None,
     # 新：多标签筛选（向后兼容）
@@ -83,7 +94,6 @@ def list_api(
     acq_type: Optional[str] = Query(None, description="获取途径（包含匹配）")
     ,
     type_: Optional[str] = Query(None, alias="type", description="获取途径别名（与 acq_type 等价）"),
-    new_type: Optional[bool] = Query(None, description="是否当前可获取"),
     # ✅ 新增：按收藏分组筛选
     collection_id: Optional[int] = Query(None, description="收藏分组 ID"),
     sort: Optional[str] = "updated_at",
@@ -102,7 +112,6 @@ def list_api(
 
     其他：
     - 获取途径 acq_type 或 type（等价，包含匹配）
-    - new_type=true/false 过滤“当前可获取”
     - collection_id 过滤收藏分组（JOIN CollectionItem）
     - need_fix=true 时筛“技能名非空”的技能数为 0 或 >5
     """
@@ -136,7 +145,6 @@ def list_api(
         db=db,
         q=q,
         element=element,
-        role=role,
         sort=sort,
         order=order,
         page=page,
@@ -150,8 +158,6 @@ def list_api(
         base_kwargs["tag"] = tag
     if acq is not None:
         base_kwargs["acq_type"] = acq  # service 侧使用 acq_type/type_ 任一
-    if new_type is not None:
-        base_kwargs["new_type"] = new_type
     if need_fix is not None:
         base_kwargs["need_fix"] = need_fix
     if collection_id is not None:
@@ -161,7 +167,7 @@ def list_api(
     try:
         items, total = list_monsters(**base_kwargs)  # 若服务层支持 collection_id，会直接生效
     except TypeError:
-        # 服务层较旧：本地实现（含获取途径 / new_type / need_fix / collection_id）
+        # 服务层较旧：本地实现（含获取途径 / need_fix / collection_id）
         query = db.query(Monster)
 
         # 按收藏分组过滤（JOIN + DISTINCT 防重复）
@@ -178,12 +184,8 @@ def list_api(
             query = query.filter(Monster.name.ilike(like))
         if element:
             query = query.filter(Monster.element == element)
-        if role:
-            query = query.filter(Monster.role == role)
         if acq:
             query = query.filter(Monster.type.ilike(f"%{acq}%"))
-        if isinstance(new_type, bool):
-            query = query.filter(Monster.new_type == new_type)
 
         # 标签筛选（与服务层保持语义一致）
         if resolved_tags_all:
@@ -248,14 +250,12 @@ def list_api(
                 id=m.id,
                 name=m.name,
                 element=m.element,
-                role=m.role,
                 hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
                 possess=getattr(m, "possess", None),
-                new_type=getattr(m, "new_type", None),
                 type=getattr(m, "type", None),
                 method=getattr(m, "method", None),
                 tags=[t.name for t in (m.tags or [])],
-                explain_json=m.explain_json or {},
+                explain_json=getattr(m, "explain_json", {}),
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
             )
@@ -278,7 +278,7 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="not found")
 
     return MonsterOut(
-        id=m.id, name=m.name, element=m.element, role=m.role,
+        id=m.id, name=m.name, element=m.element,
         hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
         possess=getattr(m, "possess", None),
         new_type=getattr(m, "new_type", None),
@@ -307,15 +307,17 @@ def monster_skills(monster_id: int, db: Session = Depends(get_db)):
         s = ms.skill
         if not s:
             continue
-        # 关联上的描述优先；否则回退到全局技能描述
-        desc = (getattr(ms, "description", None) or s.description or None)
+        # 使用全局技能描述
+        desc = (s.description or None)
         out.append(SkillOut(
             id=s.id,
             name=s.name,
             element=getattr(s, "element", None),
             kind=getattr(s, "kind", None),
             power=getattr(s, "power", None),
-            description=desc
+            pp=getattr(s, "pp", None),
+            description=desc,
+            selected=getattr(ms, "selected", None)
         ))
     return out
 
@@ -328,21 +330,21 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
         raise HTTPException(status_code=404, detail="not found")
 
     items = [
-        (it.name, it.element or None, it.kind or None, it.power if it.power is not None else None, it.description or "")
+        (it.name, it.element or None, it.kind or None, it.power if it.power is not None else None, it.pp if it.pp is not None else None, it.description or "")
         for it in (payload or [])
     ]
     skills = upsert_skills(db, items)  # Skill 列表
     db.flush()
 
-    # 建立 (name,element,kind,power) -> payload 行 的映射，便于拿 selected/描述
-    def key_of(n: str, e: Optional[str], k: Optional[str], p: Optional[int]):
-        return (n or "", e or None, k or None, p if p is not None else None)
+    # 建立 (name,element,kind,power,pp) -> payload 行 的映射，便于拿 selected/描述
+    def key_of(n: str, e: Optional[str], k: Optional[str], p: Optional[int], pp: Optional[int]):
+        return (n or "", e or None, k or None, p if p is not None else None, pp if pp is not None else None)
 
-    in_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int]], SkillIn] = {
-        key_of(it.name, it.element, it.kind, it.power): it for it in (payload or [])
+    in_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int], Optional[int]], SkillIn] = {
+        key_of(it.name, it.element, it.kind, it.power, it.pp): it for it in (payload or [])
     }
-    sk_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int]], int] = {
-        key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None)): sk.id
+    sk_map: Dict[Tuple[str, Optional[str], Optional[str], Optional[int], Optional[int]], int] = {
+        key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None), getattr(sk, "pp", None)): sk.id
         for sk in skills
     }
 
@@ -368,10 +370,6 @@ def put_monster_skills(monster_id: int, payload: List[SkillIn], db: Session = De
         if s_in:
             if hasattr(ms, "selected") and (s_in.selected is not None):
                 ms.selected = bool(s_in.selected)
-            if hasattr(ms, "description"):
-                # 若传了描述则覆盖到关联描述（更贴合“该怪物的该技能”）
-                if (s_in.description or "").strip():
-                    ms.description = (s_in.description or "").strip()
 
     # explain_json 快照
     ex = m.explain_json or {}
@@ -447,11 +445,9 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
     m = Monster(
         name=payload.name,
         element=payload.element,
-        role=payload.role,
         hp=payload.hp, speed=payload.speed, attack=payload.attack,
         defense=payload.defense, magic=payload.magic, resist=payload.resist,
         possess=getattr(payload, "possess", None),
-        new_type=getattr(payload, "new_type", None),
         type=getattr(payload, "type", None),
         method=getattr(payload, "method", None),
         explain_json=getattr(payload, "explain_json", None),
@@ -462,24 +458,22 @@ def create(payload: MonsterIn, db: Session = Depends(get_db)):
     # skills（可选，走唯一键 upsert + 写 MonsterSkill）
     if getattr(payload, "skills", None):
         items = [
-            (s.name, s.element or None, s.kind or None, s.power if s.power is not None else None, s.description or "")
+            (s.name, s.element or None, s.kind or None, s.power if s.power is not None else None, s.pp if s.pp is not None else None, s.description or "")
             for s in payload.skills
         ]
         skills = upsert_skills(db, items)
         db.flush()
 
         # 建立 key -> (skill, payload) 映射
-        def key_of(n, e, k, p): return (n or "", e or None, k or None, p if p is not None else None)
-        in_map = {key_of(s.name, s.element, s.kind, s.power): s for s in payload.skills}
+        def key_of(n, e, k, p, pp): return (n or "", e or None, k or None, p if p is not None else None, pp if pp is not None else None)
+        in_map = {key_of(s.name, s.element, s.kind, s.power, s.pp): s for s in payload.skills}
         for sk in skills:
-            key = key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None))
+            key = key_of(getattr(sk, "name", ""), getattr(sk, "element", None), getattr(sk, "kind", None), getattr(sk, "power", None), getattr(sk, "pp", None))
             s_in = in_map.get(key)
             ms = MonsterSkill(monster_id=m.id, skill_id=sk.id)
             # 关联级字段
             if s_in and hasattr(ms, "selected") and (s_in.selected is not None):
                 ms.selected = bool(s_in.selected)
-            if s_in and hasattr(ms, "description") and (s_in.description or "").strip():
-                ms.description = s_in.description.strip()
             db.add(ms)
 
         # explain 快照
@@ -499,8 +493,8 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="not found")
 
     # 写基础字段
-    for k in ["name", "element", "role", "hp", "speed", "attack", "defense", "magic", "resist",
-              "possess", "new_type", "type", "method"]:
+    for k in ["name", "element", "hp", "speed", "attack", "defense", "magic", "resist",
+              "possess", "type", "method"]:
         if hasattr(payload, k):
             setattr(m, k, getattr(payload, k))
 
@@ -546,8 +540,6 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
             if s_in:
                 if hasattr(ms, "selected") and (s_in.selected is not None):
                     ms.selected = bool(s_in.selected)
-                if hasattr(ms, "description") and (s_in.description or "").strip():
-                    ms.description = s_in.description.strip()
 
         # explain 快照
         ex = m.explain_json or {}
@@ -609,3 +601,27 @@ def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db)):
 @router.post("/monsters/bulk_delete")
 def bulk_delete_post(payload: BulkDeleteIn, db: Session = Depends(get_db)):
     return bulk_delete(payload, db)
+
+
+# ---------- 批量更新技能推荐状态 ----------
+@router.put("/monsters/{monster_id}/skills/selections")
+def update_skill_selections(monster_id: int, payload: BulkSkillSelectionIn, db: Session = Depends(get_db)):
+    """
+    批量更新怪物技能的推荐状态（selected字段）
+    """
+    m = db.get(Monster, monster_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="Monster not found")
+
+    # 获取现有的技能关联
+    existing_ms = {ms.skill_id: ms for ms in (m.monster_skills or [])}
+    
+    updated_count = 0
+    for selection in payload.selections:
+        ms = existing_ms.get(selection.skill_id)
+        if ms:
+            ms.selected = selection.selected
+            updated_count += 1
+    
+    db.commit()
+    return {"ok": True, "monster_id": monster_id, "updated_count": updated_count}

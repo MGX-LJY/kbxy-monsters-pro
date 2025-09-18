@@ -49,14 +49,12 @@ For Claude Desktop, add this to your `~/Library/Application Support/Claude/claud
 Current tables in `kbxy-dev.db`:
 - `collection_items`
 - `collections`
-- `import_jobs`
 - `monster_derived`
 - `monster_skills`
 - `monster_tag`
 - `monsters`
 - `skills`
 - `tags`
-- `tasks`
 
 ## Available MCP Operations
 

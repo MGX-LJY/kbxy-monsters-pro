@@ -342,7 +342,6 @@ def api_list_collection_members(
                 role=m.role,
                 hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
                 possess=getattr(m, "possess", None),
-                new_type=getattr(m, "new_type", None),
                 type=getattr(m, "type", None),
                 method=getattr(m, "method", None),
                 tags=[t.name for t in (m.tags or [])],

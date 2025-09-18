@@ -51,7 +51,7 @@ def list_monster_skills(monster_id: int, db: Session = Depends(get_db)):
             "element": getattr(s, "element", None),
             "kind": getattr(s, "kind", None),
             "power": getattr(s, "power", None),
-            "description": ms.description or getattr(s, "description", None) or "",
+            "description": getattr(s, "description", None) or "",
         })
     return out
 
@@ -101,11 +101,9 @@ def _set_monster_skills(db: Session, monster_id: int, payload: SkillSetIn):
     for name, desc in desired.items():
         if name in existing_by_name:
             ms = existing_by_name[name]
-            # 更新描述（放在关联表上，互不影响 Skill 的通用字段）
-            ms.description = desc
         else:
             s = _get_or_create_skill(db, name)
-            ms = MonsterSkill(monster_id=m.id, skill_id=s.id, description=desc)
+            ms = MonsterSkill(monster_id=m.id, skill_id=s.id)
             db.add(ms)
 
     db.commit()

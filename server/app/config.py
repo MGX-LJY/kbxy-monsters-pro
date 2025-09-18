@@ -24,9 +24,13 @@ class Settings(BaseModel):
 
     # 新增：SQLite 忙等待（毫秒）与连接超时（秒）
     # - busy_timeout_ms：当遇到写锁时，SQLite 在本连接上最多等待多久（毫秒）
-    # - connect_timeout_s：sqlite3.connect 的“打开连接时等待锁”超时（秒）
+    # - connect_timeout_s：sqlite3.connect 的"打开连接时等待锁"超时（秒）
     sqlite_busy_timeout_ms: int = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "4000"))
     sqlite_connect_timeout_s: float = float(os.getenv("SQLITE_CONNECT_TIMEOUT_S", "5"))
+
+    # 新增：标签识别配置
+    # - tag_use_selected_only：是否只使用推荐技能进行标签识别（默认True）
+    tag_use_selected_only: bool = os.getenv("TAG_USE_SELECTED_ONLY", "true").lower() in {"true", "1", "yes"}
 
     def normalized_env(self) -> str:
         return "test" if self.app_env == "test" else "dev"

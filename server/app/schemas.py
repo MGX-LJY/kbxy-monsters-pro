@@ -11,7 +11,9 @@ class SkillIn(BaseModel):
     element: Optional[str] = Field(None, description="技能属性（风/火/.../特殊）")
     kind: Optional[str] = Field(None, description="类型：物理/法术/特殊")
     power: Optional[int] = Field(None, description="威力")
+    pp: Optional[int] = Field(None, description="PP值")
     description: Optional[str] = Field("", description="技能描述")
+    selected: Optional[bool] = Field(None, description="是否为推荐技能")
 
 class SkillOut(BaseModel):
     id: int
@@ -19,6 +21,7 @@ class SkillOut(BaseModel):
     element: Optional[str] = None
     kind: Optional[str] = None
     power: Optional[int] = None
+    pp: Optional[int] = None
     description: Optional[str] = ""
 
     class Config:
@@ -38,7 +41,6 @@ class AutoMatchOut(BaseModel):
 class MonsterIn(BaseModel):
     name: str
     element: Optional[str] = None
-    role: Optional[str] = None
 
     hp: float = 0
     speed: float = 0
@@ -48,7 +50,6 @@ class MonsterIn(BaseModel):
     resist: float = 0
 
     possess: bool = False
-    new_type: Optional[bool] = None
     type: Optional[str] = None
     method: Optional[str] = None
 
@@ -59,7 +60,6 @@ class MonsterOut(BaseModel):
     id: int
     name: str
     element: Optional[str] = None
-    role: Optional[str] = None
 
     hp: float = 0
     speed: float = 0
@@ -69,12 +69,10 @@ class MonsterOut(BaseModel):
     resist: float = 0
 
     possess: Optional[bool] = None
-    new_type: Optional[bool] = None
     type: Optional[str] = None
     method: Optional[str] = None
 
     tags: List[str] = Field(default_factory=list)
-    explain_json: Dict[str, Any] = Field(default_factory=dict)
 
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

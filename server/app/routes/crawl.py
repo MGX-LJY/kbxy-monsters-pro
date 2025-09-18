@@ -27,23 +27,31 @@ def _skill_public(s: SkillRow) -> Dict[str, object]:
         "element": normalize_skill_element(s.element),
         "kind": normalize_skill_kind(s.kind),
         "power": s.power,
+        "pp": s.pp,
         "description": (s.description or "").strip(),
-        "level": s.level,
     }
 
 def _to_payload(m: MonsterRow) -> Dict[str, object]:
     """
     仅保留：
       - 最高形态：name, element, hp, speed, attack, defense, magic, resist
-      - 获取渠道：type, new_type, method
-      - selected_skills: 统一后的完整字段
+      - 获取渠道：type, method
+      - skills: 所有技能的完整字段
+      - selected_skills: 推荐技能的完整字段
     """
     skills = []
-    for s in (m.selected_skills or []):
+    for s in (m.skills or []):
         n = (s.name or "").strip()
         if not n or n in {"推荐配招", "推荐技能", "推荐配招："}:
             continue
         skills.append(_skill_public(s))
+    
+    selected_skills = []
+    for s in (m.selected_skills or []):
+        n = (s.name or "").strip()
+        if not n or n in {"推荐配招", "推荐技能", "推荐配招："}:
+            continue
+        selected_skills.append(_skill_public(s))
 
     return {
         "name": m.name,
@@ -55,9 +63,10 @@ def _to_payload(m: MonsterRow) -> Dict[str, object]:
         "magic": m.magic,
         "resist": m.resist,
         "type": m.type,
-        "new_type": m.new_type,
         "method": m.method,
-        "selected_skills": skills,
+        "all_forms": getattr(m, 'all_forms', []),
+        "skills": skills,
+        "selected_skills": selected_skills,
     }
 
 # ---------- 写库工具（Monster 以 name 唯一；Skill 唯一键为 (name, element, kind, power)） ----------
@@ -68,7 +77,7 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
     - overwrite=False：已存在则只补齐空字段；True：覆盖基础字段
     - 技能：
         * Skill 全局去重，唯一 (name, element, kind, power)
-        * 通过 MonsterSkill 关联，记录 selected/level/description
+        * 通过 MonsterSkill 关联，记录 selected
         * 在同一次 flush/commit 中，显式“去重 + 本地集合防重复 + 数据库查询兜底”，避免唯一约束冲突
     返回：(is_insert, affected_skills)
     """
@@ -87,7 +96,8 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
             setattr(m, field, value)
         else:
             cur = getattr(m, field)
-            if cur in (None, "", 0) and value not in (None, ""):
+            # 对于列表字段，空列表也应该被替换
+            if (cur in (None, "", 0) or (isinstance(cur, list) and not cur)) and value not in (None, ""):
                 setattr(m, field, value)
 
     # 基础属性/获取渠道/原始六维
@@ -99,16 +109,18 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
     _set("magic", mon.magic)
     _set("resist", mon.resist)
     _set("type", mon.type)
-    if mon.new_type is not None:
-        _set("new_type", mon.new_type)
     _set("method", mon.method)
+    # 所有形态名称列表
+    if hasattr(mon, 'all_forms'):
+        _set("all_forms", mon.all_forms)
     db.flush()
 
     # 2) 技能 upsert + 关联
     affected = 0
-    selected_list: List[SkillRow] = mon.selected_skills or []
+    all_skills_list: List[SkillRow] = mon.skills or []
+    selected_skills_list: List[SkillRow] = mon.selected_skills or []
 
-    if selected_list:
+    if all_skills_list:
         # 输入去噪 + 统一值（作为唯一键）
         def _key_from_sr(sr: SkillRow) -> tuple:
             return (
@@ -116,19 +128,29 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
                 normalize_skill_element(sr.element),
                 normalize_skill_kind(sr.kind),
                 sr.power if sr.power is not None else None,
+                sr.pp if sr.pp is not None else None,
             )
 
-        uniq_map: Dict[tuple, SkillRow] = {}
-        for s in selected_list:
+        # 处理所有技能
+        all_skills_map: Dict[tuple, SkillRow] = {}
+        for s in all_skills_list:
             n = (s.name or "").strip()
             if not n or n in {"推荐配招", "推荐技能", "推荐配招："}:
                 continue
-            uniq_map[_key_from_sr(s)] = s  # 后出现的覆盖前者（level/desc 以此为准）
+            all_skills_map[_key_from_sr(s)] = s  # 后出现的覆盖前者（desc 以此为准）
 
-        if uniq_map:
+        # 创建推荐技能的键集合
+        selected_keys: set = set()
+        for s in selected_skills_list:
+            n = (s.name or "").strip()
+            if not n or n in {"推荐配招", "推荐技能", "推荐配招："}:
+                continue
+            selected_keys.add(_key_from_sr(s))
+
+        if all_skills_map:
             items = [
-                (k[0], k[1], k[2], k[3], (uniq_map[k].description or "").strip())
-                for k in uniq_map.keys()
+                (k[0], k[1], k[2], k[3], k[4], (all_skills_map[k].description or "").strip())  # name, element, kind, power, pp, description
+                for k in all_skills_map.keys()
             ]
             skills = upsert_skills(db, items)
             db.flush()
@@ -138,9 +160,8 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
                 if not sk:
                     continue
 
-                sr = uniq_map.get((sk.name, sk.element, sk.kind, sk.power))
-                rel_desc = (sr.description or "").strip() if sr else ""
-                rel_level = sr.level if sr else None
+                skill_key = (sk.name, sk.element, sk.kind, sk.power, sk.pp)
+                is_selected = skill_key in selected_keys
 
                 pair_key = (m.id, sk.id)
                 if pair_key in linked_local:
@@ -158,9 +179,7 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
                     ms = M.MonsterSkill(
                         monster_id=m.id,
                         skill_id=sk.id,
-                        selected=True,
-                        level=rel_level,
-                        description=rel_desc or None,
+                        selected=is_selected,
                     )
                     db.add(ms)
                     db.flush()
@@ -168,14 +187,8 @@ def _upsert_one(db: Session, mon: MonsterRow, overwrite: bool = False, do_derive
                     affected += 1
                 else:
                     changed = False
-                    if ms.selected is not True:
-                        ms.selected = True
-                        changed = True
-                    if ms.level is None and rel_level is not None:
-                        ms.level = rel_level
-                        changed = True
-                    if (not (ms.description or "").strip()) and rel_desc:
-                        ms.description = rel_desc
+                    if ms.selected != is_selected:
+                        ms.selected = is_selected
                         changed = True
                     if changed:
                         db.flush()
@@ -200,7 +213,7 @@ class FetchOneBody(BaseModel):
 @router.api_route("/samples", methods=["GET", "POST"])
 def crawl_samples(limit: int = Query(10, ge=1, le=100)):
     """
-    从 4399 图鉴抓若干条样本，输出带 element/kind/power/description/level 的精选技能（已统一字段值）。
+    从 4399 图鉴抓若干条样本，输出带 element/kind/power/pp/description 的精选技能（已统一字段值）。
     """
     crawler = Kabu4399Crawler()
     results: List[Dict[str, object]] = []
@@ -209,7 +222,7 @@ def crawl_samples(limit: int = Query(10, ge=1, le=100)):
         if not crawler._get(list_url):
             continue
         for detail_url, img_url, monster_name in crawler._extract_detail_links_from_list(list_url):
-            mon = crawler.fetch_detail(detail_url, list_img_url=img_url, list_monster_name=monster_name)
+            mon = crawler.fetch_best_with_all_forms(detail_url, list_img_url=img_url, list_monster_name=monster_name)
             if not mon:
                 continue
             payload = _to_payload(mon)
@@ -225,7 +238,7 @@ def fetch_one_get(url: str):
     抓取单个详情页；输出带 element/kind/power/description/level 的精选技能（已统一字段值）。
     """
     crawler = Kabu4399Crawler()
-    row = crawler.fetch_detail(url)
+    row = crawler.fetch_best_with_all_forms(url)
     if not row:
         return {"detail": "fetch failed"}
     return _to_payload(row)
@@ -255,7 +268,7 @@ def crawl_all(body: CrawlAllBody):
 
     with SessionLocal() as db:
         for detail_url, img_url, monster_name in crawler.iter_detail_urls():
-            mon = crawler.fetch_detail(detail_url, list_img_url=img_url, list_monster_name=monster_name)
+            mon = crawler.fetch_best_with_all_forms(detail_url, list_img_url=img_url, list_monster_name=monster_name)
             if not mon:
                 continue
             seen += 1

@@ -18,6 +18,7 @@ type SkillDTO = {
   kind?: string | null
   power?: number | null
   description?: string
+  selected?: boolean
 }
 
 type StatsDTO = { total: number; with_skills?: number; tags_total?: number }
@@ -176,6 +177,9 @@ export default function MonstersPage() {
 
   // 技能编辑：卡片列表
   const [editSkills, setEditSkills] = useState<SkillDTO[]>([])
+
+  // 技能显示控制：默认只显示推荐技能
+  const [showAllSkills, setShowAllSkills] = useState(false)
 
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
@@ -674,6 +678,7 @@ export default function MonstersPage() {
           kind: (s.kind || '').trim() || undefined,
           power,
           description: (s.description || '').trim(),
+          selected: s.selected,
         }
       })
       .filter(s => isValidSkillName(s.name))
@@ -688,6 +693,7 @@ export default function MonstersPage() {
         if (s.kind) o.kind = s.kind
         if (Number.isFinite(s.power as number)) o.power = Number(s.power)
         if (isMeaningfulDesc(s.description)) o.description = s.description
+        if (typeof s.selected === 'boolean') o.selected = s.selected
         return o
       })
 
@@ -1806,6 +1812,20 @@ export default function MonstersPage() {
                               <label className="label">描述</label>
                               <textarea className="input h-24" value={s.description || ''} onChange={e => updateSkill(idx, { description: e.target.value })} />
                             </div>
+                            
+                            {/* 推荐状态复选框 */}
+                            <div className="flex items-center gap-2">
+                              <input 
+                                type="checkbox" 
+                                id={`skill-selected-${idx}`}
+                                checked={s.selected || false}
+                                onChange={e => updateSkill(idx, { selected: e.target.checked })}
+                                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                              />
+                              <label htmlFor={`skill-selected-${idx}`} className="text-sm font-medium text-gray-700">
+                                推荐招式
+                              </label>
+                            </div>
                           </div>
 
                           {/* 右上角紧凑标签 + 删除 */}
@@ -1813,6 +1833,7 @@ export default function MonstersPage() {
                             <div className="text-[11px] text-gray-500 leading-5">
                               {[s.element || '—', s.kind || '—', (s.power ?? '—')].join(' / ')}
                             </div>
+                            {s.selected && <div className="text-xs text-blue-600 font-semibold">★ 推荐</div>}
                             <button className={`btn mt-2 ${BTN_FX}`} onClick={() => removeSkill(idx)}>删除</button>
                           </div>
                         </div>
@@ -1852,15 +1873,29 @@ export default function MonstersPage() {
 
 
                 <div>
-                  <h4 className="font-semibold mb-2">技能</h4>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="font-semibold">技能</h4>
+                    <button 
+                      className={`btn text-xs ${showAllSkills ? 'btn-primary' : ''}`} 
+                      onClick={() => setShowAllSkills(!showAllSkills)}
+                    >
+                      {showAllSkills ? '只显示推荐' : '显示全部'}
+                    </button>
+                  </div>
                   {skills.isLoading && <div className="text-sm text-gray-500">加载中...</div>}
                   {!skills.data?.length && !skills.isLoading &&
                       <div className="text-sm text-gray-500">暂无技能数据</div>}
                   <ul className="space-y-2">
-                    {skills.data?.filter(s => isValidSkillName(s.name)).map(s => (
-                        <li key={`${s.id || s.name}`} className="p-3 bg-gray-50 rounded">
+                    {skills.data?.filter(s => {
+                      if (!isValidSkillName(s.name)) return false;
+                      return showAllSkills || s.selected === true;
+                    }).map(s => (
+                        <li key={`${s.id || s.name}`} className={`p-3 rounded ${s.selected ? 'bg-blue-50 border border-blue-200' : 'bg-gray-50'}`}>
                           <div className="flex items-center justify-between">
-                            <div className="font-medium">{s.name}</div>
+                            <div className="font-medium">
+                              {s.selected && <span className="text-blue-600 text-xs mr-1">⭐</span>}
+                              {s.name}
+                            </div>
                             <div className="text-xs text-gray-500">
                               {[s.element, s.kind, (s.power ?? '')].filter(Boolean).join(' / ') || '—'}
                           </div>
