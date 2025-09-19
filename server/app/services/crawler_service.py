@@ -171,8 +171,33 @@ def convert_to_png(image_path: Path) -> bool:
         log.warning(f"Failed to convert {image_path} to PNG: {e}")
         return False
 
+def fix_corrupted_characters(name: str) -> str:
+    """修复常见的字符编码问题"""
+    if not name:
+        return name
+    
+    # 精确的乱码字符修复映射 - 按照特定上下文修复
+    specific_fixes = {
+        '苍雷神��': '苍雷神犼',
+        '金毛��': '金毛犼',
+    }
+    
+    # 先检查精确匹配
+    if name in specific_fixes:
+        return specific_fixes[name]
+    
+    # 通用替换字符清理
+    result = name
+    result = result.replace('\uFFFD', '')  # 清除Unicode替换字符
+    
+    return result
+
+
 def sanitize_filename(name: str) -> str:
     """清理文件名，移除非法字符"""
+    # 先修复编码问题
+    name = fix_corrupted_characters(name)
+    
     # 移除或替换非法字符
     illegal_chars = r'[<>:"/\\|?*]'
     name = re.sub(illegal_chars, '_', name)
@@ -891,7 +916,7 @@ class Kabu4399Crawler:
                 continue
 
             out.append(MonsterRow(
-                name=_clean(name),
+                name=fix_corrupted_characters(_clean(name)),
                 element=None,
                 hp=cols[0], speed=cols[1], attack=cols[2],
                 defense=cols[3], magic=cols[4], resist=cols[5],
@@ -928,15 +953,15 @@ class Kabu4399Crawler:
                 continue
             vals = [_clean(td.get_text(separator=" ", strip=True)) for td in tds]
             vals += [""] * (8 - len(vals))
-            name = vals[0]
+            name = fix_corrupted_characters(vals[0])
             if not name or name == "无":
                 continue
             # Skip level (vals[1])
-            element = vals[2]
-            kind = vals[3]
+            element = fix_corrupted_characters(vals[2])
+            kind = fix_corrupted_characters(vals[3])
             power = _to_int(vals[4])
             pp = _to_int(vals[5]) if len(vals) > 5 else None
-            desc = vals[6] if len(vals) > 6 else ""
+            desc = fix_corrupted_characters(vals[6] if len(vals) > 6 else "")
             out.append(SkillRow(name, element, kind, power, pp, desc))
         return out
 

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { backupApi } from '../api';
 
 interface BackupSettings {
   auto_backup_enabled: boolean;
@@ -40,15 +41,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // 从服务器加载备份配置
   const loadBackupConfig = async () => {
     try {
-      const response = await fetch('/backup/config');
-      if (response.ok) {
-        const config = await response.json();
-        setBackupSettings({
-          auto_backup_enabled: config.auto_backup_enabled || false,
-          backup_interval_hours: config.backup_interval_hours || 24,
-          max_backups: config.max_backups || 30
-        });
-      }
+      const response = await backupApi.getConfig();
+      const config = response.data;
+      setBackupSettings({
+        auto_backup_enabled: config.auto_backup_enabled || false,
+        backup_interval_hours: config.backup_interval_hours || 24,
+        max_backups: config.max_backups || 30
+      });
     } catch (error) {
       console.error('Failed to load backup config:', error);
     }
@@ -57,16 +56,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // 更新服务器备份配置
   const updateBackupConfig = async () => {
     try {
-      const response = await fetch('/backup/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(backupSettings),
-      });
-      if (!response.ok) {
-        throw new Error('Failed to update backup config');
-      }
+      await backupApi.updateConfig(backupSettings);
     } catch (error) {
       console.error('Failed to update backup config:', error);
       throw error;

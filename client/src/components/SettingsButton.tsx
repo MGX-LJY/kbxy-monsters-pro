@@ -1,12 +1,14 @@
 // client/src/components/SettingsButton.tsx
 import React, { useState } from 'react'
 import { Settings as SettingsIcon, Save } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import Modal from './Modal'
 import { useSettings } from '../context/SettingsContext'
 
 export default function SettingsButton() {
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  const queryClient = useQueryClient()
   const { 
     pageSize, setPageSize, 
     crawlLimit, setCrawlLimit,
@@ -18,10 +20,18 @@ export default function SettingsButton() {
     setSaving(true)
     try {
       await updateBackupConfig()
+      
+      // 失效备份相关的查询缓存，确保备份页面显示最新状态
+      queryClient.invalidateQueries({ queryKey: ['backup-config'] })
+      queryClient.invalidateQueries({ queryKey: ['backup-status'] })
+      
       setOpen(false)
+      
+      // 显示成功提示
+      alert('设置已保存成功！')
     } catch (error) {
       console.error('Failed to save backup settings:', error)
-      // 可以在这里添加错误提示
+      alert('设置保存失败，请重试')
     } finally {
       setSaving(false)
     }
@@ -73,7 +83,7 @@ export default function SettingsButton() {
 
           {/* 时光机备份设置 */}
           <div className="border-t pt-4">
-            <h3 className="font-medium mb-3">🕰️ 时光机自动备份</h3>
+            <h3 className="font-medium mb-3">时光机自动备份</h3>
             
             <div className="space-y-3">
               <div className="flex items-center gap-2">

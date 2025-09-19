@@ -230,9 +230,6 @@ class BackupService:
             raise Exception(f"备份文件不存在: {backup_name}")
         
         try:
-            # 创建还原前的自动备份
-            current_backup = self.create_backup(f"restore_point_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
-            
             # 解压备份文件
             temp_dir = self.backup_root / f"temp_restore_{backup_name}"
             temp_dir.mkdir(exist_ok=True)
@@ -259,10 +256,10 @@ class BackupService:
             images_target_dir.mkdir(parents=True, exist_ok=True)
             
             if images_backup_dir.exists():
-                # 清空现有图片（可选，根据需求决定）
-                # for existing_img in images_target_dir.iterdir():
-                #     if existing_img.is_file():
-                #         existing_img.unlink()
+                # 清空现有图片
+                for existing_img in images_target_dir.iterdir():
+                    if existing_img.is_file():
+                        existing_img.unlink()
                 
                 for img_file in images_backup_dir.iterdir():
                     if img_file.is_file():
@@ -277,7 +274,6 @@ class BackupService:
                 "backup_name": backup_name,
                 "restored_at": datetime.now().isoformat(),
                 "restored_files_count": len(restored_files),
-                "restore_point_backup": current_backup["name"],
                 "restored_files": restored_files[:20]  # 只返回前20个文件名
             }
             
