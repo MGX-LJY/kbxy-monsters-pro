@@ -5,6 +5,7 @@ import TopBar from './components/TopBar'
 import { ToastProvider } from './components/Toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import MonstersPage from './pages/MonstersPage'
+import BackupPage from './pages/BackupPage'
 import { SettingsProvider } from './context/SettingsContext'
 import TypeChartDialog from './components/TypeChartDialog'
 
@@ -94,6 +95,7 @@ export default function App() {
 
         <Routes>
           <Route path="/" element={<MonstersPage />} />
+          <Route path="/backup" element={<BackupPage />} />
         </Routes>
       </ErrorBoundary>
     </ToastProvider>

@@ -1,6 +1,8 @@
 // client/src/pages/BackupPage.tsx
 import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { ArrowLeft } from 'lucide-react'
 import { backupApi } from '../api'
 import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
@@ -26,6 +28,7 @@ const BTN_FX = 'transition active:bg-blue-100 focus:outline-none focus:ring-2 fo
 
 export default function BackupPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [showTimeMachine, setShowTimeMachine] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createDescription, setCreateDescription] = useState('')
@@ -164,7 +167,17 @@ export default function BackupPage() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold mb-2">🕰️ 时光机备份</h1>
+        <div className="flex items-center gap-3 mb-2">
+          <button
+            onClick={() => navigate('/')}
+            className={`btn ${BTN_FX} flex items-center gap-2 hover:bg-gray-100`}
+            title="返回主页"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span className="hidden sm:inline">返回</span>
+          </button>
+          <h1 className="text-2xl font-bold">🕰️ 时光机备份</h1>
+        </div>
         <p className="text-gray-600">管理您的数据备份，支持自动备份和手动还原</p>
       </div>
 

@@ -557,25 +557,6 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     return detail(monster_id, db)
 
 
-# ---------- 删除 ----------
-@router.delete("/monsters/{monster_id}")
-def delete(monster_id: int, db: Session = Depends(get_db)):
-    m = db.get(Monster, monster_id)
-    if not m:
-        raise HTTPException(status_code=404, detail="not found")
-
-    # 关系清理由 delete-orphan & 外键 ondelete 兜底；这里显式清空更稳妥
-    for ms in (m.monster_skills or []):
-        db.delete(ms)
-    if m.tags is not None:
-        m.tags.clear()
-    db.flush()
-
-    db.delete(m)
-    db.commit()
-    return {"ok": True}
-
-
 # ---------- 批量删除 ----------
 @router.delete("/monsters/bulk_delete")
 def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db)):
@@ -589,12 +570,9 @@ def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db)):
     
     deleted_count = 0
     for m in monsters:
-        # 清理关系
-        for ms in (m.monster_skills or []):
-            db.delete(ms)
+        # 清理标签关系 (monster_skills 会通过 cascade 自动删除)
         if m.tags is not None:
             m.tags.clear()
-        db.flush()
         
         # 删除妖怪本身
         db.delete(m)
@@ -608,6 +586,23 @@ def bulk_delete(payload: BulkDeleteIn, db: Session = Depends(get_db)):
 @router.post("/monsters/bulk_delete")
 def bulk_delete_post(payload: BulkDeleteIn, db: Session = Depends(get_db)):
     return bulk_delete(payload, db)
+
+
+# ---------- 删除 ----------
+@router.delete("/monsters/{monster_id}")
+def delete(monster_id: int, db: Session = Depends(get_db)):
+    m = db.get(Monster, monster_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="not found")
+
+    # 清理标签关系 (monster_skills 会通过 cascade 自动删除)
+    if m.tags is not None:
+        m.tags.clear()
+
+    db.delete(m)
+    db.commit()
+    return {"ok": True}
+
 
 
 # ---------- 批量更新技能推荐状态 ----------

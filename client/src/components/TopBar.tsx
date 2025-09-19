@@ -1,5 +1,6 @@
 import React from 'react'
-import { Github, RefreshCw, Grid2x2, Globe } from 'lucide-react'
+import { Github, RefreshCw, Grid2x2, Globe, Clock } from 'lucide-react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import SettingsButton from './SettingsButton'
 
 export default function TopBar({
@@ -9,9 +10,21 @@ export default function TopBar({
 }: {
   onRefresh: () => void
   onOpenImport?: () => void
-  /** 点击“属性克制表”时触发，由父组件打开弹框/侧滑层并拉取后端数据渲染 */
+  /** 点击"属性克制表"时触发，由父组件打开弹框/侧滑层并拉取后端数据渲染 */
   onOpenTypeChart?: () => void
 }) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  
+  const handleTimeMachineClick = () => {
+    if (location.pathname === '/backup') {
+      // 如果当前在备份页面，返回首页
+      navigate('/')
+    } else {
+      // 否则进入备份页面
+      navigate('/backup')
+    }
+  }
   return (
     <header className="sticky top-0 z-40 border-b bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/60 shadow-sm">
       <div className="container py-3 px-3 flex items-center justify-between gap-3">
@@ -48,6 +61,17 @@ export default function TopBar({
           >
             <Globe className="w-4 h-4 mr-2" />
             <span className="hidden sm:inline">获取图鉴</span>
+          </button>
+
+          {/* 时光机备份 */}
+          <button
+            onClick={handleTimeMachineClick}
+            className={`btn h-9 px-3 hover:bg-gray-100 transition ${location.pathname === '/backup' ? 'bg-blue-100 text-blue-700' : ''}`}
+            title={location.pathname === '/backup' ? '退出' : '进入备份'}
+            aria-label="时光机备份"
+          >
+            <Clock className="w-4 h-4 mr-2" />
+            <span className="hidden sm:inline">{location.pathname === '/backup' ? '退出' : '备份'}</span>
           </button>
 
           {/* 刷新（快捷键 C） */}

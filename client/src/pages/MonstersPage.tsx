@@ -1,6 +1,7 @@
 // client/src/pages/MonstersPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import api, { backupApi } from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
@@ -123,6 +124,17 @@ const RAW_COLUMNS = [
 
 export default function MonstersPage() {
   const queryClient = useQueryClient()
+  const location = useLocation()
+  const navigate = useNavigate()
+  
+  // 时光机切换函数
+  const handleTimeMachineClick = () => {
+    if (location.pathname === '/backup') {
+      navigate('/')
+    } else {
+      navigate('/backup')
+    }
+  }
 
   // 快速备份 mutation
   const quickBackupMutation = useMutation({

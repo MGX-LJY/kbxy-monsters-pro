@@ -58,6 +58,7 @@ def _images_dir() -> str:
     return str(p)
 
 app.mount("/media/monsters", StaticFiles(directory=_images_dir(), html=False), name="monsters_media")
+app.mount("/images/monsters", StaticFiles(directory=_images_dir(), html=False), name="monsters_images")
 
 # 注册路由（基础）
 app.include_router(health.router)

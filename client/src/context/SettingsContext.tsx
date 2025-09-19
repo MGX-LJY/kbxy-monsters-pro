@@ -1,10 +1,20 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
+interface BackupSettings {
+  auto_backup_enabled: boolean;
+  backup_interval_hours: number;
+  max_backups: number;
+}
+
 type SettingsContextValue = {
   pageSize: number;
   setPageSize: (n: number) => void;
   crawlLimit: string;                // 存成字符串，便于空值
   setCrawlLimit: (s: string) => void;
+  backupSettings: BackupSettings;
+  setBackupSettings: (settings: BackupSettings) => void;
+  updateBackupConfig: () => Promise<void>;
+  loadBackupConfig: () => Promise<void>;
 };
 
 const SettingsContext = createContext<SettingsContextValue | undefined>(undefined);
@@ -20,6 +30,54 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     return localStorage.getItem('crawlLimit') || '';  // 默认留空
   });
 
+  // 备份设置状态
+  const [backupSettings, setBackupSettings] = useState<BackupSettings>({
+    auto_backup_enabled: false,
+    backup_interval_hours: 24,
+    max_backups: 30
+  });
+
+  // 从服务器加载备份配置
+  const loadBackupConfig = async () => {
+    try {
+      const response = await fetch('/backup/config');
+      if (response.ok) {
+        const config = await response.json();
+        setBackupSettings({
+          auto_backup_enabled: config.auto_backup_enabled || false,
+          backup_interval_hours: config.backup_interval_hours || 24,
+          max_backups: config.max_backups || 30
+        });
+      }
+    } catch (error) {
+      console.error('Failed to load backup config:', error);
+    }
+  };
+
+  // 更新服务器备份配置
+  const updateBackupConfig = async () => {
+    try {
+      const response = await fetch('/backup/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(backupSettings),
+      });
+      if (!response.ok) {
+        throw new Error('Failed to update backup config');
+      }
+    } catch (error) {
+      console.error('Failed to update backup config:', error);
+      throw error;
+    }
+  };
+
+  // 初始加载备份配置
+  useEffect(() => {
+    loadBackupConfig();
+  }, []);
+
   // 持久化到 localStorage
   useEffect(() => {
     localStorage.setItem('pageSize', String(pageSize));
@@ -34,7 +92,11 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     setPageSize,
     crawlLimit,
     setCrawlLimit,
-  }), [pageSize, crawlLimit]);
+    backupSettings,
+    setBackupSettings,
+    updateBackupConfig,
+    loadBackupConfig,
+  }), [pageSize, crawlLimit, backupSettings]);
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
 }

@@ -39,19 +39,56 @@ def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
     """下载图片到指定路径"""
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "Referer": "https://news.4399.com/",
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
         }
+        
+        # 处理URL编码问题
+        if url.startswith('//'):
+            url = 'https:' + url
+        
+        log.info(f"Downloading image from: {url}")
         response = requests.get(url, headers=headers, timeout=timeout, stream=True)
         response.raise_for_status()
 
+        # 检查内容类型
+        content_type = response.headers.get('content-type', '').lower()
+        if not any(img_type in content_type for img_type in ['image/', 'application/octet-stream']):
+            log.warning(f"Invalid content type for image {url}: {content_type}")
+            return False
+
         ensure_dir(save_path.parent)
+        
+        # 写入文件并跟踪大小
+        bytes_written = 0
         with open(save_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+                if chunk:  # 过滤空chunk
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+
+        # 验证文件大小
+        if bytes_written == 0:
+            log.warning(f"Downloaded image is empty: {url}")
+            save_path.unlink(missing_ok=True)  # 删除空文件
+            return False
+        
+        if bytes_written < 100:  # 如果文件小于100字节，可能是错误页面
+            log.warning(f"Downloaded image is too small ({bytes_written} bytes): {url}")
+            save_path.unlink(missing_ok=True)  # 删除无效文件
+            return False
+
+        log.info(f"Successfully downloaded image ({bytes_written} bytes): {save_path}")
         return True
+        
     except Exception as e:
         log.warning(f"Failed to download image {url}: {e}")
+        # 清理可能的部分下载文件
+        if save_path.exists():
+            save_path.unlink(missing_ok=True)
         return False
 
 def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
@@ -1052,6 +1089,17 @@ class Kabu4399Crawler:
             if not download_image(img_url, temp_image_path):
                 return None
 
+            # 验证下载的文件是否是有效图片
+            try:
+                with Image.open(temp_image_path) as test_img:
+                    # 尝试验证图片格式
+                    test_img.verify()
+                    log.info(f"Downloaded image validated for {monster_name}: {test_img.format} {test_img.size}")
+            except Exception as e:
+                log.warning(f"Downloaded image validation failed for {monster_name}: {e}")
+                temp_image_path.unlink(missing_ok=True)
+                return None
+
             # 转换为PNG格式
             if temp_ext != ".png":
                 log.info(f"Converting {monster_name} image to PNG format")
@@ -1070,10 +1118,16 @@ class Kabu4399Crawler:
                     # 删除临时文件
                     temp_image_path.unlink()
                     log.info(f"Successfully converted {monster_name} image to PNG")
+                    
+                    # 验证转换后的PNG文件
+                    if not final_image_path.exists() or final_image_path.stat().st_size == 0:
+                        log.warning(f"PNG conversion resulted in empty file for {monster_name}")
+                        return None
+                        
                 except Exception as e:
-                    log.warning(f"Failed to convert {monster_name} to PNG, keeping original: {e}")
-                    # 如果转换失败，重命名原文件为PNG（虽然格式可能不对）
-                    temp_image_path.rename(final_image_path)
+                    log.warning(f"Failed to convert {monster_name} to PNG: {e}")
+                    temp_image_path.unlink(missing_ok=True)
+                    return None
             else:
                 # 如果原本就是PNG，直接重命名
                 temp_image_path.rename(final_image_path)
@@ -1087,6 +1141,18 @@ class Kabu4399Crawler:
                 else:
                     log.warning(f"Failed to upscale PNG image for {monster_name}, keeping original")
 
+            # 最终验证
+            if not final_image_path.exists():
+                log.warning(f"Final image file does not exist for {monster_name}")
+                return None
+                
+            final_size = final_image_path.stat().st_size
+            if final_size == 0:
+                log.warning(f"Final image file is empty for {monster_name}")
+                final_image_path.unlink(missing_ok=True)
+                return None
+                
+            log.info(f"Final image ready for {monster_name}: {final_size} bytes")
             return str(final_image_path)
 
         except Exception as e:

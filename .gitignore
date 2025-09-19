@@ -78,3 +78,4 @@ coverage/
 
 # ===== 其他系统文件 =====
 Thumbs.db
+/data/
