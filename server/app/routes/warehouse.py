@@ -85,7 +85,7 @@ def sort_key_for(val: Optional[float], mid: int, is_asc: bool):
 # ---- 列表（拥有过滤：possess=True/False/None）----
 @router.get("/warehouse", response_model=MonsterList)
 def warehouse_list(
-    possess: Optional[bool] = Query(True, description="True=仅已拥有；False=仅未拥有；None=全部"),
+    possess: Optional[bool] = Query(None, description="True=仅已拥有；False=仅未拥有；None=全部"),
     q: Optional[str] = Query(None),
     element: Optional[str] = Query(None),
     # 旧：单标签
@@ -175,7 +175,13 @@ def warehouse_list(
     # 基础筛选
     if q:
         like = f"%{q.strip()}%"
-        base_q = base_q.filter(Monster.name.ilike(like))
+        # 搜索name字段或all_forms JSON数组中的任何形态名称
+        base_q = base_q.filter(
+            or_(
+                Monster.name.ilike(like),
+                func.json_extract(Monster.all_forms, '$').op('LIKE')(like)
+            )
+        )
     if element:
         base_q = base_q.filter(Monster.element == element)
 

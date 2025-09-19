@@ -74,7 +74,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
         setDefense(d.defense || 100)
         setMagic(d.magic || 100)
         setResist(d.resist || 100)
-        // 加载仓库状态
+        // 加载仓库状态（编辑时不会提交，仅用于界面显示）
         setPossess(d.possess || false)
         setMethod(d.method || '')
         setTagsInput((d.tags || []).join(' '))
@@ -91,7 +91,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
     if (!nameFinal.trim()) { setErr('请填写名称'); return }
     setSubmitting(true); setErr(null)
     try {
-      const payload = {
+      const basePayload = {
         name: nameFinal.trim(),
         element: element || null,
         type: type || null,
@@ -101,12 +101,17 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
         defense,
         magic,
         resist,
-        possess,
-        method: method || null,
         tags: tagsInput.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
         skills: skills
           .filter(s => s.name.trim())
           .map(s => ({ name: s.name.trim(), description: s.description?.trim() || '' })),
+      }
+      
+      // 只有新增模式才发送仓库字段
+      const payload = isEdit ? basePayload : {
+        ...basePayload,
+        possess,
+        method: method || null,
       }
       if (isEdit && editId) {
         const res = await api.put(`/monsters/${editId}`, payload)

@@ -881,8 +881,10 @@ export default function MonstersPage() {
     return Array.from(new Set(ids))
   }
 
-  // —— “取消 AI 打标签”标记 —— //
+  // —— "取消 AI 打标签"标记 —— //
   const cancelAITagRef = useRef(false)
+  const cancelResolveRef = useRef<(() => void) | null>(null)
+  const currentJobIdRef = useRef<string | null>(null)
 
   // —— 一键：打完标签后再统一分析（静默版：无 alert，完成后清除勾选） —— //
   const aiTagThenDeriveBatch = async () => {
@@ -916,21 +918,14 @@ export default function MonstersPage() {
         setOverlay(prev => ({ ...prev, sub: '正在启动批量处理任务' }))
         const startResp = await api.post('/tags/ai_batch/start', { ids: targetIds })
         const jobId = startResp.data.job_id
+        currentJobIdRef.current = jobId  // 保存jobId供取消按钮使用
         
         // 轮询进度
         let pollInterval: number | null = null
         await new Promise<void>((resolve, reject) => {
+          cancelResolveRef.current = resolve  // 保存resolve函数供取消按钮使用
           const pollProgress = async () => {
             try {
-              if (cancelAITagRef.current) {
-                // 取消任务
-                try {
-                  await api.post(`/tags/ai_batch/${jobId}/cancel`)
-                } catch {}
-                resolve()
-                return
-              }
-              
               const progressResp = await api.get(`/tags/ai_batch/${jobId}`)
               const progress = progressResp.data
               
@@ -949,23 +944,26 @@ export default function MonstersPage() {
               
               if (!progress.running) {
                 if (pollInterval) clearTimeout(pollInterval)
-                // 显示完成结果
+                // 根据是否取消显示不同的结果
+                const title = progress.canceled ? '任务已取消' : '批量标签匹配完成'
+                const sub = progress.canceled 
+                  ? `已取消，已处理: ${progress.done || 0}/${progress.total || 0}` 
+                  : `成功: ${progress.done || 0}, 失败: ${progress.failed || 0}, 总计: ${progress.total || 0}`
+                
                 setOverlay(prev => ({
                   ...prev,
-                  title: '批量标签匹配完成',
-                  sub: `成功: ${progress.done || 0}, 失败: ${progress.failed || 0}, 总计: ${progress.total || 0}`,
+                  title,
+                  sub,
                   cancelable: false
                 }))
-                // 等待3秒后关闭，让用户看到结果
-                setTimeout(() => {
-                  resolve()
-                  // 在Promise resolve后立即关闭弹窗
-                  setTimeout(() => smoothCloseOverlay(), 100)
-                }, 3000)
+                // 立即完成，不延迟
+                resolve()
+                // 立即关闭弹窗
+                setTimeout(() => smoothCloseOverlay(), 100)
                 return
               }
               
-              pollInterval = setTimeout(pollProgress, 1000)
+              pollInterval = setTimeout(pollProgress, 300)
             } catch (error) {
               if (pollInterval) clearTimeout(pollInterval)
               reject(error)
@@ -976,6 +974,8 @@ export default function MonstersPage() {
         
         // 批量处理成功完成
         batchCompleted = true
+        cancelResolveRef.current = null  // 清理resolve引用
+        currentJobIdRef.current = null  // 清理jobId引用
         
       } catch (batchError) {
         console.error('批量处理失败，回退到单个处理:', batchError)
@@ -1036,6 +1036,8 @@ export default function MonstersPage() {
         smoothCloseOverlay()
       }
       cancelAITagRef.current = false
+      cancelResolveRef.current = null  // 清理所有引用
+      currentJobIdRef.current = null
     }
   }
 
@@ -2041,9 +2043,24 @@ export default function MonstersPage() {
               <div className="pt-1">
                 <button
                   className={`btn ${BTN_FX}`}
-                  onClick={() => {
-                    cancelAITagRef.current = true
+                  onClick={async () => {
+                    // 立即显示取消状态
                     setOverlay(prev => ({ ...prev, sub: '正在取消当前任务…', cancelable: false }))
+                    
+                    // 异步调用后台取消API（不等待结果）
+                    if (currentJobIdRef.current) {
+                      try {
+                        api.post(`/tags/ai_batch/${currentJobIdRef.current}/cancel`)
+                      } catch {}
+                    }
+                    
+                    // 2秒后直接关闭弹窗
+                    setTimeout(() => {
+                      if (cancelResolveRef.current) {
+                        cancelResolveRef.current()
+                        setTimeout(() => smoothCloseOverlay(), 100)
+                      }
+                    }, 2000)
                   }}
                 >
                   取消

@@ -721,6 +721,7 @@ class _BatchRegistry:
             if not st:
                 return False
             st.canceled = True
+            st.running = False  # 立即停止运行状态
             st.updated_at = time.time()
             return True
     def cleanup(self, older_than_seconds: int = 3600) -> int:
@@ -790,41 +791,44 @@ def start_ai_batch_tagging(ids: List[int], db_factory: Callable[[], Any]) -> str
                     except Exception as e:
                         _registry.update(_job_id, failed_inc=1, error={"id": m.id, "error": str(e)})
                 
-                # 并发AI调用
+                # 小批量AI调用以提供实时进度
                 if monster_texts:
                     try:
-                        results = asyncio.run(ai_classify_batch_concurrent(monster_texts))
-                        
-                        # 批量处理结果并落库
-                        batch_updates = []
-                        for i, ai_result in enumerate(results):
+                        # 分批处理，每批10个，提供实时进度
+                        batch_size = 10
+                        for batch_start in range(0, len(monster_texts), batch_size):
                             cur = _registry.get(_job_id)
                             if cur and cur.canceled:
                                 _registry.update(_job_id, running=False); return
                             
-                            if i in monster_map:
-                                m = monster_map[i]
-                                try:
-                                    # 转换为标签列表
-                                    tags = []
-                                    for cat in ("buff", "debuff", "special"):
-                                        tags.extend(ai_result.get(cat, []))
-                                    
-                                    m.tags = upsert_tags(session, tags)
-                                    batch_updates.append(m.id)
-                                except Exception as e:
-                                    _registry.update(_job_id, failed_inc=1, error={"id": m.id, "error": str(e)})
-                        
-                        # 批量提交所有更新
-                        if batch_updates:
-                            try:
-                                session.commit()
-                                _registry.update(_job_id, done_inc=len(batch_updates))
-                            except Exception as e:
-                                session.rollback()
-                                # 如果批量提交失败，回退到单个处理
-                                for monster_id in batch_updates:
-                                    _registry.update(_job_id, failed_inc=1, error={"id": monster_id, "error": f"batch commit failed: {e}"})
+                            batch_end = min(batch_start + batch_size, len(monster_texts))
+                            batch_texts = monster_texts[batch_start:batch_end]
+                            
+                            # 批量AI调用
+                            batch_results = asyncio.run(ai_classify_batch_concurrent(batch_texts))
+                            
+                            # 处理这批结果
+                            for i, ai_result in enumerate(batch_results):
+                                cur = _registry.get(_job_id)
+                                if cur and cur.canceled:
+                                    _registry.update(_job_id, running=False); return
+                                
+                                global_index = batch_start + i
+                                if global_index in monster_map:
+                                    m = monster_map[global_index]
+                                    try:
+                                        # 转换为标签列表
+                                        tags = []
+                                        for cat in ("buff", "debuff", "special"):
+                                            tags.extend(ai_result.get(cat, []))
+                                        
+                                        m.tags = upsert_tags(session, tags)
+                                        # 立即提交单个更新以提供实时进度
+                                        session.commit()
+                                        _registry.update(_job_id, done_inc=1)
+                                    except Exception as e:
+                                        session.rollback()
+                                        _registry.update(_job_id, failed_inc=1, error={"id": m.id, "error": str(e)})
                     except Exception as e:
                         # 如果并发失败，回退到单个处理
                         for i, m in monster_map.items():

@@ -491,11 +491,19 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    # 写基础字段
-    for k in ["name", "element", "hp", "speed", "attack", "defense", "magic", "resist",
-              "possess", "type", "method"]:
+    # 写基础字段（除了仓库相关字段）
+    for k in ["name", "element", "hp", "speed", "attack", "defense", "magic", "resist"]:
         if hasattr(payload, k):
             setattr(m, k, getattr(payload, k))
+    
+    # 只有明确设置了仓库字段才更新（避免默认值覆盖）
+    if hasattr(payload, "model_fields_set"):
+        if "possess" in payload.model_fields_set:
+            setattr(m, "possess", getattr(payload, "possess"))
+        if "type" in payload.model_fields_set:
+            setattr(m, "type", getattr(payload, "type"))
+        if "method" in payload.model_fields_set:
+            setattr(m, "method", getattr(payload, "method"))
 
     # explain_json（可整体替换）
     if hasattr(payload, "explain_json") and (payload.explain_json is not None):
