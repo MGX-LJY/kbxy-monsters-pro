@@ -16,7 +16,7 @@ from .middleware import TraceIDMiddleware
 
 from .routes import (
     health, monsters, skills, utils, crawl,
-    warehouse, types, collections,
+    warehouse, types, collections, backup,
 )
 from .routes import images as images_routes  # ← 新增
 
@@ -68,6 +68,7 @@ app.include_router(crawl.router)
 app.include_router(warehouse.router, prefix="", tags=["warehouse"])
 app.include_router(types.router)
 app.include_router(collections.router, prefix="", tags=["collections"])
+app.include_router(backup.router)  # ← 备份功能
 app.include_router(images_routes.router)  # ← 新增
 
 # 可选：tags
@@ -129,6 +130,23 @@ async def _startup_logs_and_schema():
         get_image_resolver().reindex()
     except Exception:
         logger.exception("[startup] image resolver warmup failed.")
+    
+    # 启动备份调度器
+    try:
+        from .services.backup_scheduler import backup_scheduler
+        await backup_scheduler.start()
+    except Exception:
+        logger.exception("[startup] backup scheduler start failed.")
+
+# 关闭处理：停止备份调度器
+@app.on_event("shutdown")
+async def _shutdown_cleanup():
+    try:
+        from .services.backup_scheduler import backup_scheduler
+        await backup_scheduler.stop()
+        logger.info("[shutdown] backup scheduler stopped")
+    except Exception:
+        logger.exception("[shutdown] backup scheduler stop failed.")
 
 # 全局异常处理
 @app.exception_handler(HTTPException)

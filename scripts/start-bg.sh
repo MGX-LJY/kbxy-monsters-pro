@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# === 可改环境变量（也可运行时临时传） ===
-ROOT_DEFAULT="/Users/martinezdavid/Documents/MG/code/kbxy-monsters-pro"
+# === 自动检测项目根目录 ===
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DEFAULT="$(dirname "$SCRIPT_DIR")"
 ROOT="${ROOT:-$ROOT_DEFAULT}"
 
 VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
@@ -55,6 +56,21 @@ pick_pm() {
 }
 
 choose_env() {
+  # 检查命令行参数
+  if [[ "${1:-}" == "dev" ]] || [[ "${1:-}" == "test" ]]; then
+    APP_ENV="$1"
+    export APP_ENV
+    echo "[INFO] 使用命令行指定环境：$APP_ENV"
+    return 0
+  fi
+  
+  # 检查环境变量
+  if [[ -n "${APP_ENV:-}" ]]; then
+    echo "[INFO] 使用环境变量 APP_ENV=$APP_ENV"
+    return 0
+  fi
+  
+  # 交互式选择
   echo
   echo "请选择启动环境："
   echo "  [1] dev  （开发环境）"
@@ -96,7 +112,6 @@ start_backend() {
   local cmd=(uvicorn --app-dir "$SERVER_DIR" app.main:app
              --host "$BACKEND_HOST" --port "$BACKEND_PORT"
              --reload
-             --reload-dir server --reload-dir rules
              --reload-exclude '.venv/*'
              --reload-exclude '*/site-packages/*'
              --reload-exclude '**/__pycache__/*')
@@ -107,9 +122,11 @@ start_backend() {
   fi
 
   echo "[INFO] 启动后端（${APP_ENV:-dev}）：${cmd[*]}"
+  echo "[INFO] 备份调度器将自动启动..."
   nohup env APP_ENV="${APP_ENV:-dev}" "${cmd[@]}" >"$LOG_DIR/backend.log" 2>&1 &
   echo $! > "$pidf"
   echo "[OK] 后端 PID $(cat "$pidf")，日志：$LOG_DIR/backend.log"
+  
 }
 
 start_frontend() {
@@ -135,7 +152,7 @@ start_frontend() {
 }
 
 # === 执行 ===
-choose_env
+choose_env "${1:-}"
 load_env_file
 start_backend
 start_frontend
@@ -145,6 +162,13 @@ echo "[INFO] 已在后台启动完成。"
 echo "       环境：${APP_ENV:-dev}"
 echo "       后端：http://$BACKEND_HOST:$BACKEND_PORT"
 echo "       前端：http://localhost:$FRONTEND_PORT"
+echo "       健康检查：http://$BACKEND_HOST:$BACKEND_PORT/health"
+echo "       备份管理：http://localhost:$FRONTEND_PORT/backup"
+echo
 echo "       查看日志："
 echo "         tail -f $LOG_DIR/backend.log"
 echo "         tail -f $LOG_DIR/frontend.log"
+echo
+echo "       停止服务："
+echo "         $ROOT/scripts/stop-bg.sh"
+echo "         或 make stop"

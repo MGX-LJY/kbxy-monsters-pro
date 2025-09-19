@@ -105,6 +105,35 @@ def upscale_image(image_path: Path, scale: int = 2) -> bool:
             log.warning(f"Failed to upscale with PIL: {e}")
             return False
 
+def convert_to_png(image_path: Path) -> bool:
+    """将图片转换为PNG格式"""
+    try:
+        if image_path.suffix.lower() == '.png':
+            return True  # 已经是PNG格式
+            
+        with Image.open(image_path) as img:
+            # 如果是RGBA模式，保持透明度
+            if img.mode in ('RGBA', 'LA'):
+                png_img = img
+            else:
+                # 转换为RGB模式（PNG支持）
+                png_img = img.convert('RGB')
+            
+            # 生成PNG文件路径
+            png_path = image_path.with_suffix('.png')
+            
+            # 保存为PNG
+            png_img.save(png_path, 'PNG', optimize=True)
+            
+            # 删除原文件（如果不是PNG）
+            if image_path.suffix.lower() != '.png':
+                image_path.unlink()
+                
+            return True
+    except Exception as e:
+        log.warning(f"Failed to convert {image_path} to PNG: {e}")
+        return False
+
 def sanitize_filename(name: str) -> str:
     """清理文件名，移除非法字符"""
     # 移除或替换非法字符
@@ -981,7 +1010,7 @@ class Kabu4399Crawler:
     def _process_monster_image(self, monster_name: str, img_url: Optional[str], enable_upscale: bool = True) -> \
             Optional[str]:
         """
-        下载并处理怪物图片
+        下载并处理怪物图片，统一保存为PNG格式
         
         Args:
             monster_name: 怪物名称
@@ -989,7 +1018,7 @@ class Kabu4399Crawler:
             enable_upscale: 是否启用超分
             
         Returns:
-            本地图片路径，失败返回None
+            本地PNG图片路径，失败返回None
         """
         if not img_url or not monster_name:
             return None
@@ -1000,36 +1029,65 @@ class Kabu4399Crawler:
             if not safe_name:
                 safe_name = "unknown_monster"
 
-            # 确定文件扩展名
-            file_ext = ".png"  # 默认使用png
+            # 统一使用PNG扩展名
+            final_image_path = IMAGES_DIR / f"{safe_name}.png"
+
+            # 如果PNG文件已存在，跳过下载
+            if final_image_path.exists():
+                log.info(f"PNG image already exists: {final_image_path}")
+                return str(final_image_path)
+
+            # 确定临时下载文件扩展名
+            temp_ext = ".png"  # 默认使用png
             if img_url.lower().endswith(('.jpg', '.jpeg')):
-                file_ext = ".jpg"
+                temp_ext = ".jpg"
             elif img_url.lower().endswith('.webp'):
-                file_ext = ".webp"
+                temp_ext = ".webp"
 
-            # 生成本地文件路径
-            image_path = IMAGES_DIR / f"{safe_name}{file_ext}"
-
-            # 如果文件已存在，跳过下载
-            if image_path.exists():
-                log.info(f"Image already exists: {image_path}")
-                return str(image_path)
+            # 生成临时下载路径
+            temp_image_path = IMAGES_DIR / f"{safe_name}_temp{temp_ext}"
 
             # 下载图片
             log.info(f"Downloading image for {monster_name}: {img_url}")
-            if not download_image(img_url, image_path):
+            if not download_image(img_url, temp_image_path):
                 return None
+
+            # 转换为PNG格式
+            if temp_ext != ".png":
+                log.info(f"Converting {monster_name} image to PNG format")
+                try:
+                    with Image.open(temp_image_path) as img:
+                        # 如果是RGBA模式，保持透明度
+                        if img.mode in ('RGBA', 'LA'):
+                            png_img = img
+                        else:
+                            # 转换为RGB模式（PNG支持）
+                            png_img = img.convert('RGB')
+                        
+                        # 保存为PNG
+                        png_img.save(final_image_path, 'PNG', optimize=True)
+                        
+                    # 删除临时文件
+                    temp_image_path.unlink()
+                    log.info(f"Successfully converted {monster_name} image to PNG")
+                except Exception as e:
+                    log.warning(f"Failed to convert {monster_name} to PNG, keeping original: {e}")
+                    # 如果转换失败，重命名原文件为PNG（虽然格式可能不对）
+                    temp_image_path.rename(final_image_path)
+            else:
+                # 如果原本就是PNG，直接重命名
+                temp_image_path.rename(final_image_path)
 
             # 进行超分处理
             if enable_upscale:
-                log.info(f"Upscaling image for {monster_name}")
-                upscale_success = upscale_image(image_path, scale=2)
+                log.info(f"Upscaling PNG image for {monster_name}")
+                upscale_success = upscale_image(final_image_path, scale=2)
                 if upscale_success:
-                    log.info(f"Successfully upscaled image for {monster_name}")
+                    log.info(f"Successfully upscaled PNG image for {monster_name}")
                 else:
-                    log.warning(f"Failed to upscale image for {monster_name}, keeping original")
+                    log.warning(f"Failed to upscale PNG image for {monster_name}, keeping original")
 
-            return str(image_path)
+            return str(final_image_path)
 
         except Exception as e:
             log.error(f"Error processing image for {monster_name}: {e}")
@@ -1189,6 +1247,65 @@ class Kabu4399Crawler:
 
 
 # ---------- 示例 ----------
+def convert_existing_jpg_to_png(images_dir: Path = None) -> Dict[str, int]:
+    """
+    批量转换现有JPG文件为PNG格式
+    
+    Args:
+        images_dir: 图片目录路径，默认使用IMAGES_DIR
+        
+    Returns:
+        转换结果统计: {"total": 总数, "success": 成功数, "failed": 失败数, "skipped": 跳过数}
+    """
+    if images_dir is None:
+        images_dir = IMAGES_DIR
+        
+    ensure_dir(images_dir)
+    
+    stats = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+    
+    # 查找所有JPG文件
+    jpg_extensions = ['.jpg', '.jpeg']
+    jpg_files = []
+    
+    for ext in jpg_extensions:
+        jpg_files.extend(images_dir.glob(f"*{ext}"))
+        jpg_files.extend(images_dir.glob(f"*{ext.upper()}"))
+    
+    stats["total"] = len(jpg_files)
+    
+    if stats["total"] == 0:
+        log.info("No JPG files found to convert")
+        return stats
+    
+    log.info(f"Found {stats['total']} JPG files to convert to PNG")
+    
+    for jpg_file in jpg_files:
+        try:
+            # 检查对应的PNG文件是否已存在
+            png_file = jpg_file.with_suffix('.png')
+            if png_file.exists():
+                log.info(f"PNG already exists for {jpg_file.name}, skipping")
+                stats["skipped"] += 1
+                continue
+            
+            log.info(f"Converting {jpg_file.name} to PNG")
+            
+            # 使用convert_to_png函数转换
+            if convert_to_png(jpg_file):
+                stats["success"] += 1
+                log.info(f"Successfully converted {jpg_file.name} to PNG")
+            else:
+                stats["failed"] += 1
+                log.warning(f"Failed to convert {jpg_file.name} to PNG")
+                
+        except Exception as e:
+            stats["failed"] += 1
+            log.error(f"Error converting {jpg_file.name} to PNG: {e}")
+    
+    log.info(f"Conversion complete: {stats['success']} success, {stats['failed']} failed, {stats['skipped']} skipped")
+    return stats
+
 def example_persist(mon: MonsterRow) -> None:
     log.info(
         "PERSIST %s [%s] hp=%s atk=%s spd=%s rec=%d sel=%d skills=%d type=%s img=%s",

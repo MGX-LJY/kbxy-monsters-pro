@@ -1,7 +1,7 @@
 {
   "created_at": "2025-09-17T21:47:39.417575",
-  "last_updated": "2025-09-17T22:58:25.191401",
-  "total_operations": 6,
+  "last_updated": "2025-09-19T17:23:17.594537",
+  "total_operations": 7,
   "history": [
     {
       "id": "change_1758116859417",
@@ -62,6 +62,57 @@
         ]
       },
       "summary": "检测到变更：修改5个文件, 删除5个文件"
+    },
+    {
+      "id": "change_1758273797594",
+      "timestamp": "2025-09-19T17:23:17.594362",
+      "operation": "update",
+      "has_changes": true,
+      "files_count": 68,
+      "changes": {
+        "modified": [
+          "Makefile",
+          "server/app/config.py",
+          "server/app/models.py",
+          "server/app/schemas.py",
+          "server/app/main.py",
+          "server/app/routes/crawl.py",
+          "server/app/routes/tags.py",
+          "server/app/routes/warehouse.py",
+          "server/app/routes/skills.py",
+          "server/app/routes/skills_admin.py",
+          "server/app/routes/collections.py",
+          "server/app/routes/utils.py",
+          "server/app/routes/monsters.py",
+          "server/app/services/tags_service.py",
+          "server/app/services/skills_service.py",
+          "server/app/services/warehouse_service.py",
+          "server/app/services/crawler_service.py",
+          "server/app/services/collection_service.py",
+          "server/app/services/monsters_service.py",
+          "client/src/types.ts",
+          "client/src/components/AddMonsterDrawer.tsx",
+          "client/src/pages/MonstersPage.tsx"
+        ],
+        "added": [
+          "--help",
+          "scripts/stop-bg.sh",
+          "scripts/start-bg.sh",
+          "client/src/components/TagSelector.tsx",
+          "client/src/components/SkillRecommendationHelper.tsx"
+        ],
+        "deleted": [
+          "stop-bg.sh",
+          "upscale_batch.py",
+          "upscaler_gui.py",
+          "start-bg.sh",
+          "upscale.py",
+          "server/app/routes/roles.py",
+          "server/app/routes/derive.py",
+          "server/app/services/derive_service.py"
+        ]
+      },
+      "summary": "检测到变更：修改22个文件, 新增5个文件, 删除8个文件"
     }
   ]
 }

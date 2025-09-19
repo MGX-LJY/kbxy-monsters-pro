@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DEFAULT="/Users/martinezdavid/Documents/MG/code/kbxy-monsters-pro"
+# === 自动检测项目根目录 ===
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DEFAULT="$(dirname "$SCRIPT_DIR")"
 ROOT="${ROOT:-$ROOT_DEFAULT}"
 LOG_DIR="${LOG_DIR:-$ROOT/.logs}"
 mkdir -p "$LOG_DIR"
@@ -87,10 +89,44 @@ stop_one() {
 }
 
 # === 实际执行 ===
-# 后端通常只需按 pid 文件即可；如有端口也可加上兜底
+echo "[INFO] 正在停止卡布妖怪图鉴 Pro 服务..."
+echo
+
+# 后端 - 包含备份调度器
+echo "[INFO] 停止后端服务（包括备份调度器）..."
 stop_one "backend" "8000"
 
-# 前端常见"父死子存活"，必须加端口兜底
+# 前端
+echo "[INFO] 停止前端服务..."
 stop_one "frontend" "5173"
 
-echo "[OK] 已停止后台进程。"
+# 额外检查可能的uvicorn进程
+echo "[INFO] 检查残留的uvicorn进程..."
+uvicorn_pids="$(pgrep -f 'uvicorn.*app.main:app' 2>/dev/null || true)"
+if [[ -n "$uvicorn_pids" ]]; then
+  echo "[WARN] 发现残留的uvicorn进程：$uvicorn_pids，正在清理..."
+  kill $uvicorn_pids 2>/dev/null || true
+  sleep 1
+  kill -9 $uvicorn_pids 2>/dev/null || true
+fi
+
+# 检查端口占用情况
+echo "[INFO] 检查端口占用情况..."
+port_8000="$(lsof -ti tcp:8000 2>/dev/null || true)"
+port_5173="$(lsof -ti tcp:5173 2>/dev/null || true)"
+
+if [[ -n "$port_8000" ]]; then
+  echo "[WARN] 端口8000仍被占用，PID: $port_8000"
+else
+  echo "[OK] 端口8000已释放"
+fi
+
+if [[ -n "$port_5173" ]]; then
+  echo "[WARN] 端口5173仍被占用，PID: $port_5173"
+else
+  echo "[OK] 端口5173已释放"
+fi
+
+echo
+echo "[OK] 已停止所有后台进程。"
+echo "[INFO] 备份调度器已安全停止，数据完整性得到保护。"

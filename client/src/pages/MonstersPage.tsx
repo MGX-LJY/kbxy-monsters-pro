@@ -1,7 +1,7 @@
 // client/src/pages/MonstersPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
-import api from '../api'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import api, { backupApi } from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
@@ -123,6 +123,27 @@ const RAW_COLUMNS = [
 
 export default function MonstersPage() {
   const queryClient = useQueryClient()
+
+  // 快速备份 mutation
+  const quickBackupMutation = useMutation({
+    mutationFn: () => backupApi.createBackup({
+      description: '从主页面快速备份'
+    }),
+    onSuccess: (data) => {
+      console.log('Backup created:', data.data)
+      alert(`快速备份创建成功！\n备份名称: ${data.data.name}`)
+    },
+    onError: (error: any) => {
+      console.error('Quick backup failed:', error)
+      alert(`快速备份失败: ${error.response?.data?.detail || error.message || '请检查网络连接'}`)
+    },
+  })
+
+  const handleQuickBackup = () => {
+    if (window.confirm('确定要创建当前数据的备份吗？备份可能需要1-2分钟。')) {
+      quickBackupMutation.mutate()
+    }
+  }
 
   // 搜索 + 筛选
   const [q, setQ] = useState('')
@@ -1335,6 +1356,16 @@ export default function MonstersPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* 备份按钮 */}
+            <button 
+              className={`btn ${BTN_FX}`} 
+              onClick={handleQuickBackup}
+              disabled={quickBackupMutation.isPending}
+              title="快速备份当前数据"
+            >
+              {quickBackupMutation.isPending ? '备份中...' : '💾 备份'}
+            </button>
+            
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
             </button>

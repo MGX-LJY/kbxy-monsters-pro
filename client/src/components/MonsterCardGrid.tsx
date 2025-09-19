@@ -69,7 +69,7 @@ function buildCandidates(m: Monster, override?: (m: Monster) => string | null) {
   const BASE_A = import.meta.env.VITE_MONSTER_IMG_BASE || '/media/monsters'
   const BASE_B = '/images/monsters'
   const names = Array.from(new Set([m.name, (m as any).name_final].filter(Boolean).map(normalizeName))) as string[]
-  const exts = ['gif', 'jpg', 'png', 'jpeg', 'webp']
+  const exts = ['png']
 
   for (const base of [BASE_A, BASE_B]) {
     for (const n of names) {
