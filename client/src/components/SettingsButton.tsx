@@ -26,9 +26,6 @@ export default function SettingsButton() {
       queryClient.invalidateQueries({ queryKey: ['backup-status'] })
       
       setOpen(false)
-      
-      // 显示成功提示
-      alert('设置已保存成功！')
     } catch (error) {
       console.error('Failed to save backup settings:', error)
       alert('设置保存失败，请重试')

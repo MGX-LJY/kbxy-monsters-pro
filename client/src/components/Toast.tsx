@@ -15,9 +15,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{ push }}>
       {children}
-      <div className="toast space-y-2">
-        {list.map(m => <div key={m.id} className="rounded-lg border px-3 py-2 shadow bg-white">{m.text}</div>)}
-      </div>
     </Ctx.Provider>
   )
 }

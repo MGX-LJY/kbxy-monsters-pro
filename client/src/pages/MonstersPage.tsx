@@ -1375,7 +1375,7 @@ export default function MonstersPage() {
               disabled={quickBackupMutation.isPending}
               title="快速备份当前数据"
             >
-              {quickBackupMutation.isPending ? '备份中...' : '💾 备份'}
+              {quickBackupMutation.isPending ? '备份中...' : '备份'}
             </button>
             
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
@@ -1774,7 +1774,7 @@ export default function MonstersPage() {
             </div>
           )}
           <div className="mt-3 flex items-center justify-end gap-2">
-            <button className={`btn ${BTN_FX}`} onClick={() => list.refetch()}>刷新</button>
+            <button className={`btn ${BTN_FX}`} onClick={() => setPage(1)}>返回第一页</button>
             <Pagination page={page} pageSize={pageSize} total={list.data?.total || 0} onPageChange={setPage} />
           </div>
         </div>

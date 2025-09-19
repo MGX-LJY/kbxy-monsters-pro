@@ -70,8 +70,7 @@ export default function TopBar({
             title={location.pathname === '/backup' ? '退出' : '进入备份'}
             aria-label="时光机备份"
           >
-            <Clock className="w-4 h-4 mr-2" />
-            <span className="hidden sm:inline">{location.pathname === '/backup' ? '退出' : '备份'}</span>
+            <span className="sm:inline">{location.pathname === '/backup' ? '退出' : '备份'}</span>
           </button>
 
           {/* 刷新（快捷键 C） */}
@@ -91,7 +90,7 @@ export default function TopBar({
 
           <a
             className="btn h-9 px-3 hover:bg-gray-100 transition"
-            href="https://github.com"
+            href="https://github.com/MGX-LJY/kbxy-monsters-pro"
             target="_blank"
             rel="noreferrer"
             title="在 GitHub 查看"

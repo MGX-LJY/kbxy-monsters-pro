@@ -7,13 +7,6 @@ import api from '../api'
 
 type Perspective = 'attack' | 'defense'
 
-type ChartGroupItem = { target: string; x: number }
-type ChartGroups = {
-  high: ChartGroupItem[]
-  ordinary: ChartGroupItem[]
-  low: ChartGroupItem[]
-}
-
 // 兼容多种后端返回结构
 type MatrixRows = Record<string, Record<string, number>>
 type MatrixDTO =
@@ -107,49 +100,6 @@ function normalizeMatrix(dto: MatrixDTO): { types: string[]; rows: MatrixRows } 
   return { types: [], rows: {} }
 }
 
-// 从 rows 中抽取一行或一列并分组（分组内用固定顺序排序）
-function pickGroups(rows: MatrixRows, types: string[], base: string, perspective: Perspective): ChartGroups {
-  const arr: ChartGroupItem[] = []
-  if (!base || !types.length) return { high: [], ordinary: [], low: [] }
-
-  const orderedTypes = sortElementList(types)
-
-  if (perspective === 'attack') {
-    // 我打别人：取 base 行
-    const row = rows[base] || {}
-    for (const t of orderedTypes) {
-      if (t === base) continue
-      const x = Number(row[t])
-      if (Number.isFinite(x)) arr.push({ target: t, x })
-    }
-  } else {
-    // 别人打我：固定用“进攻矩阵”的列（即从 rows[from][base] 抽）
-    for (const from of orderedTypes) {
-      if (from === base) continue
-      const x = Number(rows[from]?.[base])
-      if (Number.isFinite(x)) arr.push({ target: from, x })
-    }
-  }
-
-  return splitToGroups(arr)
-}
-
-function splitToGroups(arr: ChartGroupItem[]): ChartGroups {
-  const high: ChartGroupItem[] = []
-  const ordinary: ChartGroupItem[] = []
-  const low: ChartGroupItem[] = []
-  for (const it of arr) {
-    const x = Number(it.x)
-    if (!Number.isFinite(x)) continue
-    if (Math.abs(x - 1) < 1e-9) ordinary.push(it)
-    else if (x > 1) high.push(it)
-    else low.push(it)
-  }
-  high.sort((a, b) => compareByTypeOrder(a.target, b.target))
-  ordinary.sort((a, b) => compareByTypeOrder(a.target, b.target))
-  low.sort((a, b) => compareByTypeOrder(a.target, b.target))
-  return { high, ordinary, low }
-}
 
 // ========= 组件 =========
 export default function TypeChartDialog({
@@ -212,7 +162,7 @@ export default function TypeChartDialog({
   // 排好序的元素列表
   const elementsSorted = useMemo(() => sortElementList(elements.data || []), [elements.data])
 
-  // 选中的“基准元素”
+  // 选中的"基准元素"
   const [base, setBase] = useState<string>('')
   // 首次挂载或数据就绪时默认选择第一个
   useEffect(() => {
@@ -235,16 +185,6 @@ export default function TypeChartDialog({
 
   const { types, rows } = useMemo(() => normalizeMatrix(matrix.data || {}), [matrix.data])
   const allTypes = useMemo(() => sortElementList(types), [types])
-
-  // 分组（同一份矩阵：行=攻，列=守）
-  const groupsAttack: ChartGroups = useMemo(
-    () => pickGroups(rows, allTypes, base, 'attack'),
-    [rows, allTypes, base]
-  )
-  const groupsDefense: ChartGroups = useMemo(
-    () => pickGroups(rows, allTypes, base, 'defense'),
-    [rows, allTypes, base]
-  )
 
   const isLoading = (elements.isLoading || matrix.isLoading) && mounted
   const hasError = !!(elements.error || matrix.error)
@@ -286,7 +226,7 @@ export default function TypeChartDialog({
 
         {/* 控件区 */}
         <div className="px-5 py-3 border-b bg-gray-50">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center justify-center gap-4">
             <div className="flex items-center gap-2">
               <label className="text-sm text-gray-600">基准元素</label>
               <select
@@ -313,7 +253,7 @@ export default function TypeChartDialog({
         </div>
 
         {/* 内容区 */}
-        <div className="p-5 overflow-auto max-h-[calc(88vh-170px)]">
+        <div className="p-3 overflow-auto max-h-[calc(88vh-100px)]">
           {isLoading && <div className="text-sm text-gray-500">加载克制数据...</div>}
 
           {hasError && (
@@ -321,33 +261,11 @@ export default function TypeChartDialog({
           )}
 
           {!isLoading && !hasError && (
-            <div className="grid gap-5 md:grid-cols-2">
-              {/* 进攻视角卡片 */}
-              <div className="rounded-xl border bg-white">
-                <div className="border-b px-4 py-3">
-                  <div className="text-sm font-semibold">进攻视角（我打别人）</div>
-                  <div className="text-xs text-gray-500">当前：{base || '—'} → 其它元素</div>
-                </div>
-                <div className="p-4">
-                  <Section title="高倍率（> ×1.0）" items={groupsAttack.high} placeholder="（无）" />
-                  <Section title="普通（= ×1.0）" items={groupsAttack.ordinary} placeholder="（无）" />
-                  <Section title="低倍率（< ×1.0）" items={groupsAttack.low} placeholder="（无）" />
-                </div>
-              </div>
-
-              {/* 防守视角卡片 */}
-              <div className="rounded-xl border bg-white">
-                <div className="border-b px-4 py-3">
-                  <div className="text-sm font-semibold">防守视角（别人打我）</div>
-                  <div className="text-xs text-gray-500">当前：其它元素 → {base || '—'}</div>
-                </div>
-                <div className="p-4">
-                  <Section title="高倍率（> ×1.0）" items={groupsDefense.high} placeholder="（无）" />
-                  <Section title="普通（= ×1.0）" items={groupsDefense.ordinary} placeholder="（无）" />
-                  <Section title="低倍率（< ×1.0）" items={groupsDefense.low} placeholder="（无）" />
-                </div>
-              </div>
-            </div>
+            <RadarChart
+              base={base}
+              rows={rows}
+              allTypes={allTypes}
+            />
           )}
         </div>
 
@@ -363,33 +281,211 @@ export default function TypeChartDialog({
   )
 }
 
-function Section({
-  title,
-  items,
-  placeholder = '（无）',
+
+function RadarChart({
+  base,
+  rows,
+  allTypes,
 }: {
-  title: string
-  items: ChartGroupItem[]
-  placeholder?: string
+  base: string
+  rows: MatrixRows
+  allTypes: string[]
 }) {
+  if (!base || !allTypes.length) {
+    return (
+      <div className="flex items-center justify-center h-96 text-gray-500">
+        请选择基准元素
+      </div>
+    )
+  }
+
+  // 响应式尺寸计算 - 适中尺寸
+  const containerSize = Math.min(window.innerWidth * 0.88, window.innerHeight * 0.72, 650)
+  const svgSize = containerSize
+  const centerX = svgSize / 2
+  const centerY = svgSize / 2
+  const maxRadius = svgSize * 0.38
+  const minRadius = svgSize * 0.15
+
+  // 排除当前基准元素的其他属性
+  const otherTypes = allTypes.filter(t => t !== base)
+  const angleStep = (2 * Math.PI) / otherTypes.length
+
+  // 计算每个属性的角度位置
+  const typePositions = otherTypes.map((type, index) => {
+    const angle = index * angleStep - Math.PI / 2 // 从顶部开始
+    return { type, angle }
+  })
+
+  // 获取攻击和防守数据
+  const attackData = typePositions.map(({ type, angle }) => {
+    const multiplier = rows[base]?.[type] || 1
+    const radius = minRadius + (maxRadius - minRadius) * Math.min(Math.max(multiplier - 0.5, 0) / 1.5, 1)
+    return {
+      type,
+      angle,
+      multiplier,
+      radius,
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle),
+    }
+  })
+
+  const defenseData = typePositions.map(({ type, angle }) => {
+    const multiplier = rows[type]?.[base] || 1
+    const radius = minRadius + (maxRadius - minRadius) * Math.min(Math.max(multiplier - 0.5, 0) / 1.5, 1)
+    return {
+      type,
+      angle,
+      multiplier,
+      radius,
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle),
+    }
+  })
+
+  // 根据倍率计算半径的函数
+  const getRadiusForMultiplier = (multiplier: number) => {
+    return minRadius + (maxRadius - minRadius) * Math.min(Math.max(multiplier - 0.5, 0) / 1.5, 1)
+  }
+
+  // 只保留重要的参考线
+  const gridData = [
+    { multiplier: 1.0, radius: getRadiusForMultiplier(1.0), important: true },
+    { multiplier: 2.0, radius: getRadiusForMultiplier(2.0), important: true },
+  ]
+
   return (
-    <div className="mb-4">
-      <div className="mb-2 text-sm font-semibold text-gray-700">{title}</div>
-      {items.length === 0 ? (
-        <div className="text-xs text-gray-400">{placeholder}</div>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {items.map((it) => (
-            <span
-              key={it.target}
-              className="badge whitespace-nowrap"
-              title={`${it.target} ${formatMultiplier(it.x)}`}
-            >
-              {it.target}（{formatMultiplier(it.x)}）
-            </span>
-          ))}
+    <div className="flex flex-col items-center">
+      <div className="relative flex justify-center">
+        <svg width={svgSize} height={svgSize} className="overflow-visible">
+          {/* 背景网格 - 简化版 */}
+          <g>
+            {/* 重要参考圈 (1.0x 和 2.0x) */}
+            {gridData.map((grid, i) => (
+              <g key={`grid-${i}`}>
+                <circle
+                  cx={centerX}
+                  cy={centerY}
+                  r={grid.radius}
+                  fill="none"
+                  stroke={grid.multiplier === 1.0 ? "#10b981" : "#ef4444"}
+                  strokeWidth="1.5"
+                  opacity="0.4"
+                  strokeDasharray="4,4"
+                />
+                {/* 倍率标签 */}
+                <text
+                  x={centerX + grid.radius + svgSize * 0.02}
+                  y={centerY + 3}
+                  className="fill-gray-600 text-xs"
+                >
+                  ×{grid.multiplier}
+                </text>
+              </g>
+            ))}
+          </g>
+
+          {/* 攻击视角雷达 */}
+          <g>
+            <polygon
+              points={attackData.map(d => `${d.x},${d.y}`).join(' ')}
+              fill="rgba(59,130,246,0.25)"
+              stroke="#3b82f6"
+              strokeWidth="2.5"
+            />
+            {attackData.map((d, i) => (
+              <circle key={`attack-${i}`} cx={d.x} cy={d.y} r={svgSize * 0.01} fill="#3b82f6" />
+            ))}
+          </g>
+
+          {/* 防守视角雷达 */}
+          <g>
+            <polygon
+              points={defenseData.map(d => `${d.x},${d.y}`).join(' ')}
+              fill="rgba(239,68,68,0.25)"
+              stroke="#ef4444"
+              strokeWidth="2.5"
+            />
+            {defenseData.map((d, i) => (
+              <circle key={`defense-${i}`} cx={d.x} cy={d.y} r={svgSize * 0.01} fill="#ef4444" />
+            ))}
+          </g>
+
+          {/* 中心点和基准元素 */}
+          <circle cx={centerX} cy={centerY} r={svgSize * 0.02} fill="#6366f1" />
+          <text
+            x={centerX}
+            y={centerY - svgSize * 0.05}
+            textAnchor="middle"
+            className="fill-gray-900 text-sm font-semibold"
+          >
+            {base}
+          </text>
+
+          {/* 属性标签 */}
+          {typePositions.map(({ type, angle }, i) => {
+            const labelRadius = maxRadius + svgSize * 0.08
+            const labelX = centerX + labelRadius * Math.cos(angle)
+            const labelY = centerY + labelRadius * Math.sin(angle)
+            const attackMultiplier = attackData[i]?.multiplier || 1
+            const defenseMultiplier = defenseData[i]?.multiplier || 1
+            
+            return (
+              <g key={`label-${i}`}>
+                <text
+                  x={labelX}
+                  y={labelY}
+                  textAnchor="middle"
+                  className="fill-gray-900 text-base font-medium"
+                >
+                  {type}
+                </text>
+                <text
+                  x={labelX}
+                  y={labelY + 12}
+                  textAnchor="middle"
+                  className="fill-blue-600 text-[10px]"
+                >
+                  攻:{formatMultiplier(attackMultiplier)}
+                </text>
+                <text
+                  x={labelX}
+                  y={labelY + 22}
+                  textAnchor="middle"
+                  className="fill-red-600 text-[10px]"
+                >
+                  守:{formatMultiplier(defenseMultiplier)}
+                </text>
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+
+      {/* 图例 */}
+      <div className="mt-2 space-y-1">
+        <div className="flex gap-8 text-sm justify-center">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
+            <span>攻击视角（我打别人）</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-red-500 rounded-full"></div>
+            <span>防守视角（别人打我）</span>
+          </div>
         </div>
-      )}
+        <div className="flex gap-8 text-xs justify-center text-gray-600">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-px bg-green-600 border-dashed"></div>
+            <span>×1.0参考线</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-px bg-red-600 border-dashed"></div>
+            <span>×2.0参考线</span>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
