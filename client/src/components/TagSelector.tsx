@@ -203,7 +203,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
             <label className="label text-sm">🤖 AI 建议</label>
             <button
               type="button"
-              onClick={refetchSuggestions}
+              onClick={() => refetchSuggestions()}
               className="text-xs text-blue-600 hover:text-blue-800"
             >
               重新建议

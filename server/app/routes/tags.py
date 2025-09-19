@@ -10,6 +10,7 @@ from typing import List, Dict, Optional
 from ..db import SessionLocal
 from ..models import Monster, Tag
 from ..services.monsters_service import upsert_tags
+from ..config import settings
 from ..services.tags_service import (
     # —— 正则/AI 建议 —— #
     suggest_tags_for_monster,
@@ -137,7 +138,7 @@ def suggest(monster_id: int, db: Session = Depends(get_db)):
     m = db.execute(select(Monster).where(Monster.id == monster_id)).scalar_one_or_none()
     if not m:
         raise HTTPException(404, "monster not found")
-    tags = suggest_tags_for_monster(m)
+    tags = suggest_tags_for_monster(m, selected_only=settings.tag_use_selected_only)
     derived_preview = {}
     return {
         "monster_id": m.id,
@@ -160,7 +161,7 @@ def retag(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(404, "monster not found")
 
-    tags = suggest_tags_for_monster(m)
+    tags = suggest_tags_for_monster(m, selected_only=settings.tag_use_selected_only)
     m.tags = upsert_tags(db, tags)
 
     db.commit()
@@ -188,7 +189,7 @@ def retag_ai(monster_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "monster not found")
 
     try:
-        tags = ai_suggest_tags_for_monster(m)  # 内部完成审计/落盘 JSON
+        tags = ai_suggest_tags_for_monster(m, selected_only=settings.tag_use_selected_only)  # 内部完成审计/落盘 JSON
     except RuntimeError as e:
         raise HTTPException(500, f"AI 标签识别失败：{e}")
 
@@ -235,7 +236,7 @@ def ai_batch(payload: BatchIds = Body(...), db: Session = Depends(get_db)):
                 failed += 1
                 details.append({"id": mid, "ok": False, "error": "monster not found"})
                 continue
-            tags = ai_suggest_tags_for_monster(m)
+            tags = ai_suggest_tags_for_monster(m, selected_only=settings.tag_use_selected_only)
             m.tags = upsert_tags(db, tags)
             db.commit()
             success += 1

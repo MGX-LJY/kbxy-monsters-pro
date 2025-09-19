@@ -13,7 +13,6 @@ type Props = {
   onUpdated?: (monsterId: number) => void
 }
 
-const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v))
 
 export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onUpdated }: Props) {
   const isEdit = !!editId
@@ -21,14 +20,18 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
   const [element, setElement] = useState('')
   const [role, setRole] = useState('')
   const [type, setType] = useState('')
-
-  // 六维
+  
+  // 六维数据（不显示编辑界面，但保留数据库字段）
   const [hp, setHp] = useState(100)
   const [speed, setSpeed] = useState(100)
   const [attack, setAttack] = useState(100)
   const [defense, setDefense] = useState(100)
   const [magic, setMagic] = useState(100)
   const [resist, setResist] = useState(100)
+  
+  // 仓库状态（不显示编辑界面，但保留数据库字段）
+  const [possess, setPossess] = useState(false)
+  const [method, setMethod] = useState('')
 
   const [tagsInput, setTagsInput] = useState('')
   const [skills, setSkills] = useState<SkillRow[]>([{ name: '', description: '' }])
@@ -37,13 +40,6 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
   const [extractRaw, setExtractRaw] = useState('')
   const [extracting, setExtracting] = useState(false)
 
-  const sum = useMemo(() => hp + speed + attack + defense + magic + resist, [hp, speed, attack, defense, magic, resist])
-
-  const base_offense = attack
-  const base_survive = hp
-  const base_control = (defense + magic) / 2
-  const base_tempo = speed
-  const base_pp = resist
 
   const addSkill = () => setSkills(prev => [...prev, { name: '', description: '' }])
   const removeSkill = (idx: number) => setSkills(prev => prev.filter((_, i) => i !== idx))
@@ -53,6 +49,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
   const resetAll = () => {
     setNameFinal(''); setElement(''); setRole(''); setType('')
     setHp(100); setSpeed(100); setAttack(100); setDefense(100); setMagic(100); setResist(100)
+    setPossess(false); setMethod('')
     setTagsInput(''); setSkills([{ name: '', description: '' }]); setErr(null); setExtractRaw('')
   }
 
@@ -70,16 +67,16 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
         setElement(d.element || '')
         setRole(d.role || '')
         setType(d.type || '')
-        // 原始六维如有则用原始，否则用折算
-        const raw = d.explain_json?.raw_stats
-        if (raw) {
-          setHp(raw.hp ?? 100); setSpeed(raw.speed ?? 100); setAttack(raw.attack ?? 100)
-          setDefense(raw.defense ?? 100); setMagic(raw.magic ?? 100); setResist(raw.resist ?? 100)
-        } else {
-          setHp(d.base_survive ?? 100); setSpeed(d.base_tempo ?? 100); setAttack(d.base_offense ?? 100)
-          // 没有单独防御/法术，只能从 control 反推，这里保持为 (control, control)
-          setDefense(d.base_control ?? 100); setMagic(d.base_control ?? 100); setResist(d.base_pp ?? 100)
-        }
+        // 加载六维数据（优先使用原始数据，否则使用数据库中的数据）
+        setHp(d.hp || 100)
+        setSpeed(d.speed || 100)
+        setAttack(d.attack || 100)
+        setDefense(d.defense || 100)
+        setMagic(d.magic || 100)
+        setResist(d.resist || 100)
+        // 加载仓库状态
+        setPossess(d.possess || false)
+        setMethod(d.method || '')
         setTagsInput((d.tags || []).join(' '))
         const arr = (sk.data || []).map((s: any) => ({ name: s.name || '', description: s.description || '' }))
         setSkills(arr.length ? arr : [{ name: '', description: '' }])
@@ -95,11 +92,17 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
     setSubmitting(true); setErr(null)
     try {
       const payload = {
-        name_final: nameFinal.trim(),
+        name: nameFinal.trim(),
         element: element || null,
-        role: role || null,
         type: type || null,
-        base_offense, base_survive, base_control, base_tempo, base_pp,
+        hp,
+        speed,
+        attack,
+        defense,
+        magic,
+        resist,
+        possess,
+        method: method || null,
         tags: tagsInput.split(/[\s,，、;；]+/).map(s => s.trim()).filter(Boolean),
         skills: skills
           .filter(s => s.name.trim())
@@ -127,6 +130,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
     try {
       const { data } = await api.post('/utils/extract', { text: extractRaw })
       if (data?.name && !nameFinal) setNameFinal(data.name)
+      // 处理六维数据
       if (data?.stats) {
         const s = data.stats
         if (typeof s.hp === 'number') setHp(s.hp)
@@ -163,16 +167,16 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
     <SideDrawer open={open} onClose={onClose} title={isEdit ? '编辑宠物' : '新增宠物'}>
       <div className="space-y-5">
         {/* 智能识别 */}
-        <div className="card p-3 space-y-2">
-          <label className="label">智能识别（粘贴原文，自动提取六维 + 技能）</label>
-          <textarea
-            className="input h-24"
-            placeholder="例：岚羽箭雕 115 113 120 107 96 94  疾袭贯羽 72 风 物理 165 5 无视对手防御提升的效果..."
-            value={extractRaw}
-            onChange={e => setExtractRaw(e.target.value)}
-          />
-          <div className="flex justify-end">
-            <button className="btn" onClick={extractFromText} disabled={extracting}>
+        <div className="card p-2 space-y-2">
+          <label className="label text-sm">智能识别（粘贴4399图鉴链接）</label>
+          <div className="flex gap-2">
+            <input
+              className="input text-sm flex-1"
+              placeholder="粘贴链接..."
+              value={extractRaw}
+              onChange={e => setExtractRaw(e.target.value)}
+            />
+            <button className="btn text-sm px-3" onClick={extractFromText} disabled={extracting}>
               {extracting ? '识别中...' : '识别并填入'}
             </button>
           </div>
@@ -207,7 +211,7 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
                 <option value="通用">通用</option>
               </select>
             </div>
-            <div className="md:col-span-2">
+            <div>
               <label className="label">获取分类</label>
               <select className="select" value={type} onChange={e => setType(e.target.value)}>
                 <option value="">未设置</option>
@@ -236,41 +240,6 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
           </div>
         </div>
 
-        {/* 六维 */}
-        <div className="card p-3 space-y-3">
-          <h4 className="font-semibold">基础种族值（六维）</h4>
-          <div className="space-y-3">
-            {[
-              ['体力', hp, setHp],
-              ['速度', speed, setSpeed],
-              ['攻击', attack, setAttack],
-              ['防御', defense, setDefense],
-              ['法术', magic, setMagic],
-              ['抗性', resist, setResist],
-            ].map(([label, val, setter]: any) => (
-              <div key={label} className="grid grid-cols-6 gap-2 items-center">
-                <div className="text-sm text-gray-600">{label}</div>
-                <input
-                  type="range" min={50} max={150} step={1}
-                  value={val}
-                  onChange={e => (setter as any)(clamp(parseInt(e.target.value,10), 0, 999))}
-                  className="col-span-4"
-                />
-                <input
-                  className="input py-1"
-                  value={val}
-                  onChange={e => (setter as any)(clamp(parseInt(e.target.value || '0', 10), 0, 999))}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="p-2 bg-gray-50 rounded text-sm text-center">
-            六维总和：<b>{sum}</b>
-          </div>
-          <div className="text-xs text-gray-500">
-            * 提交时换算为：攻={base_offense} 生={base_survive} 控={(base_control).toFixed(1)} 速={base_tempo} PP={base_pp}
-          </div>
-        </div>
 
         {/* 技能 */}
         <div>
@@ -278,14 +247,14 @@ export default function AddMonsterDrawer({ open, editId, onClose, onCreated, onU
             <h4 className="font-semibold">技能（可添加多个）</h4>
             <button className="btn" onClick={addSkill}>+ 添加技能</button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="space-y-2">
             {skills.map((s, idx) => (
-              <div key={idx} className="card p-3 space-y-2">
+              <div key={idx} className="card p-2 space-y-1">
                 <div className="flex items-center gap-2">
                   <input className="input flex-1" value={s.name} onChange={e => updateSkill(idx, 'name', e.target.value)} placeholder={`技能 ${idx+1} 名称`} />
-                  <button className="btn" onClick={() => removeSkill(idx)} disabled={skills.length === 1}>删除</button>
+                  <button className="btn text-xs px-1 py-1" onClick={() => removeSkill(idx)} disabled={skills.length === 1}>删</button>
                 </div>
-                <textarea className="input h-24" value={s.description} onChange={e => updateSkill(idx, 'description', e.target.value)} placeholder="技能描述" />
+                <textarea className="input h-10" value={s.description} onChange={e => updateSkill(idx, 'description', e.target.value)} placeholder="技能描述" />
               </div>
             ))}
           </div>

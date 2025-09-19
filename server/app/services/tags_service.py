@@ -239,10 +239,7 @@ _init_static_exports()
 # ======================
 
 def _skills_iter(monster: Monster, selected_only: bool = True):
-    if getattr(monster, "skills", None):
-        for s in monster.skills:
-            yield getattr(s, "id", None), getattr(s, "name", None), getattr(s, "description", None)
-        return
+    # 优先使用 monster_skills 来检查 selected 状态，这是正确的数据源
     if getattr(monster, "monster_skills", None):
         for ms in monster.monster_skills:
             # 如果启用了只使用推荐技能，且该技能未被选择为推荐，则跳过
@@ -254,6 +251,12 @@ def _skills_iter(monster: Monster, selected_only: bool = True):
             else:
                 desc = getattr(s, "description", None)
                 yield getattr(s, "id", None), getattr(s, "name", None), desc
+        return
+    # 兼容旧的 skills 代理（如果 monster_skills 不存在）
+    if getattr(monster, "skills", None):
+        for s in monster.skills:
+            # 注意：这个分支无法检查 selected 状态，因为 skills 是代理
+            yield getattr(s, "id", None), getattr(s, "name", None), getattr(s, "description", None)
 
 def _skill_texts(monster: Monster, selected_only: bool = True) -> List[Tuple[Optional[int], str, str]]:
     out = []

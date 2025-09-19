@@ -10,6 +10,7 @@ import { useSettings } from '../context/SettingsContext'
 import MonsterCardGrid from '../components/MonsterCardGrid'
 import SkeletonCardGrid from '../components/SkeletonCardGrid'
 import TagSelector from '../components/TagSelector'
+import SkillRecommendationHelper from '../components/SkillRecommendationHelper'
 
 // 适配新后端：技能带 element/kind/power/description
 type SkillDTO = {
@@ -163,8 +164,6 @@ export default function MonstersPage() {
   const [editElement, setEditElement] = useState('')
   const [editRole, setEditRole] = useState('')
   const [editTags, setEditTags] = useState('')
-  const [editPossess, setEditPossess] = useState<boolean>(false)
-  const [editGettable, setEditGettable] = useState<boolean>(false)
   const [editType, setEditType] = useState<string>('')
   const [editMethod, setEditMethod] = useState<string>('')
 
@@ -625,8 +624,7 @@ export default function MonstersPage() {
     setEditName(s.name || s.name_final || '')
     setEditElement(s.element || '')
     setEditRole(s.role || '')
-    setEditPossess(!!s.possess)
-    setEditGettable(!!s.new_type)
+    // 仓库状态已移至AddMonsterDrawer组件内部处理
     setEditType(s.type || '')
     setEditMethod(s.method || '')
 
@@ -648,9 +646,10 @@ export default function MonstersPage() {
         element: x.element ?? '',
         kind: x.kind ?? '',
         power: x.power ?? null,
-        description: x.description ?? ''
+        description: x.description ?? '',
+        selected: x.selected ?? false
       }))
-    setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '' }])
+    setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '', selected: false }])
 
     setIsEditing(true)
   }
@@ -725,8 +724,6 @@ export default function MonstersPage() {
         name: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        possess: !!editPossess,
-        new_type: !!editGettable,
         type: editType || null,
         method: editMethod || null,
         hp, speed, attack, defense, magic, resist,
@@ -758,8 +755,6 @@ export default function MonstersPage() {
         name: editName.trim(),
         element: editElement || null,
         role: editRole || null,
-        possess: !!editPossess,
-        new_type: !!editGettable,
         type: editType || null,
         method: editMethod || null,
         hp, speed, attack, defense, magic, resist,
@@ -1161,12 +1156,12 @@ export default function MonstersPage() {
     setEditSkills(prev => prev.map((s, i) => i === idx ? { ...s, ...patch } : s))
   }
   const removeSkill = (idx: number) => setEditSkills(prev => prev.filter((_, i) => i !== idx))
-  const addSkill = () => setEditSkills(prev => [...prev, { name: '', element: '', kind: '', power: null, description: '' }])
+  const addSkill = () => setEditSkills(prev => [...prev, { name: '', element: '', kind: '', power: null, description: '', selected: false }])
 
   // 编辑态时，保证至少有一条空卡可写
   useEffect(() => {
     if (isEditing && editSkills.length === 0) {
-      setEditSkills([{ name: '', element: '', kind: '', power: null, description: '' }])
+      setEditSkills([{ name: '', element: '', kind: '', power: null, description: '', selected: false }])
     }
   }, [isEditing, editSkills.length])
 
@@ -1187,8 +1182,7 @@ export default function MonstersPage() {
     setEditElement('')
     setEditRole('')
     setEditTags('')
-    setEditPossess(false)
-    setEditGettable(false)
+    // 仓库状态已移至AddMonsterDrawer组件内部处理
     setEditType('')
     setEditMethod('')
     setHp(100); setSpeed(100); setAttack(100); setDefense(100); setMagic(100); setResist(100)
@@ -1231,7 +1225,7 @@ export default function MonstersPage() {
       // 基础信息
       if (data.name) setEditName(data.name)
       if (data.element) setEditElement(data.element)
-      if (typeof data.new_type === 'boolean') setEditGettable(!!data.new_type)
+      // 仓库状态已移至AddMonsterDrawer组件内部处理
       if (data.type) setEditType(data.type)
       if (data.method) setEditMethod(data.method)
 
@@ -1253,10 +1247,11 @@ export default function MonstersPage() {
           element: s.element || '',
           kind: s.kind || '',
           power: (typeof s.power === 'number' && Number.isFinite(s.power)) ? s.power : null,
-          description: s.description || ''
+          description: s.description || '',
+          selected: s.selected ?? false
         }))
         : []
-      setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '' }])
+      setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '', selected: false }])
 
       alert('已从链接识别并填充，可继续手动调整。')
     } catch (e: any) {
@@ -1798,15 +1793,6 @@ export default function MonstersPage() {
                       </select>
                     </div>
 
-                    {/* 仓库/可获取 */}
-                    <div className="flex items-center gap-2">
-                      <input id="possess" type="checkbox" checked={editPossess} onChange={e => setEditPossess(e.target.checked)} className="h-5 w-5" />
-                      <label htmlFor="possess" className="text-sm">已拥有（加入仓库）</label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <input id="gettable" type="checkbox" checked={editGettable} onChange={e => setEditGettable(e.target.checked)} className="h-5 w-5" />
-                      <label htmlFor="gettable" className="text-sm">当前可获取</label>
-                    </div>
 
                     {/* 获取渠道 / 获取方式 */}
                     <div>
@@ -1832,88 +1818,89 @@ export default function MonstersPage() {
                   </div>
                 </div>
 
-                {/* 基础种族值 */}
-                <div className="card p-3 space-y-3">
-                  <h4 className="font-semibold">基础种族值（原始六维，直接保存到列）</h4>
-                  {[
-                    ['体力', hp, setHp],
-                    ['速度', speed, setSpeed],
-                    ['攻击', attack, setAttack],
-                    ['防御', defense, setDefense],
-                    ['法术', magic, setMagic],
-                    ['抗性', resist, setResist],
-                  ].map(([label, val, setter]: any) => (
-                    <div key={label} className="grid grid-cols-6 gap-2 items-center">
-                      <div className="text-sm text-gray-600 text-center">{label}</div>
-                      <input type="range" min={50} max={200} step={1}
-                        value={val} onChange={e => (setter as any)(parseInt(e.target.value, 10))} className="col-span-4" />
-                      <input className="input py-1 text-center" value={val}
-                        onChange={e => (setter as any)(Math.max(0, parseInt(e.target.value || '0', 10)))} />
-                    </div>
-                  ))}
-                  <div className="p-2 bg-gray-50 rounded text-sm text-center">六维总和：<b>{sum}</b></div>
-                </div>
 
-                {/* 技能：卡片编辑，右上角紧凑标签 */}
+                {/* 技能：卡片编辑，紧凑布局 */}
                 <div className="card p-3 space-y-3">
                   <div className="flex items-center justify-between">
                     <h4 className="font-semibold">技能</h4>
                     <button className={`btn ${BTN_FX}`} onClick={addSkill}>+ 新增技能</button>
                   </div>
+                  
+                  {/* 推荐技能快捷操作 */}
+                  {editSkills.length > 0 && (
+                    <SkillRecommendationHelper
+                      skills={editSkills}
+                      onUpdateSkills={setEditSkills}
+                    />
+                  )}
+                  
                   <ul className="space-y-3">
                     {editSkills.map((s, idx) => (
                       <li key={idx} className="p-3 bg-gray-50 rounded">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 space-y-2">
-                            <div>
-                              <label className="label">技能名</label>
-                              <input className="input" value={s.name} onChange={e => updateSkill(idx, { name: e.target.value })} />
+                        <div className="flex items-start gap-3">
+                          <div className="flex-1 space-y-3">
+                            {/* 技能名和推荐状态 */}
+                            <div className="flex items-center gap-3">
+                              <div className="flex-1">
+                                <label className="label">技能名</label>
+                                <input className="input" value={s.name} onChange={e => updateSkill(idx, { name: e.target.value })} />
+                              </div>
+                              <div className="flex items-center gap-2 mt-6">
+                                <input 
+                                  type="checkbox" 
+                                  id={`skill-selected-${idx}`}
+                                  checked={s.selected || false}
+                                  onChange={e => updateSkill(idx, { selected: e.target.checked })}
+                                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                                />
+                                <label htmlFor={`skill-selected-${idx}`} className="text-sm font-medium text-blue-700">
+                                  {s.selected ? '★ 推荐' : '推荐'}
+                                </label>
+                              </div>
                             </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            
+                            {/* 元素、种类、威力 - 紧凑布局 */}
+                            <div className="grid grid-cols-3 gap-2">
                               <div>
-                                <label className="label">元素</label>
-                                <select className="select" value={s.element || ''} onChange={e => updateSkill(idx, { element: e.target.value })}>
+                                <label className="label text-xs">元素</label>
+                                <select className="select text-sm" value={s.element || ''} onChange={e => updateSkill(idx, { element: e.target.value })}>
                                   <option value="">未设置</option>
                                   {elementOptions.map(el => <option key={el} value={el}>{el}</option>)}
                                 </select>
                               </div>
                               <div>
-                                <label className="label">种类</label>
-                                <input className="input" placeholder="物理/法术/辅助…" value={s.kind || ''} onChange={e => updateSkill(idx, { kind: e.target.value })} />
+                                <label className="label text-xs">种类</label>
+                                <input className="input text-sm" placeholder="物理/法术/辅助" value={s.kind || ''} onChange={e => updateSkill(idx, { kind: e.target.value })} />
                               </div>
                               <div>
-                                <label className="label">威力</label>
-                                <input className="input" type="number" placeholder="如 145" value={(s.power ?? '') as any}
+                                <label className="label text-xs">威力</label>
+                                <input className="input text-sm" type="number" placeholder="145" value={(s.power ?? '') as any}
                                        onChange={e => updateSkill(idx, { power: e.target.value === '' ? null : Number(e.target.value) })} />
                               </div>
                             </div>
-                            <div>
-                              <label className="label">描述</label>
-                              <textarea className="input h-24" value={s.description || ''} onChange={e => updateSkill(idx, { description: e.target.value })} />
-                            </div>
                             
-                            {/* 推荐状态复选框 */}
-                            <div className="flex items-center gap-2">
-                              <input 
-                                type="checkbox" 
-                                id={`skill-selected-${idx}`}
-                                checked={s.selected || false}
-                                onChange={e => updateSkill(idx, { selected: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                              />
-                              <label htmlFor={`skill-selected-${idx}`} className="text-sm font-medium text-gray-700">
-                                推荐招式
-                              </label>
+                            {/* 描述 */}
+                            <div>
+                              <label className="label text-xs">描述</label>
+                              <textarea className="input h-10 text-sm" value={s.description || ''} onChange={e => updateSkill(idx, { description: e.target.value })} />
                             </div>
                           </div>
 
-                          {/* 右上角紧凑标签 + 删除 */}
-                          <div className="w-32 text-right shrink-0">
-                            <div className="text-[11px] text-gray-500 leading-5">
-                              {[s.element || '—', s.kind || '—', (s.power ?? '—')].join(' / ')}
+                          {/* 右侧操作区域 - 更紧凑 */}
+                          <div className="w-16 flex flex-col items-center shrink-0">
+                            <div className="text-[10px] text-gray-400 text-center mb-1">
+                              #{idx + 1}
                             </div>
-                            {s.selected && <div className="text-xs text-blue-600 font-semibold">★ 推荐</div>}
-                            <button className={`btn mt-2 ${BTN_FX}`} onClick={() => removeSkill(idx)}>删除</button>
+                            {s.selected && (
+                              <div className="w-2 h-2 bg-blue-500 rounded-full mb-2" title="推荐技能"></div>
+                            )}
+                            <button 
+                              className="w-8 h-8 bg-red-500 hover:bg-red-600 text-white rounded text-xs flex items-center justify-center transition-colors" 
+                              onClick={() => removeSkill(idx)}
+                              title="删除技能"
+                            >
+                              ×
+                            </button>
                           </div>
                         </div>
                       </li>
