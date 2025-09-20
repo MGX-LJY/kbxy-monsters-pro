@@ -16,7 +16,7 @@ from .middleware import TraceIDMiddleware
 
 from .routes import (
     health, monsters, skills, utils, crawl,
-    warehouse, types, collections, backup,
+    warehouse, types, collections, backup, app_settings,
 )
 from .routes import images as images_routes  # ← 新增
 
@@ -49,9 +49,12 @@ app.add_middleware(TraceIDMiddleware)
 
 # ---- 静态图片挂载 ----
 def _images_dir() -> str:
-    env_dir = os.getenv("MONSTERS_MEDIA_DIR")
+    # 统一使用与 image_service.py 相同的环境变量
+    env_dir = os.getenv("KBXY_IMAGES_DIR")
     if env_dir:
         p = Path(env_dir).expanduser().resolve(); p.mkdir(parents=True, exist_ok=True); return str(p)
+    
+    # 默认路径：server/images/monsters
     here = Path(__file__).resolve().parent  # server/app
     p = here.parent / "images" / "monsters" # server/images/monsters
     p.mkdir(parents=True, exist_ok=True)
@@ -70,6 +73,7 @@ app.include_router(warehouse.router, prefix="", tags=["warehouse"])
 app.include_router(types.router)
 app.include_router(collections.router, prefix="", tags=["collections"])
 app.include_router(backup.router)  # ← 备份功能
+app.include_router(app_settings.router)  # ← 应用设置
 app.include_router(images_routes.router)  # ← 新增
 
 # 可选：tags

@@ -51,4 +51,24 @@ export const backupApi = {
   getStatus: () => api.get('/backup/status'),
 }
 
+// App Settings API
+export const settingsApi = {
+  // 获取所有设置
+  getSettings: () => api.get('/app-settings/'),
+  
+  // 批量更新设置
+  updateSettings: (settings: any) => 
+    api.put('/app-settings/', { settings }),
+  
+  // 更新单个设置
+  updateSetting: (key: string, value: any) =>
+    api.put(`/app-settings/${key}`, { key, value }),
+  
+  // 获取特定设置
+  getSetting: (key: string) => api.get(`/app-settings/${key}`),
+  
+  // 重置设置
+  resetSettings: () => api.post('/app-settings/reset'),
+}
+
 export default api

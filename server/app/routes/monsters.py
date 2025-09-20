@@ -10,6 +10,7 @@ from ..models import Monster, MonsterSkill, Skill, Tag, CollectionItem
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
+from ..services.image_service import get_image_resolver
 
 router = APIRouter()
 
@@ -243,8 +244,16 @@ def list_api(
         ).scalars().all()
 
     result = []
+    img_resolver = get_image_resolver()
 
     for m in items:
+        # 解析图片URL
+        img_url = img_resolver.resolve_by_names([
+            m.name,
+            getattr(m, "name_final", None),
+            getattr(m, "alias", None),
+        ])
+        
         result.append(
             MonsterOut(
                 id=m.id,
@@ -258,6 +267,7 @@ def list_api(
                 explain_json=getattr(m, "explain_json", {}),
                 created_at=getattr(m, "created_at", None),
                 updated_at=getattr(m, "updated_at", None),
+                image_url=img_url,
             )
         )
 

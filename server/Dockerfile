@@ -4,28 +4,29 @@ FROM python:3.11-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    POETRY_VIRTUALENVS_CREATE=false
+    POETRY_VIRTUALENVS_CREATE=false \
+    APP_ENV=dev \
+    KBXY_DB_PATH=/app/data/kbxy-dev.db
 
 WORKDIR /app
 
-# 如果你用 apt 依赖（psycopg 等），在这里加
+# 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl && \
     rm -rf /var/lib/apt/lists/*
 
-# 依赖 —— 任选其一：
-# 1) requirements.txt（推荐简单）
+# 复制依赖文件并安装
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# 2) 如果你用 poetry：
-# COPY pyproject.toml poetry.lock* /app/
-# RUN pip install --upgrade pip poetry && poetry install --no-root --no-interaction
+# 复制server代码
+COPY . /app/
 
-# 复制代码
-COPY . /app
+# 复制初始化脚本和数据 
+COPY init-data.sh /app/init-data.sh
+RUN chmod +x /app/init-data.sh
 
 EXPOSE 8000
 
-# 如果入口是 app/main.py 里有 FastAPI 实例 app，则这样启动：
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# 启动脚本：先初始化数据，再启动应用
+CMD ["sh", "-c", "/app/init-data.sh && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

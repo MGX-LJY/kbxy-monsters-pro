@@ -20,7 +20,7 @@ def normalize_name(s: str) -> str:
     return s
 
 class ImageResolver:
-    def __init__(self, dir_path: Path, public_mount: str = "/media/monsters"):
+    def __init__(self, dir_path: Path, public_mount: str = "/images/monsters"):
         self.dir_path = Path(dir_path)
         self.public_mount = public_mount.rstrip("/")
         self._index: Dict[str, str] = {}  # key=normalized base name, val=relative file name (with ext)

@@ -13,13 +13,18 @@ export default function SettingsButton() {
     pageSize, setPageSize, 
     crawlLimit, setCrawlLimit,
     backupSettings, setBackupSettings,
-    updateBackupConfig
+    updateBackupConfig,
+    saveSettings
   } = useSettings()
 
   const onSave = async () => {
     setSaving(true)
     try {
+      // 先更新备份配置到备份API
       await updateBackupConfig()
+      
+      // 然后保存所有设置到设置API
+      await saveSettings()
       
       // 失效备份相关的查询缓存，确保备份页面显示最新状态
       queryClient.invalidateQueries({ queryKey: ['backup-config'] })
@@ -27,7 +32,7 @@ export default function SettingsButton() {
       
       setOpen(false)
     } catch (error) {
-      console.error('Failed to save backup settings:', error)
+      console.error('Failed to save settings:', error)
       alert('设置保存失败，请重试')
     } finally {
       setSaving(false)

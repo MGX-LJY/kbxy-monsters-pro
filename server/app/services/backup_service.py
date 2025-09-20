@@ -18,7 +18,16 @@ class BackupService:
     """时光机式备份服务 - 类似macOS Time Machine"""
     
     def __init__(self):
-        self.backup_root = PROJECT_ROOT / "data" / "backup"
+        # 检查是否在Docker环境中，优先使用环境变量指定的路径
+        if os.getenv("KBXY_DB_PATH"):
+            # Docker环境，使用环境变量路径的目录
+            db_path = Path(os.getenv("KBXY_DB_PATH"))
+            self.data_root = db_path.parent
+        else:
+            # 本地环境，使用PROJECT_ROOT
+            self.data_root = PROJECT_ROOT / "data"
+        
+        self.backup_root = self.data_root / "backup"
         self.backup_root.mkdir(parents=True, exist_ok=True)
         
         # 备份配置文件
@@ -99,10 +108,10 @@ class BackupService:
             db_backup_path = backup_dir / "database"
             db_backup_path.mkdir(exist_ok=True)
             
-            data_dir = PROJECT_ROOT / "data"
+            # 使用统一的数据目录
             db_files_backed = []
             
-            for db_file in data_dir.glob("*.db*"):
+            for db_file in self.data_root.glob("*.db*"):
                 if db_file.is_file():
                     dest_path = db_backup_path / db_file.name
                     shutil.copy2(db_file, dest_path)
@@ -113,7 +122,12 @@ class BackupService:
             images_backup_path = backup_dir / "images"
             images_backup_path.mkdir(exist_ok=True)
             
-            images_source = PROJECT_ROOT / "server" / "images" / "monsters"
+            # 检查Docker环境变量中的图片目录
+            if os.getenv("KBXY_IMAGES_DIR"):
+                images_source = Path(os.getenv("KBXY_IMAGES_DIR"))
+            else:
+                images_source = PROJECT_ROOT / "server" / "images" / "monsters"
+            
             images_backed = []
             
             if images_source.exists():
@@ -241,18 +255,23 @@ class BackupService:
             
             # 1. 还原数据库文件
             db_backup_dir = temp_dir / "database"
-            data_dir = PROJECT_ROOT / "data"
             
             if db_backup_dir.exists():
                 for db_file in db_backup_dir.iterdir():
                     if db_file.is_file():
-                        dest_path = data_dir / db_file.name
+                        dest_path = self.data_root / db_file.name
                         shutil.copy2(db_file, dest_path)
                         restored_files.append(f"database/{db_file.name}")
             
             # 2. 还原图片文件
             images_backup_dir = temp_dir / "images"
-            images_target_dir = PROJECT_ROOT / "server" / "images" / "monsters"
+            
+            # 使用环境变量中的图片目录
+            if os.getenv("KBXY_IMAGES_DIR"):
+                images_target_dir = Path(os.getenv("KBXY_IMAGES_DIR"))
+            else:
+                images_target_dir = PROJECT_ROOT / "server" / "images" / "monsters"
+            
             images_target_dir.mkdir(parents=True, exist_ok=True)
             
             if images_backup_dir.exists():

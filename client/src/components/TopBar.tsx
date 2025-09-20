@@ -2,6 +2,7 @@ import React from 'react'
 import { Github, RefreshCw, Grid2x2, Globe, Clock } from 'lucide-react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import SettingsButton from './SettingsButton'
+import Logo from './Logo'
 
 export default function TopBar({
   onRefresh,
@@ -30,9 +31,13 @@ export default function TopBar({
       <div className="container py-3 px-3 flex items-center justify-between gap-3">
         {/* 左侧：品牌 + 技术标签 */}
         <div className="flex items-center gap-3 min-w-0">
-          <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-indigo-600 via-fuchsia-500 to-pink-500 bg-clip-text text-transparent">
-            卡布妖怪图鉴 Pro
-          </span>
+          <Logo 
+            size={36} 
+            variant="horizontal" 
+            showText={true}
+            className="cursor-pointer hover:opacity-80 transition-opacity"
+            onClick={() => navigate('/')}
+          />
           <div className="hidden sm:flex items-center gap-2">
             <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-700">FastAPI</span>
             <span className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-700">React</span>
