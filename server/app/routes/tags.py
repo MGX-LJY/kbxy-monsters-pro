@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional
 
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Monster, Tag
 from ..services.monsters_service import upsert_tags
 from ..config import settings
@@ -26,14 +27,7 @@ from ..services.tags_service import (
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-# 依据 code 前缀分组，供 /schema 与统计使用
 def _code_category(code: str) -> str:
     if isinstance(code, str):
         if code.startswith("buf_"):

@@ -31,11 +31,6 @@ class AppSettingsService:
         self.default_settings = {
             "pageSize": 20,           # 每页显示数量
             "crawlLimit": "",         # 图鉴爬取数量上限
-            "backupSettings": {       # 备份设置
-                "auto_backup_enabled": False,
-                "backup_interval_hours": 24,
-                "max_backups": 30
-            }
         }
         
         self._load_settings()
@@ -51,6 +46,7 @@ class AppSettingsService:
             else:
                 self.current_settings = self.default_settings.copy()
                 self._save_settings()
+            
         except Exception as e:
             logger.error(f"Failed to load app settings: {e}")
             self.current_settings = self.default_settings.copy()
@@ -93,6 +89,8 @@ class AppSettingsService:
         
         deep_update(self.current_settings, updates)
         self._save_settings()
+        
+        
         return self.current_settings.copy()
     
     def update_setting(self, key: str, value: Any) -> Dict[str, Any]:
@@ -109,6 +107,8 @@ class AppSettingsService:
         # 设置值
         target[keys[-1]] = value
         self._save_settings()
+        
+        
         return self.current_settings.copy()
     
     def reset_settings(self) -> Dict[str, Any]:
@@ -136,6 +136,7 @@ class AppSettingsService:
             raise ValueError(f"Invalid JSON format: {str(e)}")
         except Exception as e:
             raise Exception(f"Settings import failed: {str(e)}")
+    
 
 
 # 单例实例

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, or_, desc, asc
 
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Monster, MonsterSkill, Tag, CollectionItem
 from ..schemas import MonsterOut, MonsterList
 from ..services.warehouse_service import (
@@ -21,21 +22,6 @@ from ..services.image_service import get_image_resolver
 
 router = APIRouter()
 
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-# 旧→新派生键兜底（与前端保持一致）
-LEGACY_FALLBACK = {
-    "body_defense": "survive",
-    "special_tactics": "pp_pressure",
-    # 如还有其它旧键→新键关系，可继续补
-}
 
 
 def pick_derived_value(d: dict, key: str):

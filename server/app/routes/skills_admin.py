@@ -3,17 +3,11 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Skill, Monster
 import re
 
 router = APIRouter()
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 TRIVIAL = {"", "0", "1", "-", "—", "无", "暂无", "null", "none", "n/a", "N/A"}
 

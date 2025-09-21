@@ -3,17 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Monster
 from ..services.image_service import get_image_resolver
 
 router = APIRouter()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @router.get("/images/resolve")
 def api_resolve_image(

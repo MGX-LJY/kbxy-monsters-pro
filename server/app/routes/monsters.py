@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, func, or_, and_
 
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Monster, MonsterSkill, Skill, Tag, CollectionItem
 from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
@@ -15,15 +16,7 @@ from ..services.image_service import get_image_resolver
 router = APIRouter()
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-
-# ---------- 请求体验证 ----------
 class RawStatsIn(BaseModel):
     hp: float = Field(..., description="体力")
     speed: float = Field(..., description="速度")

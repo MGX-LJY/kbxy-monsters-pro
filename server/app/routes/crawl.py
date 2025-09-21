@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
+from ..dependencies import get_db
 from .. import models as M
 from ..services.crawler_service import (
     Kabu4399Crawler, MonsterRow, SkillRow,
@@ -53,6 +54,18 @@ def _to_payload(m: MonsterRow) -> Dict[str, object]:
             continue
         selected_skills.append(_skill_public(s))
 
+    # 处理图片路径 - 转换为前端可访问的相对路径
+    img_url = None
+    if m.img_url:
+        # 如果是绝对本地路径，转换为相对路径
+        import os
+        if os.path.isabs(m.img_url) and 'images/monsters' in m.img_url:
+            # 提取文件名部分，构建前端可访问的路径
+            filename = os.path.basename(m.img_url)
+            img_url = f"/images/monsters/{filename}"
+        else:
+            img_url = m.img_url
+
     return {
         "name": m.name,
         "element": m.element,
@@ -67,6 +80,8 @@ def _to_payload(m: MonsterRow) -> Dict[str, object]:
         "all_forms": getattr(m, 'all_forms', []),
         "skills": skills,
         "selected_skills": selected_skills,
+        "img_url": img_url,
+        "img_processed": bool(m.img_url),  # 标识图片是否已处理
     }
 
 # ---------- 写库工具（Monster 以 name 唯一；Skill 唯一键为 (name, element, kind, power)） ----------
@@ -208,6 +223,14 @@ class CrawlAllBody(BaseModel):
 
 class FetchOneBody(BaseModel):
     url: str
+    process_image: bool = True  # 是否处理图片
+    enable_upscale: bool = True  # 是否启用图片超分
+
+class FetchAndSaveBody(BaseModel):
+    url: str
+    process_image: bool = True  # 是否处理图片
+    enable_upscale: bool = True  # 是否启用图片超分
+    overwrite: bool = False  # 是否覆盖已存在的记录
 
 # ---------- 路由 ----------
 @router.api_route("/samples", methods=["GET", "POST"])
@@ -233,19 +256,67 @@ def crawl_samples(limit: int = Query(10, ge=1, le=100)):
     return results
 
 @router.get("/fetch_one")
-def fetch_one_get(url: str):
+def fetch_one_get(url: str, process_image: bool = True, enable_upscale: bool = True):
     """
     抓取单个详情页；输出带 element/kind/power/description/level 的精选技能（已统一字段值）。
+    支持图片处理选项：process_image=是否处理图片，enable_upscale=是否启用超分。
     """
     crawler = Kabu4399Crawler()
-    row = crawler.fetch_best_with_all_forms(url)
+    row = crawler.fetch_best_with_all_forms(url, process_image=process_image, enable_upscale=enable_upscale)
     if not row:
         return {"detail": "fetch failed"}
     return _to_payload(row)
 
 @router.post("/fetch_one")
 def fetch_one_post(body: FetchOneBody):
-    return fetch_one_get(body.url)
+    return fetch_one_get(body.url, body.process_image, body.enable_upscale)
+
+@router.post("/fetch_and_save")
+def fetch_and_save(body: FetchAndSaveBody):
+    """
+    抓取单个详情页并直接入库
+    """
+    crawler = Kabu4399Crawler()
+    
+    # 1. 爬取数据
+    row = crawler.fetch_best_with_all_forms(body.url, process_image=body.process_image, enable_upscale=body.enable_upscale)
+    if not row:
+        return {"success": False, "detail": "fetch failed"}
+    
+    # 2. 入库
+    with SessionLocal() as db:
+        try:
+            # 检查是否已存在
+            exists = db.query(M.Monster.id).filter(M.Monster.name == row.name).first()
+            if exists and not body.overwrite:
+                return {
+                    "success": False, 
+                    "detail": f"妖怪 '{row.name}' 已存在，如需覆盖请设置 overwrite=true",
+                    "existing_id": exists[0],
+                    "data": _to_payload(row)
+                }
+            
+            # 执行入库
+            is_insert, n_aff = _upsert_one(db, row, overwrite=body.overwrite, do_derive=True)
+            db.commit()
+            
+            # 获取最新记录
+            monster = db.query(M.Monster).filter(M.Monster.name == row.name).first()
+            if not monster:
+                return {"success": False, "detail": "入库后查询失败"}
+            
+            return {
+                "success": True,
+                "is_insert": is_insert,
+                "skills_affected": n_aff,
+                "monster_id": monster.id,
+                "detail": f"妖怪 '{row.name}' {'创建' if is_insert else '更新'}成功",
+                "data": _to_payload(row)
+            }
+            
+        except Exception as e:
+            db.rollback()
+            return {"success": False, "detail": f"入库失败: {str(e)}"}
 
 @router.post("/crawl_all")
 def crawl_all(body: CrawlAllBody):

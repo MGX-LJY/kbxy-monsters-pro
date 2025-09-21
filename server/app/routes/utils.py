@@ -3,16 +3,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Monster
 
 router = APIRouter()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @router.post("/utils/backfill_raw_to_columns")
 def backfill_raw_to_columns(db: Session = Depends(get_db)):

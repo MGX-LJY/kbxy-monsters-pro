@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import api, { backupApi } from '../api'
+import api from '../api'
 import { Monster, MonsterListResp, TagCount } from '../types'
 import SkeletonRows from '../components/SkeletonRows'
 import Pagination from '../components/Pagination'
@@ -12,6 +12,8 @@ import MonsterCardGrid from '../components/MonsterCardGrid'
 import SkeletonCardGrid from '../components/SkeletonCardGrid'
 import TagSelector from '../components/TagSelector'
 import SkillRecommendationHelper from '../components/SkillRecommendationHelper'
+import Modal from '../components/Modal'
+import MonsterStatsRadar from '../components/MonsterStatsRadar'
 
 // 适配新后端：技能带 element/kind/power/description
 type SkillDTO = {
@@ -20,6 +22,7 @@ type SkillDTO = {
   element?: string | null
   kind?: string | null
   power?: number | null
+  pp?: number | null
   description?: string
   selected?: boolean
 }
@@ -89,6 +92,7 @@ const ELEMENTS: Record<string, string> = {
   guaixi: '怪系', moxi: '魔系', yaoxi: '妖系', fengxi: '风系', duxi: '毒系', leixi: '雷系',
   huanxi: '幻系', bing: '冰系', lingxi: '灵系', jixie: '机械系', huofengxi: '火风系',
   mulingxi: '木灵系', tuhuanxi: '土幻系', shuiyaoxi: '水妖系', yinxi: '音系', shengxi: '圣系',
+  teshu: '特殊',
 }
 const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
 
@@ -96,7 +100,7 @@ const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
 const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
   火: '火系', 水: '水系', 风: '风系', 雷: '雷系', 冰: '冰系', 木: '木系',
   土: '土系', 金: '金系', 圣: '圣系', 毒: '毒系', 幻: '幻系', 灵: '灵系',
-  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系', 特殊: '' // "特殊"不当作元素
+  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系', 特殊: '特殊' // 技能特殊属性
 }
 
 // —— 进度弹框状态（新增 cancelable + closing） —— //
@@ -127,35 +131,6 @@ export default function MonstersPage() {
   const location = useLocation()
   const navigate = useNavigate()
   
-  // 时光机切换函数
-  const handleTimeMachineClick = () => {
-    if (location.pathname === '/backup') {
-      navigate('/')
-    } else {
-      navigate('/backup')
-    }
-  }
-
-  // 快速备份 mutation
-  const quickBackupMutation = useMutation({
-    mutationFn: () => backupApi.createBackup({
-      description: '从主页面快速备份'
-    }),
-    onSuccess: (data) => {
-      console.log('Backup created:', data.data)
-      alert(`快速备份创建成功！\n备份名称: ${data.data.name}`)
-    },
-    onError: (error: any) => {
-      console.error('Quick backup failed:', error)
-      alert(`快速备份失败: ${error.response?.data?.detail || error.message || '请检查网络连接'}`)
-    },
-  })
-
-  const handleQuickBackup = () => {
-    if (window.confirm('确定要创建当前数据的备份吗？备份可能需要1-2分钟。')) {
-      quickBackupMutation.mutate()
-    }
-  }
 
   // 搜索 + 筛选
   const [q, setQ] = useState('')
@@ -214,6 +189,7 @@ export default function MonstersPage() {
   // 技能显示控制：默认只显示推荐技能
   const [showAllSkills, setShowAllSkills] = useState(false)
 
+
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
@@ -225,8 +201,13 @@ export default function MonstersPage() {
   // 全屏模糊等待弹框 + 真实进度（类型化 + 可取消）
   const [overlay, setOverlay] = useState<OverlayState>({ show: false })
 
-  // —— “加入收藏”弹框 —— //
+  // —— "加入收藏"弹框 —— //
   const [collectionDialogOpen, setCollectionDialogOpen] = useState(false)
+
+  // —— 简洁爬取创建弹框 —— //
+  const [crawlDialogOpen, setCrawlDialogOpen] = useState(false)
+  const [crawlUrl, setCrawlUrl] = useState('')
+  const [crawling, setCrawling] = useState(false)
   const [collectionForm, setCollectionForm] = useState<{
     mode: 'existing' | 'new',
     selectedId: string,
@@ -273,7 +254,6 @@ export default function MonstersPage() {
     }, wait)
   }
   // —— 一键爬取 —— //
-  const [crawling, setCrawling] = useState(false)
 
   const startCrawl = async () => {
     if (!window.confirm(`将触发后端“全站爬取图鉴”。${crawlLimit ? `最多抓取 ${crawlLimit} 条。` : '将尽可能多地抓取。'}是否继续？`)) return
@@ -679,10 +659,11 @@ export default function MonstersPage() {
         element: x.element ?? '',
         kind: x.kind ?? '',
         power: x.power ?? null,
+        pp: x.pp ?? null,
         description: x.description ?? '',
         selected: x.selected ?? false
       }))
-    setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '', selected: false }])
+    setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, pp: null, description: '', selected: false }])
 
     setIsEditing(true)
   }
@@ -787,30 +768,37 @@ export default function MonstersPage() {
       const body: any = {
         name: editName.trim(),
         element: editElement || null,
-        role: editRole || null,
+        possess: editRole === '拥有' || false, // 将role字段转换为possess布尔值
         type: editType || null,
         method: editMethod || null,
         hp, speed, attack, defense, magic, resist,
         tags: editTags.split(/[\s,，、;；]+/).map(s => s.trim()).filter(t => t && (t.startsWith('buf_') || t.startsWith('deb_') || t.startsWith('util_'))),
+        skills: editSkills.filter(s => s.name.trim()).map(s => ({
+          name: s.name.trim(),
+          element: s.element || null,
+          kind: s.kind || null,
+          power: typeof s.power === 'number' ? s.power : null,
+          pp: typeof s.pp === 'number' ? s.pp : null,
+          description: s.description || '',
+          selected: s.selected || false
+        }))
       }
 
       let res
       try {
+        // 直接使用正确的API路径
         res = await api.post('/monsters', body)
-      } catch (e1) {
-        try {
-          res = await api.post('/api/v1/monsters', body)
-        } catch (e2) {
-          alert('当前后端未开放创建接口，请改用 CSV/JSON 导入或开启 /monsters 创建 API。')
-          return
-        }
+      } catch (e1: any) {
+        // 如果失败，显示详细错误信息
+        const errorMsg = e1?.response?.data?.detail || e1?.message || '创建失败'
+        alert(`创建失败：${errorMsg}`)
+        return
       }
 
       const newId = res?.data?.id ?? res?.data?.monster?.id ?? res?.data?.data?.id
       if (!newId) {
-        alert('创建成功但未返回 ID，无法写入技能。')
-      } else {
-        await saveSkills(newId, editSkills)
+        alert('创建成功但未返回有效ID')
+        return
       }
 
       await list.refetch()
@@ -1191,12 +1179,12 @@ export default function MonstersPage() {
     setEditSkills(prev => prev.map((s, i) => i === idx ? { ...s, ...patch } : s))
   }
   const removeSkill = (idx: number) => setEditSkills(prev => prev.filter((_, i) => i !== idx))
-  const addSkill = () => setEditSkills(prev => [...prev, { name: '', element: '', kind: '', power: null, description: '', selected: false }])
+  const addSkill = () => setEditSkills(prev => [...prev, { name: '', element: '', kind: '', power: null, pp: null, description: '', selected: false }])
 
   // 编辑态时，保证至少有一条空卡可写
   useEffect(() => {
     if (isEditing && editSkills.length === 0) {
-      setEditSkills([{ name: '', element: '', kind: '', power: null, description: '', selected: false }])
+      setEditSkills([{ name: '', element: '', kind: '', power: null, pp: null, description: '', selected: false }])
     }
   }, [isEditing, editSkills.length])
 
@@ -1221,11 +1209,90 @@ export default function MonstersPage() {
     setEditType('')
     setEditMethod('')
     setHp(100); setSpeed(100); setAttack(100); setDefense(100); setMagic(100); setResist(100)
-    setEditSkills([{ name: '', element: '', kind: '', power: null, description: '' }])
+    setEditSkills([{ name: '', element: '', kind: '', power: null, pp: null, description: '', selected: false }])
     setIsEditing(true)
   }
 
-  // ========== 识别链接功能（新增） ==========
+  // ========== 简洁爬取创建功能 ==========
+  const handleCrawlAndCreate = async () => {
+    const url = crawlUrl.trim()
+    if (!url) {
+      alert('请输入妖怪详情页链接')
+      return
+    }
+
+    setCrawling(true)
+    try {
+      // 直接调用爬取并入库的接口
+      const result = (await api.post('/api/v1/crawl/fetch_and_save', { 
+        url, 
+        process_image: true,
+        enable_upscale: true,
+        overwrite: false
+      })).data
+
+      if (!result.success) {
+        // 处理失败情况
+        if (result.detail && result.detail.includes('已存在')) {
+          const confirmOverwrite = window.confirm(`${result.detail}\n\n是否覆盖更新现有记录？`)
+          if (confirmOverwrite) {
+            // 重新调用，允许覆盖
+            const retryResult = (await api.post('/api/v1/crawl/fetch_and_save', { 
+              url, 
+              process_image: true,
+              enable_upscale: true,
+              overwrite: true
+            })).data
+            
+            if (!retryResult.success) {
+              alert(`更新失败：${retryResult.detail}`)
+              return
+            }
+            
+            // 使用更新后的结果
+            handleSuccess(retryResult)
+            return
+          } else {
+            // 用户选择不覆盖，直接返回
+            return
+          }
+        } else {
+          alert(`爬取失败：${result.detail}`)
+          return
+        }
+      }
+
+      // 成功处理
+      handleSuccess(result)
+
+    } catch (e: any) {
+      const errorMsg = e?.response?.data?.detail || e?.message || '操作失败'
+      alert(`爬取失败：${errorMsg}`)
+    } finally {
+      setCrawling(false)
+    }
+  }
+
+  const handleSuccess = async (result: any) => {
+    // 刷新列表
+    await list.refetch()
+    await stats.refetch()
+    await wstats.refetch()
+
+    const data = result.data
+    const imgStatus = data?.img_processed ? 
+      (data.img_url ? '✅ 图片已下载并处理' : '⚠️ 图片处理失败') : 
+      'ℹ️ 未处理图片'
+    
+    const actionText = result.is_insert ? '创建' : '更新'
+    alert(`妖怪 "${data?.name || '未知'}" ${actionText}成功！\n\n${imgStatus}${data?.img_url ? `\n图片路径: ${data.img_url}` : ''}`)
+    
+    // 关闭弹框并清理
+    setCrawlDialogOpen(false)
+    setCrawlUrl('')
+  }
+
+  // ========== 识别链接功能（旧版，保留兼容） ==========
   const extractUrls = (text: string): string[] => {
     const re = /https?:\/\/[^\s)（）]+/gi
     const raw = text.match(re) || []
@@ -1247,11 +1314,21 @@ export default function MonstersPage() {
     try {
       let data: any
       try {
-        // 推荐：POST JSON
-        data = (await api.post('/api/v1/crawl/fetch_one', { url })).data
+        // 推荐：POST JSON（包含图片处理选项）
+        data = (await api.post('/api/v1/crawl/fetch_one', { 
+          url, 
+          process_image: true,  // 启用图片处理
+          enable_upscale: true  // 启用图片超分
+        })).data
       } catch {
-        // 兜底：GET query
-        data = (await api.get('/api/v1/crawl/fetch_one', { params: { url } })).data
+        // 兜底：GET query（包含图片处理选项）
+        data = (await api.get('/api/v1/crawl/fetch_one', { 
+          params: { 
+            url, 
+            process_image: true, 
+            enable_upscale: true 
+          } 
+        })).data
       }
       if (!data || typeof data !== 'object') {
         alert('未识别到有效数据'); return
@@ -1282,15 +1359,25 @@ export default function MonstersPage() {
           element: s.element || '',
           kind: s.kind || '',
           power: (typeof s.power === 'number' && Number.isFinite(s.power)) ? s.power : null,
+          pp: (typeof s.pp === 'number' && Number.isFinite(s.pp)) ? s.pp : null,
           description: s.description || '',
           selected: s.selected ?? false
         }))
         : []
-      setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, description: '', selected: false }])
+      setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, pp: null, description: '', selected: false }])
 
-      alert('已从链接识别并填充，可继续手动调整。')
+      // 显示识别成功信息，包含图片处理状态
+      const imgStatus = data.img_processed ? 
+        (data.img_url ? '✅ 图片已下载并处理' : '⚠️ 图片处理失败') : 
+        'ℹ️ 未处理图片'
+      alert(`已从链接识别并填充，可继续手动调整。\n\n${imgStatus}${data.img_url ? `\n图片路径: ${data.img_url}` : ''}`)
     } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || '识别失败，请确认链接是否可访问')
+      const errorMsg = e?.response?.data?.detail || e?.message || '识别失败'
+      if (errorMsg.includes('fetch failed')) {
+        alert('识别失败：无法解析该链接。\n\n请确认：\n1. 链接是最新的4399图鉴详情页\n2. URL格式类似：https://news.4399.com/kabuxiyou/yaoguaidaquan/[系别]/[日期]-[编号].html\n3. 页面可以正常访问')
+      } else {
+        alert(`识别失败：${errorMsg}\n\n请确认链接是否可访问，或尝试使用最新的图鉴详情页URL`)
+      }
     } finally {
       setRecognizing(false)
     }
@@ -1368,15 +1455,6 @@ export default function MonstersPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* 备份按钮 */}
-            <button 
-              className={`btn ${BTN_FX}`} 
-              onClick={handleQuickBackup}
-              disabled={quickBackupMutation.isPending}
-              title="快速备份当前数据"
-            >
-              {quickBackupMutation.isPending ? '备份中...' : '备份'}
-            </button>
             
             <button className={`btn ${BTN_FX}`} onClick={aiTagThenDeriveBatch}>
               一键匹配
@@ -1409,8 +1487,8 @@ export default function MonstersPage() {
               {view === 'card' ? '表格视图' : '卡片视图'}
             </button>
 
-            {/* 新增：新增妖怪 */}
-            <button className={`btn ${BTN_FX}`} onClick={startCreate}>新增妖怪</button>
+            {/* 新增：新增妖怪（简洁爬取模式） */}
+            <button className={`btn ${BTN_FX}`} onClick={() => setCrawlDialogOpen(true)}>新增妖怪</button>
           </div>
         </div>
 
@@ -1817,7 +1895,7 @@ export default function MonstersPage() {
                   </div>
                   <textarea
                     className="input h-32"
-                    placeholder="将 4399 图鉴详情页链接粘贴到这里（可混在一段文字里；支持多条，默认取第 1 条）"
+                    placeholder="将 4399 图鉴详情页链接粘贴到这里（可混在一段文字里；支持多条，默认取第 1 条）&#10;&#10;示例URL格式：&#10;https://news.4399.com/kabuxiyou/yaoguaidaquan/yaoxi/202509-19-1006841.html&#10;&#10;注意：请使用最新的图鉴详情页URL，旧格式链接可能无法解析"
                     value={rawText}
                     onChange={e => setRawText(e.target.value)}
                   />
@@ -1904,8 +1982,8 @@ export default function MonstersPage() {
                               </div>
                             </div>
                             
-                            {/* 元素、种类、威力 - 紧凑布局 */}
-                            <div className="grid grid-cols-3 gap-2">
+                            {/* 元素、种类、威力、PP - 紧凑布局 */}
+                            <div className="grid grid-cols-4 gap-2">
                               <div>
                                 <label className="label text-xs">元素</label>
                                 <select className="select text-sm" value={s.element || ''} onChange={e => updateSkill(idx, { element: e.target.value })}>
@@ -1921,6 +1999,11 @@ export default function MonstersPage() {
                                 <label className="label text-xs">威力</label>
                                 <input className="input text-sm" type="number" placeholder="145" value={(s.power ?? '') as any}
                                        onChange={e => updateSkill(idx, { power: e.target.value === '' ? null : Number(e.target.value) })} />
+                              </div>
+                              <div>
+                                <label className="label text-xs">PP</label>
+                                <input className="input text-sm" type="number" placeholder="20" value={(s.pp ?? '') as any}
+                                       onChange={e => updateSkill(idx, { pp: e.target.value === '' ? null : Number(e.target.value) })} />
                               </div>
                             </div>
                             
@@ -1970,16 +2053,10 @@ export default function MonstersPage() {
 
                 <div>
                   <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
-                  <div className="grid grid-cols-2 gap-2 text-sm">
-                    <div className="p-2 bg-gray-50 rounded text-center">体力：<b>{showStats.hp}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">速度：<b>{showStats.speed}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">攻击：<b>{showStats.attack}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">防御：<b>{showStats.defense}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">法术：<b>{showStats.magic}</b></div>
-                    <div className="p-2 bg-gray-50 rounded text-center">抗性：<b>{showStats.resist}</b></div>
-                    <div className="p-2 bg-gray-100 rounded col-span-2 text-center">六维总和：<b>{showStats.sum}</b>
-                    </div>
-                  </div>
+                  <MonsterStatsRadar 
+                    monster={selected} 
+                    className="mt-2"
+                  />
                 </div>
 
 
@@ -2184,6 +2261,59 @@ export default function MonstersPage() {
           </div>
         </div>
       )}
+
+      {/* 简洁爬取创建弹框 */}
+      <Modal open={crawlDialogOpen} onClose={() => { setCrawlDialogOpen(false); setCrawlUrl('') }}>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">新增妖怪</h2>
+          <button 
+            className="btn" 
+            onClick={() => {
+              setCrawlDialogOpen(false)
+              setCrawlUrl('')
+            }}
+            disabled={crawling}
+          >
+            关闭
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="label">妖怪详情页链接</label>
+            <input
+              className="input"
+              placeholder="请粘贴4399图鉴详情页链接..."
+              value={crawlUrl}
+              onChange={e => setCrawlUrl(e.target.value)}
+              disabled={crawling}
+            />
+            <div className="text-xs text-gray-500 mt-1">
+              示例：https://news.4399.com/kabuxiyou/yaoguaidaquan/huanxi/202509-19-1006841.html
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-2 flex justify-end gap-2">
+          <button 
+            className="btn" 
+            onClick={() => {
+              setCrawlDialogOpen(false)
+              setCrawlUrl('')
+            }}
+            disabled={crawling}
+          >
+            取消
+          </button>
+          <button 
+            className="btn btn-primary" 
+            onClick={handleCrawlAndCreate}
+            disabled={crawling || !crawlUrl.trim()}
+          >
+            {crawling ? '爬取中...' : '自动爬取并创建'}
+          </button>
+        </div>
+      </Modal>
     </div>
   )
 }

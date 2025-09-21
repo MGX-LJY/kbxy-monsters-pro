@@ -9,6 +9,7 @@ from sqlalchemy import select, func, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Collection, CollectionItem, Monster, MonsterSkill
 from ..schemas import (
     CollectionCreateIn, CollectionUpdateIn,
@@ -25,17 +26,7 @@ from ..services.collection_service import (
 router = APIRouter(prefix="/collections", tags=["collections"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-
-# -----------------------------
-# 收藏夹：列表
-# -----------------------------
 @router.get("", response_model=CollectionList)
 def api_list_collections(
     q: Optional[str] = Query(None),

@@ -80,3 +80,5 @@ coverage/
 Thumbs.db
 /data/
 /docker-data/
+/data.backup.20250921_092919/
+/docker-data.backup.20250921_092921/

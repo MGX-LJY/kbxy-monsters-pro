@@ -8,18 +8,12 @@ from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import select, func
 
 from ..db import SessionLocal
+from ..dependencies import get_db
 from ..models import Monster, Skill, MonsterSkill  # 确保这些模型存在
 
 router = APIRouter(prefix="", tags=["skills"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-# ---- 输入模型 ----
 class SkillBasicIn(BaseModel):
     name: str = Field(..., min_length=1)
     description: Optional[str] = None

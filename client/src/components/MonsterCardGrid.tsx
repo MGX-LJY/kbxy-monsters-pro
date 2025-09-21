@@ -1,5 +1,5 @@
 // client/src/components/MonsterCardGrid.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Monster } from '../types'
 
 type Ribbon = { text: string; colorClass?: string } | null
@@ -25,22 +25,79 @@ const resolvingCache = new Map<string, Promise<string | null>>()
 const BLOB_LIMIT_DEFAULT = 300
 let BLOB_LIMIT = BLOB_LIMIT_DEFAULT
 const blobLRU = new Map<string, string>() // key=原始URL，value=blob:URL
+
+// 缓存元数据：记录创建时间用于过期检查
+const cacheMetadata = new Map<string, { timestamp: number; accessed: number }>()
+const CACHE_EXPIRY_MS = 30 * 60 * 1000 // 30分钟过期
+const MAX_ACCESS_COUNT = 50 // 最大访问次数后重新验证
+
 function blobGet(url: string) {
   const v = blobLRU.get(url)
-  if (v) { blobLRU.delete(url); blobLRU.set(url, v) }
+  if (v) { 
+    blobLRU.delete(url)
+    blobLRU.set(url, v)
+    
+    // 更新访问元数据
+    const meta = cacheMetadata.get(url)
+    if (meta) {
+      meta.accessed++
+      cacheMetadata.set(url, meta)
+    }
+  }
   return v || null
 }
+
 function blobSet(url: string, objUrl: string) {
-  if (blobLRU.has(url)) blobLRU.delete(url)
+  if (blobLRU.has(url)) {
+    const oldUrl = blobLRU.get(url)
+    if (oldUrl) URL.revokeObjectURL(oldUrl)
+    blobLRU.delete(url)
+  }
+  
   blobLRU.set(url, objUrl)
+  cacheMetadata.set(url, { timestamp: Date.now(), accessed: 0 })
+  
   while (blobLRU.size > BLOB_LIMIT) {
     const oldestKey = blobLRU.keys().next().value as string | undefined
     if (!oldestKey) break
     const o = blobLRU.get(oldestKey)
     if (o) URL.revokeObjectURL(o)
     blobLRU.delete(oldestKey)
+    cacheMetadata.delete(oldestKey)
   }
 }
+
+// 缓存健康检查和清理
+function cleanupExpiredCache() {
+  const now = Date.now()
+  const expiredKeys: string[] = []
+  
+  for (const [key, meta] of cacheMetadata.entries()) {
+    if (now - meta.timestamp > CACHE_EXPIRY_MS || meta.accessed > MAX_ACCESS_COUNT) {
+      expiredKeys.push(key)
+    }
+  }
+  
+  expiredKeys.forEach(key => {
+    // 清理 blob cache
+    const blobUrl = blobLRU.get(key)
+    if (blobUrl) {
+      URL.revokeObjectURL(blobUrl)
+      blobLRU.delete(key)
+    }
+    
+    // 清理 resolved cache
+    resolvedUrlCache.delete(key)
+    cacheMetadata.delete(key)
+  })
+  
+  if (expiredKeys.length > 0) {
+    console.log(`Cleaned up ${expiredKeys.length} expired cache entries`)
+  }
+}
+
+// 定期清理缓存
+setInterval(cleanupExpiredCache, 5 * 60 * 1000) // 每5分钟清理一次
 
 /* ===================== 工具 & 解析 ===================== */
 function placeholderDataUri(label = '无图'): string {
@@ -87,35 +144,89 @@ async function resolveImageOnce(
   candidates: string[],
   preferBlob = true
 ): Promise<string | null> {
+  // 检查过期缓存
+  const meta = cacheMetadata.get(cacheKey)
+  if (meta && (Date.now() - meta.timestamp > CACHE_EXPIRY_MS || meta.accessed > MAX_ACCESS_COUNT)) {
+    resolvedUrlCache.delete(cacheKey)
+    cacheMetadata.delete(cacheKey)
+  }
+  
   if (resolvedUrlCache.has(cacheKey)) return resolvedUrlCache.get(cacheKey) ?? null
   const existing = resolvingCache.get(cacheKey)
   if (existing) return existing
 
   const p = (async () => {
+    const TIMEOUT_MS = 8000 // 8秒超时
+    
     for (const url of candidates) {
       try {
         if (preferBlob) {
           const cachedBlob = blobGet(url)
-          if (cachedBlob) { resolvedUrlCache.set(cacheKey, cachedBlob); return cachedBlob }
-          const resp = await fetch(url, { cache: 'force-cache' })
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-          const blob = await resp.blob()
-          if (blob.size === 0) throw new Error('empty blob')
-          const objUrl = URL.createObjectURL(blob)
-          blobSet(url, objUrl)
-          resolvedUrlCache.set(cacheKey, objUrl)
-          return objUrl
+          if (cachedBlob) { 
+            resolvedUrlCache.set(cacheKey, cachedBlob)
+            return cachedBlob 
+          }
+          
+          // 带超时的 fetch
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+          
+          try {
+            const resp = await fetch(url, { 
+              cache: 'force-cache',
+              signal: controller.signal
+            })
+            clearTimeout(timeoutId)
+            
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+            const blob = await resp.blob()
+            if (blob.size === 0) throw new Error('empty blob')
+            
+            // 验证是否为有效图片
+            const objUrl = URL.createObjectURL(blob)
+            await new Promise<void>((resolve, reject) => {
+              const img = new Image()
+              img.onload = () => resolve()
+              img.onerror = () => {
+                URL.revokeObjectURL(objUrl)
+                reject(new Error('invalid image blob'))
+              }
+              img.src = objUrl
+            })
+            
+            blobSet(url, objUrl)
+            resolvedUrlCache.set(cacheKey, objUrl)
+            return objUrl
+          } catch (error) {
+            clearTimeout(timeoutId)
+            throw error
+          }
         } else {
+          // 带超时的图片加载
           await new Promise<void>((resolve, reject) => {
             const img = new Image()
-            img.onload = () => resolve()
-            img.onerror = () => reject(new Error('load fail'))
+            const timeoutId = setTimeout(() => {
+              img.onload = img.onerror = null
+              reject(new Error('timeout'))
+            }, TIMEOUT_MS)
+            
+            img.onload = () => {
+              clearTimeout(timeoutId)
+              resolve()
+            }
+            img.onerror = () => {
+              clearTimeout(timeoutId)
+              reject(new Error('load fail'))
+            }
             img.src = url
           })
           resolvedUrlCache.set(cacheKey, url)
           return url
         }
-      } catch {}
+      } catch (error) {
+        // 记录详细错误信息用于调试
+        console.debug(`Failed to load image from ${url}:`, error)
+      }
     }
     resolvedUrlCache.set(cacheKey, null)
     return null
@@ -126,31 +237,136 @@ async function resolveImageOnce(
   return ret
 }
 
+// 图片加载状态类型
+type ImageLoadState = 'loading' | 'loaded' | 'error' | 'retrying'
+
 function useImageResolved(m: Monster, override?: (m: Monster) => string | null) {
   const [src, setSrc] = useState<string | null>(null)
-  useEffect(() => {
+  const [loadState, setLoadState] = useState<ImageLoadState>('loading')
+  const [retryCount, setRetryCount] = useState(0)
+  const maxRetries = 3
+  const retryDelays = [1000, 2000, 4000] // 递增延迟
+
+  const loadImage = useCallback(async (isRetry = false) => {
+    if (isRetry) {
+      setLoadState('retrying')
+    } else {
+      setLoadState('loading')
+      setRetryCount(0)
+    }
+    
     let cancelled = false
     const { list, cacheKey } = buildCandidates(m, override)
+    
+    // 检查缓存
     if (resolvedUrlCache.has(cacheKey)) {
       const v = resolvedUrlCache.get(cacheKey) ?? null
-      setSrc(v)
-      if (v) return
+      if (v) {
+        setSrc(v)
+        setLoadState('loaded')
+        return
+      }
     }
-    resolveImageOnce(cacheKey, list, true).then((v) => { if (!cancelled) setSrc(v) })
+
+    try {
+      const result = await resolveImageOnce(cacheKey, list, true)
+      if (!cancelled) {
+        setSrc(result)
+        setLoadState(result ? 'loaded' : 'error')
+      }
+    } catch (error) {
+      if (!cancelled) {
+        setSrc(null)
+        setLoadState('error')
+      }
+    }
+
     return () => { cancelled = true }
   }, [m, override])
-  return src
+
+  // 重试机制
+  const retryLoad = useCallback(() => {
+    if (retryCount < maxRetries) {
+      const delay = retryDelays[retryCount] || 4000
+      setTimeout(() => {
+        setRetryCount(prev => prev + 1)
+        loadImage(true)
+      }, delay)
+    }
+  }, [retryCount, maxRetries, loadImage])
+
+  // 手动重试
+  const manualRetry = useCallback(() => {
+    // 清除相关缓存
+    const { cacheKey } = buildCandidates(m, override)
+    resolvedUrlCache.delete(cacheKey)
+    resolvingCache.delete(cacheKey)
+    
+    setRetryCount(0)
+    loadImage(false)
+  }, [m, override, loadImage])
+
+  useEffect(() => {
+    loadImage()
+  }, [loadImage])
+
+  // 自动重试
+  useEffect(() => {
+    if (loadState === 'error' && retryCount < maxRetries) {
+      retryLoad()
+    }
+  }, [loadState, retryCount, maxRetries, retryLoad])
+
+  return { src, loadState, retryCount, manualRetry }
 }
 
 async function prewarmImages(monsters: Monster[], override?: (m: Monster) => string | null, count = 80) {
-  const tasks: Promise<any>[] = []
-  for (let i = 0; i < Math.min(count, monsters.length); i++) {
-    const m = monsters[i]
-    const { list, cacheKey } = buildCandidates(m, override)
-    if (resolvedUrlCache.has(cacheKey)) continue
-    tasks.push(resolveImageOnce(cacheKey, list, true))
+  // 分批预热，避免一次性发起太多请求
+  const BATCH_SIZE = 10
+  const BATCH_DELAY = 100 // 批次间延迟100ms
+  
+  const batches: Monster[][] = []
+  const total = Math.min(count, monsters.length)
+  
+  for (let i = 0; i < total; i += BATCH_SIZE) {
+    batches.push(monsters.slice(i, i + BATCH_SIZE))
   }
-  await Promise.allSettled(tasks)
+  
+  let successCount = 0
+  let errorCount = 0
+  
+  for (const batch of batches) {
+    const tasks = batch.map(async (m) => {
+      const { list, cacheKey } = buildCandidates(m, override)
+      
+      // 跳过已缓存的
+      if (resolvedUrlCache.has(cacheKey)) {
+        successCount++
+        return
+      }
+      
+      try {
+        const result = await resolveImageOnce(cacheKey, list, true)
+        if (result) {
+          successCount++
+        } else {
+          errorCount++
+        }
+      } catch (error) {
+        errorCount++
+        console.debug(`Prewarm failed for ${m.name}:`, error)
+      }
+    })
+    
+    await Promise.allSettled(tasks)
+    
+    // 批次间延迟，减少服务器压力
+    if (batches.indexOf(batch) < batches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_DELAY))
+    }
+  }
+  
+  console.log(`Image prewarming completed: ${successCount} success, ${errorCount} failed`)
 }
 
 /* ===================== 卡片组件 ===================== */
@@ -165,7 +381,8 @@ function MonsterCard(props: {
   mediaHeightCss: string
 }) {
   const { m, selected, onToggleSelect, onOpenDetail, showRawSummary, getImageUrl, ribbon, mediaHeightCss } = props
-  const imgUrl = useImageResolved(m, getImageUrl) || placeholderDataUri()
+  const { src, loadState, retryCount, manualRetry } = useImageResolved(m, getImageUrl)
+  const imgUrl = src || placeholderDataUri(loadState === 'loading' ? '加载中' : loadState === 'retrying' ? '重试中' : '无图')
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 })
@@ -235,7 +452,7 @@ function MonsterCard(props: {
       {/* 图片内框 */}
       <div
         ref={wrapRef}
-        className="w-full overflow-hidden rounded-md border border-gray-200/70 bg-white flex items-center justify-center"
+        className="w-full overflow-hidden rounded-md border border-gray-200/70 bg-white flex items-center justify-center relative"
         style={{ height: mediaHeightCss }}
       >
         <img
@@ -254,6 +471,37 @@ function MonsterCard(props: {
           }
           className="max-h-full w-auto object-contain"
         />
+        
+        {/* 加载状态指示器 */}
+        {(loadState === 'loading' || loadState === 'retrying') && (
+          <div className="absolute inset-0 bg-gray-50/80 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-1">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-xs text-gray-600">
+                {loadState === 'retrying' ? `重试中 ${retryCount}/3` : '加载中'}
+              </span>
+            </div>
+          </div>
+        )}
+        
+        {/* 错误状态与重试按钮 */}
+        {loadState === 'error' && !src && (
+          <div className="absolute inset-0 bg-gray-50/90 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-xs text-gray-500">图片加载失败</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  manualRetry()
+                }}
+                className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                title="重新加载图片"
+              >
+                重试
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 文本区 */}
@@ -323,4 +571,34 @@ export default function MonsterCardGrid({
       ))}
     </div>
   )
+}
+
+/* ===================== 导出的工具函数 ===================== */
+// 清理所有图片缓存（用于故障恢复）
+export function clearAllImageCache() {
+  // 清理 blob URLs
+  for (const objUrl of blobLRU.values()) {
+    URL.revokeObjectURL(objUrl)
+  }
+  blobLRU.clear()
+  
+  // 清理缓存
+  resolvedUrlCache.clear()
+  resolvingCache.clear()
+  cacheMetadata.clear()
+  
+  console.log('All image cache cleared')
+}
+
+// 获取缓存统计信息
+export function getImageCacheStats() {
+  return {
+    blobCount: blobLRU.size,
+    resolvedCount: resolvedUrlCache.size,
+    resolvingCount: resolvingCache.size,
+    memoryUsage: `${Math.round(blobLRU.size * 0.1)}MB (estimated)`,
+    cacheHitRate: cacheMetadata.size > 0 ? 
+      `${Math.round(Array.from(cacheMetadata.values()).reduce((sum, meta) => sum + meta.accessed, 0) / cacheMetadata.size * 100)}%` : 
+      'N/A'
+  }
 }

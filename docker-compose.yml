@@ -7,12 +7,11 @@ services:
     environment:
       - APP_ENV=dev
       - KBXY_DB_PATH=/app/data/kbxy-dev.db
-      - KBXY_IMAGES_DIR=/app/images/monsters
+      - KBXY_IMAGES_DIR=/app/data/images/monsters
       - SQLITE_BUSY_TIMEOUT_MS=4000
       - SQLITE_CONNECT_TIMEOUT_S=5
     volumes:
-      - app_data:/app/data
-      - app_images:/app/images
+      - ./docker-data:/app/data
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -38,19 +37,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-volumes:
-  app_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./docker-data
-  app_images:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./docker-data/images
+# 使用直接绑定挂载，无需定义volumes
 
 networks:
   default:

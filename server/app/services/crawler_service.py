@@ -745,6 +745,85 @@ class Kabu4399Crawler:
                     self.seen_urls.add(detail_url)
                     yield detail_url, img_url, monster_name
 
+    # ---- 反向查找：从详情页URL查找列表页图片 ----
+    def _reverse_lookup_list_image(self, detail_url: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        从详情页URL反向查找列表页中的图片URL和怪物名称
+        返回: (img_url, monster_name)
+        """
+        try:
+            # 1. 从详情页URL提取系别信息
+            path = urlparse(detail_url).path.strip("/")
+            parts = path.split("/")
+            if len(parts) < 4 or parts[1] != "yaoguaidaquan":
+                return None, None
+            
+            slug = parts[2]  # 提取系别 (如 huanxi)
+            detail_id = parts[3].split('.')[0]  # 提取详情页ID (如 350258)
+            
+            # 2. 构建对应的列表页URL
+            list_url = _abs(self.BASE, f"{self.ROOT}{slug}/")
+            
+            # 3. 访问列表页并查找对应的详情链接
+            if not self._get(list_url):
+                log.warning(f"Failed to load list page: {list_url}")
+                return None, None
+            
+            # 4. 在列表页中查找指向该详情页的链接和图片
+            for li in self.sp.eles('t:li'):
+                # 查找详情链接
+                found_detail_link = False
+                for a in li.eles('t:a'):
+                    href = a.attr('href') or ""
+                    if detail_id in href and _is_detail_link(href):
+                        found_detail_link = True
+                        break
+                
+                if not found_detail_link:
+                    continue
+                
+                # 找到对应的列表项，提取图片URL和名称
+                img_url = None
+                for img in li.eles('t:img'):
+                    src = img.attr('src') or ""
+                    if src:
+                        # 处理相对URL，补全协议
+                        if src.startswith('//'):
+                            img_url = 'https:' + src
+                        elif src.startswith('/'):
+                            img_url = _abs(self.BASE, src)
+                        else:
+                            img_url = src
+                        break
+                
+                # 查找怪物名称
+                monster_name = None
+                for img in li.eles('t:img'):
+                    alt = img.attr('alt') or ""
+                    if alt and '卡布西游' in alt:
+                        # 提取怪物名称，去掉"卡布西游"前缀
+                        monster_name = alt.replace('卡布西游', '').strip()
+                        break
+                
+                if not monster_name:
+                    # 从链接文本中获取
+                    for a in li.eles('t:a'):
+                        text = _clean(a.text)
+                        if text and not _is_detail_link(text):
+                            monster_name = text
+                            break
+                
+                if img_url:
+                    log.info(f"Reverse lookup success: {detail_url} -> img: {img_url}, name: {monster_name}")
+                    return img_url, monster_name
+            
+            log.warning(f"Could not find detail link {detail_id} in list page {list_url}")
+            return None, None
+            
+        except Exception as e:
+            log.warning(f"Reverse lookup failed for {detail_url}: {e}")
+            return None, None
+
     # ---- 系别识别 ----
     def _infer_element_from_url(self, page_url: str) -> Optional[str]:
         try:
@@ -1194,7 +1273,8 @@ class Kabu4399Crawler:
         # 返回种族值最高的形态
         return max(all_forms, key=self._six_sum)
 
-    def fetch_all_forms(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> \
+    def fetch_all_forms(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None, 
+                        process_image: bool = True, enable_upscale: bool = True) -> \
             List[MonsterRow]:
         """获取详情页的所有妖怪形态"""
         # 预热
@@ -1247,20 +1327,26 @@ class Kabu4399Crawler:
 
         # 处理图片下载和超分（只处理一次，使用最高形态的名称）
         shared_img_path = None
-        if monsters:
+        if monsters and process_image:
             best_monster = max(monsters, key=self._six_sum)
             monster_name = list_monster_name or best_monster.name
             img_url_to_use = list_img_url or best_monster.img_url
 
             if monster_name and img_url_to_use:
                 try:
-                    shared_img_path = self._process_monster_image(monster_name, img_url_to_use, enable_upscale=True)
+                    shared_img_path = self._process_monster_image(monster_name, img_url_to_use, enable_upscale=enable_upscale)
                     if shared_img_path:
                         log.info(f"Successfully processed image for {monster_name}: {shared_img_path}")
                     else:
                         log.warning(f"Failed to process image for {monster_name}")
                 except Exception as e:
                     log.error(f"Error in image processing for {monster_name}: {e}")
+        elif monsters and not process_image:
+            # 如果不处理图片，但仍然设置原始图片URL（如果有的话）
+            best_monster = max(monsters, key=self._six_sum)
+            img_url_to_use = list_img_url or best_monster.img_url
+            if img_url_to_use:
+                shared_img_path = img_url_to_use  # 使用原始URL
 
         # 为所有形态设置共同属性
         for monster in monsters:
@@ -1276,10 +1362,20 @@ class Kabu4399Crawler:
 
         return monsters
 
-    def fetch_best_with_all_forms(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None) -> \
+    def fetch_best_with_all_forms(self, url: str, list_img_url: Optional[str] = None, list_monster_name: Optional[str] = None,
+                                  process_image: bool = True, enable_upscale: bool = True) -> \
             Optional[MonsterRow]:
         """获取最高形态妖怪，但包含所有形态名称"""
-        all_forms = self.fetch_all_forms(url, list_img_url, list_monster_name)
+        
+        # 如果没有提供列表页图片URL和名称，尝试反向查找
+        if list_img_url is None and list_monster_name is None:
+            reverse_img_url, reverse_name = self._reverse_lookup_list_image(url)
+            if reverse_img_url:
+                list_img_url = reverse_img_url
+                list_monster_name = reverse_name
+                log.info(f"Using reverse lookup results: img={list_img_url}, name={list_monster_name}")
+        
+        all_forms = self.fetch_all_forms(url, list_img_url, list_monster_name, process_image, enable_upscale)
         if not all_forms:
             return None
         
