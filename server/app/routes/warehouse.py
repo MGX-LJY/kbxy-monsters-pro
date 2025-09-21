@@ -22,6 +22,9 @@ from ..services.image_service import get_image_resolver
 
 router = APIRouter()
 
+# Legacy fallback mapping (empty since derived stats functionality was removed)
+LEGACY_FALLBACK = {}
+
 
 
 def pick_derived_value(d: dict, key: str):
