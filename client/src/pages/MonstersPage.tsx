@@ -2087,16 +2087,6 @@ export default function MonstersPage() {
               </>
             ) : (
               <>
-                {/* 获取方式/渠道展示 */}
-                <div className="card p-3 space-y-2">
-                  <div className="text-sm text-gray-600">获取渠道：{(selected as any)?.type || '—'}</div>
-                  <div className="text-sm text-gray-600">获取方式：</div>
-                  <div className="text-sm whitespace-pre-wrap">{(selected as any)?.method || '—'}</div>
-                  <div className="text-xs text-gray-400">
-                    创建：{(selected as any)?.created_at || '—'}，更新：{(selected as any)?.updated_at || '—'}
-                  </div>
-                </div>
-
                 <div>
                   <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
                   <MonsterStatsRadar 
@@ -2143,33 +2133,131 @@ export default function MonstersPage() {
                 </div>
 
                 {/* 标签分三类展示 */}
-                <div>
-                  <h4 className="font-semibold mb-2">标签</h4>
+                <div className="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                    <h4 className="text-sm font-semibold text-gray-800">技能标签</h4>
+                  </div>
                   {(() => {
                     const b = bucketizeTags((selected as any).tags)
                     return (
-                      <div className="space-y-2">
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">增强类</div>
-                          <div className="flex flex-wrap gap-1">
-                            {b.buf.length ? b.buf.map(t => <span key={t} className="badge">🟢{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+                      <div className="space-y-4">
+                        {/* 增强类 */}
+                        <div className="relative">
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
+                            <span className="text-xs font-medium text-green-700">增强类</span>
+                            {b.buf.length > 0 && <span className="text-xs text-green-600 bg-green-100 px-1.5 py-0.5 rounded-full">{b.buf.length}</span>}
+                          </div>
+                          <div className="pl-4 flex flex-wrap gap-2">
+                            {b.buf.length ? b.buf.map(t => 
+                              <span key={t} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200 hover:bg-green-200 transition-colors">
+                                🟢 {tagLabel(t)}
+                              </span>
+                            ) : <span className="text-xs text-gray-400 italic pl-1">暂无增强效果</span>}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">削弱类</div>
-                          <div className="flex flex-wrap gap-1">
-                            {b.deb.length ? b.deb.map(t => <span key={t} className="badge">🔴{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+
+                        {/* 削弱类 */}
+                        <div className="relative">
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
+                            <span className="text-xs font-medium text-red-700">削弱类</span>
+                            {b.deb.length > 0 && <span className="text-xs text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">{b.deb.length}</span>}
+                          </div>
+                          <div className="pl-4 flex flex-wrap gap-2">
+                            {b.deb.length ? b.deb.map(t => 
+                              <span key={t} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition-colors">
+                                🔴 {tagLabel(t)}
+                              </span>
+                            ) : <span className="text-xs text-gray-400 italic pl-1">暂无削弱效果</span>}
                           </div>
                         </div>
-                        <div>
-                          <div className="text-xs text-gray-500 mb-1">特殊类</div>
-                          <div className="flex flex-wrap gap-1">
-                            {b.util.length ? b.util.map(t => <span key={t} className="badge">🟣{tagLabel(t)}</span>) : <span className="text-xs text-gray-400">（无）</span>}
+
+                        {/* 特殊类 */}
+                        <div className="relative">
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className="w-1.5 h-1.5 bg-purple-500 rounded-full"></div>
+                            <span className="text-xs font-medium text-purple-700">特殊类</span>
+                            {b.util.length > 0 && <span className="text-xs text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded-full">{b.util.length}</span>}
+                          </div>
+                          <div className="pl-4 flex flex-wrap gap-2">
+                            {b.util.length ? b.util.map(t => 
+                              <span key={t} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 border border-purple-200 hover:bg-purple-200 transition-colors">
+                                🟣 {tagLabel(t)}
+                              </span>
+                            ) : <span className="text-xs text-gray-400 italic pl-1">暂无特殊效果</span>}
                           </div>
                         </div>
                       </div>
                     )
                   })()}
+                </div>
+
+                {/* 获取方式/渠道展示 */}
+                <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                    <h5 className="text-sm font-semibold text-gray-800">获取信息</h5>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    {/* 获取渠道 */}
+                    <div className="flex items-start gap-3">
+                      <div className="text-xs text-gray-500 w-16 shrink-0 mt-1">渠道</div>
+                      <div className="flex-1">
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 border border-purple-200">
+                          {(selected as any)?.type || '未知'}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* 获取方式 */}
+                    <div className="flex items-start gap-3">
+                      <div className="text-xs text-gray-500 w-16 shrink-0 mt-1">方式</div>
+                      <div className="flex-1 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
+                        {(selected as any)?.method || '暂无说明'}
+                      </div>
+                    </div>
+                    
+                    {/* 时间信息 */}
+                    <div className="pt-2 mt-3 border-t border-blue-100">
+                      <div className="grid grid-cols-2 gap-3 text-xs text-gray-500">
+                        <div className="flex items-center gap-1">
+                          <span className="w-1 h-1 bg-gray-400 rounded-full"></span>
+                          <span>创建：{(() => {
+                            try {
+                              const date = new Date((selected as any)?.created_at || '')
+                              return date.toLocaleDateString('zh-CN', { 
+                                month: '2-digit', 
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })
+                            } catch {
+                              return '—'
+                            }
+                          })()}</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className="w-1 h-1 bg-gray-400 rounded-full"></span>
+                          <span>更新：{(() => {
+                            try {
+                              const date = new Date((selected as any)?.updated_at || '')
+                              return date.toLocaleDateString('zh-CN', { 
+                                month: '2-digit', 
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })
+                            } catch {
+                              return '—'
+                            }
+                          })()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </>
             )}
