@@ -68,7 +68,8 @@ class SkillIn(BaseModel):
 @router.get("/monsters", response_model=MonsterList)
 def list_api(
     q: Optional[str] = None,
-    element: Optional[str] = None,
+    element: Optional[str] = None,  # 保持向后兼容
+    elements: Optional[List[str]] = Query(None, description="多元素筛选数组"),
     # 旧：单标签
     tag: Optional[str] = None,
     # 新：多标签筛选（向后兼容）
@@ -134,16 +135,25 @@ def list_api(
     # 统一获取途径
     acq = (acq_type or type_ or "").strip() or None
 
+    # 统一元素筛选（elements优先，向后兼容element）
+    resolved_elements = []
+    if elements:
+        resolved_elements.extend([e for e in elements if e and e.strip()])
+    elif element:
+        resolved_elements.append(element.strip())
+
     # —— 组装调用参数（尽量向后兼容旧的 list_monsters 签名）—— #
     base_kwargs = dict(
         db=db,
         q=q,
-        element=element,
+        element=element,  # 保持旧签名兼容性
         sort=sort,
         order=order,
         page=page,
         page_size=page_size,
     )
+    if resolved_elements:
+        base_kwargs["elements"] = resolved_elements  # 新的多元素参数
     if resolved_tags_all:
         base_kwargs["tags_all"] = resolved_tags_all
     if resolved_tags_any:
@@ -176,8 +186,12 @@ def list_api(
         if q:
             like = f"%{q.strip()}%"
             query = query.filter(Monster.name.ilike(like))
-        if element:
-            query = query.filter(Monster.element == element)
+        # 元素筛选（多元素支持）
+        if resolved_elements:
+            if len(resolved_elements) == 1:
+                query = query.filter(Monster.element == resolved_elements[0])
+            else:
+                query = query.filter(Monster.element.in_(resolved_elements))
         if acq:
             query = query.filter(Monster.type.ilike(f"%{acq}%"))
 

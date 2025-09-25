@@ -77,6 +77,7 @@ def warehouse_list(
     possess: Optional[bool] = Query(None, description="True=仅已拥有；False=仅未拥有；None=全部"),
     q: Optional[str] = Query(None),
     element: Optional[str] = Query(None),
+    elements: Optional[List[str]] = Query(None, description="多元素筛选数组"),
     # 旧：单标签
     tag: Optional[str] = Query(None),
     # 新：多标签筛选（向后兼容）
@@ -107,7 +108,7 @@ def warehouse_list(
     """
     支持参数：
     - possess: True 仅已拥有；False 仅未拥有（含 None）；None 全部
-    - q / element
+    - q / element / elements（多元素筛选数组，优先于element）
     - 标签筛选：
         * tag（单标签）
         * tags_all（AND 多标签）、tags_any（OR 多标签）
@@ -171,8 +172,19 @@ def warehouse_list(
                 func.json_extract(Monster.all_forms, '$').op('LIKE')(like)
             )
         )
-    if element:
-        base_q = base_q.filter(Monster.element == element)
+    
+    # 元素筛选（多元素支持，elements优先，向后兼容element）
+    resolved_elements = []
+    if elements:
+        resolved_elements.extend([e for e in elements if e and e.strip()])
+    elif element:
+        resolved_elements.append(element.strip())
+    
+    if resolved_elements:
+        if len(resolved_elements) == 1:
+            base_q = base_q.filter(Monster.element == resolved_elements[0])
+        else:
+            base_q = base_q.filter(Monster.element.in_(resolved_elements))
 
     # —— 汇总多标签参数（兼容分组）—— #
     resolved_tags_all: List[str] = []

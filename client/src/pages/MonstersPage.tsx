@@ -134,7 +134,7 @@ export default function MonstersPage() {
 
   // 搜索 + 筛选
   const [q, setQ] = useState('')
-  const [element, setElement] = useState('')           // 元素筛选（中文）
+  const [elements, setElements] = useState<string[]>([])  // 多元素筛选（中文数组）
   const [acqType, setAcqType] = useState('')           // 获取途径
 
   // === 新增：收藏分组筛选 ===
@@ -478,13 +478,13 @@ export default function MonstersPage() {
   // —— 列表数据 —— //
   const list = useQuery({
     queryKey: ['monsters', {
-      q, element, tagBufList, tagDebList, tagUtilList, tagBufMode, tagDebMode, tagUtilMode, acqType, sort: sortForApi, order,
+      q, elements, tagBufList, tagDebList, tagUtilList, tagBufMode, tagDebMode, tagUtilMode, acqType, sort: sortForApi, order,
       page, pageSize, warehouseOnly, notOwnedOnly, collectionId,   // ← 增加 collectionId
     }],
     queryFn: async () => {
       const baseParams: any = {
         q: q || undefined,
-        element: element || undefined,
+        elements: elements.length > 0 ? elements : undefined,  // 多元素数组
         type: acqType || undefined,
         acq_type: acqType || undefined,
         sort: sortForApi, order,
@@ -864,7 +864,7 @@ export default function MonstersPage() {
     while (true) {
       const params: any = {
         q: q || undefined,
-        element: element || undefined,
+        elements: elements.length > 0 ? elements : undefined,  // 多元素数组
         type: acqType || undefined,
         acq_type: acqType || undefined,
         sort: sortForApi, order,
@@ -1513,13 +1513,6 @@ export default function MonstersPage() {
             {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
 
-          {/* 元素筛选（使用"百分比"的 label；value 仍是中文元素名） */}
-          <select className="select" value={element} onChange={e => { setElement(e.target.value); setPage(1) }}>
-            <option value="">全部元素</option>
-            {filterElementOptionsLabeled.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.text}</option>
-            ))}
-          </select>
 
           <select className="select" value={acqType} onChange={e => { setAcqType(e.target.value); setPage(1) }}>
             <option value="">获取途径</option>
@@ -1558,10 +1551,63 @@ export default function MonstersPage() {
           </select>
         </div>
 
-        {/* 3 行：标签多选区域 */}
+
+        {/* 筛选区域：元素 + 技能标签 */}
         <div className="mb-3">
-          <div className="text-sm text-gray-600 mb-2">技能标签筛选</div>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            {/* 元素筛选 */}
+            <div className="space-y-2">
+              
+              {/* 多元素筛选下拉 */}
+              <div className="relative">
+                <select 
+                  className="select w-full" 
+                  value=""
+                  onChange={e => { 
+                    if (e.target.value) {
+                      const newElement = e.target.value
+                      if (!elements.includes(newElement)) {
+                        setElements([...elements, newElement])
+                        setPage(1)
+                      }
+                      e.target.value = '' // 重置选择
+                    }
+                  }}
+                >
+                  <option value="">+ 选择元素</option>
+                  {filterElementOptionsLabeled
+                    .filter(opt => !elements.includes(opt.value))
+                    .map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.text}</option>
+                    ))
+                  }
+                </select>
+              </div>
+              
+              {/* 已选元素标签 */}
+              {elements.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {elements.map(element => (
+                    <span key={element} className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded border border-orange-200">
+                      {element}
+                      {vsElement && effectsPairByType[element]?.label && (
+                        <span className="text-orange-600">({effectsPairByType[element].label})</span>
+                      )}
+                      <button
+                        className="text-orange-500 hover:text-orange-800 ml-1"
+                        onClick={() => {
+                          setElements(elements.filter(e => e !== element))
+                          setPage(1)
+                        }}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* 增强标签 */}
             <div className="space-y-2">
               <div className="flex items-center gap-2">

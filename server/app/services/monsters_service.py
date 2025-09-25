@@ -116,7 +116,8 @@ def list_monsters(
     db: Session,
     *,
     q: Optional[str] = None,
-    element: Optional[str] = None,
+    element: Optional[str] = None,  # 保持向后兼容
+    elements: Optional[List[str]] = None,  # 多元素筛选
     # 旧：单标签
     tag: Optional[str] = None,
     # 新：多标签（优先于 tag）
@@ -169,8 +170,18 @@ def list_monsters(
                 func.json_extract(Monster.all_forms, '$').op('LIKE')(like)
             )
         )
-    if element:
-        base_stmt = base_stmt.where(Monster.element == element)
+    # 元素筛选（多元素支持，elements优先，向后兼容element）
+    resolved_elements = []
+    if elements:
+        resolved_elements.extend([e for e in elements if e and e.strip()])
+    elif element:
+        resolved_elements.append(element.strip())
+    
+    if resolved_elements:
+        if len(resolved_elements) == 1:
+            base_stmt = base_stmt.where(Monster.element == resolved_elements[0])
+        else:
+            base_stmt = base_stmt.where(Monster.element.in_(resolved_elements))
     if acq:
         base_stmt = base_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
 
@@ -222,8 +233,12 @@ def list_monsters(
                 func.json_extract(Monster.all_forms, '$').op('LIKE')(like)
             )
         )
-    if element:
-        rows_stmt = rows_stmt.where(Monster.element == element)
+    # 元素筛选（使用上面计算的resolved_elements）
+    if resolved_elements:
+        if len(resolved_elements) == 1:
+            rows_stmt = rows_stmt.where(Monster.element == resolved_elements[0])
+        else:
+            rows_stmt = rows_stmt.where(Monster.element.in_(resolved_elements))
     if acq:
         rows_stmt = rows_stmt.where(getattr(Monster, "type").ilike(f"%{acq}%"))
 
