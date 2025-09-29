@@ -76,12 +76,34 @@ def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
             save_path.unlink(missing_ok=True)  # 删除空文件
             return False
         
-        if bytes_written < 100:  # 如果文件小于100字节，可能是错误页面
-            log.warning(f"Downloaded image is too small ({bytes_written} bytes): {url}")
+        # 提高最小尺寸阈值，检测4399 logo等小图片
+        if bytes_written < 5000:  # 小于5KB的图片很可能是logo或错误图片
+            log.warning(f"Downloaded image is too small ({bytes_written} bytes), likely a logo or error image: {url}")
             save_path.unlink(missing_ok=True)  # 删除无效文件
             return False
+        
+        # 验证下载的图片确实是有效图片
+        try:
+            with Image.open(save_path) as img:
+                width, height = img.size
+                # 检查图片尺寸是否合理（4399 logo通常很小）
+                if width < 50 or height < 50:
+                    log.warning(f"Downloaded image dimensions too small ({width}x{height}), likely a logo: {url}")
+                    save_path.unlink(missing_ok=True)
+                    return False
+                
+                # 检查是否是典型的4399 logo尺寸（比如88x31等）
+                if (width == 88 and height == 31) or (width == 120 and height == 60) or (width < 100 and height < 100 and bytes_written < 10000):
+                    log.warning(f"Downloaded image appears to be a website logo ({width}x{height}, {bytes_written} bytes): {url}")
+                    save_path.unlink(missing_ok=True)
+                    return False
+                    
+                log.info(f"Successfully downloaded and validated image ({bytes_written} bytes, {width}x{height}): {save_path}")
+        except Exception as e:
+            log.warning(f"Failed to validate downloaded image {save_path}: {e}")
+            save_path.unlink(missing_ok=True)
+            return False
 
-        log.info(f"Successfully downloaded image ({bytes_written} bytes): {save_path}")
         return True
         
     except Exception as e:
@@ -100,16 +122,22 @@ def run_waifu2x_upscale(src: Path, dst: Path, scale: int = 2) -> bool:
             "-o", str(dst),
             "-s", str(scale),
             "-n", "-1",  # noise level
-            "-m", "models-cunet",
+            "-m", "/usr/local/share/models-cunet",  # 使用绝对路径
             "-f", "png"
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
         return True
     except FileNotFoundError:
         log.warning("waifu2x-ncnn-vulkan not found in PATH, skipping upscaling")
         return False
     except subprocess.CalledProcessError as e:
-        log.warning(f"waifu2x failed: {e}")
+        log.warning(f"waifu2x failed with exit code {e.returncode}: {e.stderr.decode() if e.stderr else 'unknown error'}")
+        return False
+    except subprocess.TimeoutExpired:
+        log.warning("waifu2x timed out, skipping upscaling")
+        return False
+    except Exception as e:
+        log.warning(f"waifu2x unexpected error: {e}")
         return False
 
 def upscale_image(image_path: Path, scale: int = 2) -> bool:
@@ -917,6 +945,44 @@ class Kabu4399Crawler:
         return skills
 
     # ---- 纯 BeautifulSoup 解析（稳）----
+    def _parse_table_column_order(self, header_row) -> Dict[str, int]:
+        """
+        解析表格头部，确定各属性列的位置
+        返回：{属性名: 列索引} 的映射
+        """
+        if not header_row:
+            return {}
+        
+        # 获取表头单元格
+        header_cells = header_row.find_all(["td", "th"])
+        header_texts = [_clean(cell.get_text(separator=" ", strip=True)) for cell in header_cells]
+        
+        log.info(f"Header row texts: {header_texts}")
+        
+        # 属性关键词映射
+        attr_keywords = {
+            'hp': ['体力', '血量', 'HP'],
+            'attack': ['攻击', '物攻', '攻击力'],
+            'defense': ['防御', '物防', '防御力'],
+            'magic': ['法术', '法攻', '魔攻'],
+            'resist': ['抗性', '魔防', '法防'],
+            'speed': ['速度', '敏捷']
+        }
+        
+        column_map = {}
+        # 跳过名称列（通常是第0列），从数值列开始检测
+        for i, header_text in enumerate(header_texts):
+            if i == 0:  # 跳过第一列（妖怪名）
+                continue
+            for attr_name, keywords in attr_keywords.items():
+                if any(keyword in header_text for keyword in keywords):
+                    # 调整索引，因为数值列从第1列开始，但cols数组从0开始
+                    column_map[attr_name] = i - 1
+                    break
+        
+        log.info(f"Detected column order: {column_map}")
+        return column_map
+
     def _bs4_parse_stats_table(self, soup: BeautifulSoup, page_url: str) -> List[MonsterRow]:
         tables = soup.find_all("table")
         target = None
@@ -943,14 +1009,42 @@ class Kabu4399Crawler:
         if len(rows) < 2:
             return []
 
+        # 查找表头并解析列顺序
         header_idx = None
+        column_map = {}
         for i, tr in enumerate(rows[:10]):
             t = _clean(tr.get_text(separator=" ", strip=True))
-            if all(k in t for k in ("体力", "速度", "攻击", "防御", "法术", "抗性")):
+            log.info(f"Checking row {i} for header: {t}")
+            # 更宽松的表头检测：只要包含体力和至少两个其他属性即可
+            if "体力" in t and sum(1 for k in ["攻击", "防御", "法术", "抗性", "速度"] if k in t) >= 2:
                 header_idx = i
+                # 解析这一行的列顺序
+                column_map = self._parse_table_column_order(tr)
+                log.info(f"Found header at row {i}, column_map: {column_map}")
                 break
+
         if header_idx is None:
             header_idx = -1
+            log.warning("Could not detect table header, using legacy column order")
+            column_map = {'hp': 0, 'speed': 1, 'attack': 2, 'defense': 3, 'magic': 4, 'resist': 5}
+
+        # 检查页面URL来推断格式（优先使用页面ID判断）
+        log.info(f"Checking URL format for: {page_url}")
+        url_match = re.search(r'/(\d+)\.html', page_url)
+        if url_match:
+            page_id = int(url_match.group(1))
+            log.info(f"Extracted page ID: {page_id}")
+            if page_id >= 1006320:  # 幻星翎蜂之后的页面使用新格式
+                log.info(f"Page ID {page_id} >= 1006320, forcing new format")
+                column_map = {'hp': 0, 'attack': 1, 'defense': 2, 'magic': 3, 'resist': 4, 'speed': 5}
+            elif not column_map or len(column_map) < 4:
+                log.info(f"Page ID {page_id} < 1006320, assuming legacy format")
+                column_map = {'hp': 0, 'speed': 1, 'attack': 2, 'defense': 3, 'magic': 4, 'resist': 5}
+        elif not column_map or len(column_map) < 4:
+            log.warning("Could not determine page ID, using legacy format")
+            column_map = {'hp': 0, 'speed': 1, 'attack': 2, 'defense': 3, 'magic': 4, 'resist': 5}
+
+        log.info(f"Final column_map: {column_map}")
 
         img = soup.find("img")
         page_img = img["src"] if img and img.get("src") else None
@@ -994,11 +1088,22 @@ class Kabu4399Crawler:
             if not name:
                 continue
 
+            # 根据检测到的列映射分配属性值
+            # 直接使用column_map，因为现在已经保证有正确的映射
+            hp = cols[column_map.get('hp', 0)]
+            attack = cols[column_map.get('attack', 1)]
+            defense = cols[column_map.get('defense', 2)]
+            magic = cols[column_map.get('magic', 3)]
+            resist = cols[column_map.get('resist', 4)]
+            speed = cols[column_map.get('speed', 5)]
+
+            log.info(f"Using column mapping for {name}: hp={hp}, attack={attack}, defense={defense}, magic={magic}, resist={resist}, speed={speed} (column_map={column_map})")
+            
             out.append(MonsterRow(
                 name=fix_corrupted_characters(_clean(name)),
                 element=None,
-                hp=cols[0], speed=cols[1], attack=cols[2],
-                defense=cols[3], magic=cols[4], resist=cols[5],
+                hp=hp, speed=speed, attack=attack,
+                defense=defense, magic=magic, resist=resist,
                 source_url=page_url, img_url=page_img,
             ))
 
