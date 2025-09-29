@@ -19,6 +19,7 @@ from ..services.warehouse_service import (
 )
 # ⬇️ 新增：图片解析器（若未引入图片服务，可去掉两行 import 和下文 img_url 相关三行）
 from ..services.image_service import get_image_resolver
+from ..services.combat_service import CombatAnalyzer
 
 router = APIRouter()
 
@@ -308,6 +309,9 @@ def warehouse_list(
             getattr(m, "alias", None),
         ])
 
+        # 计算战斗倾向
+        tendencies = CombatAnalyzer.calculate_combat_tendencies(m)
+        
         out.append(
             MonsterOut(
                 id=m.id,
@@ -324,6 +328,9 @@ def warehouse_list(
                 derived=d,
                 # 若 MonsterOut 未添加 image_url 字段，这里会被忽略；若已添加则直接输出
                 image_url=img_url,
+                # 添加战斗倾向字段
+                attack_tendency=tendencies["attack_tendency"],
+                defense_tendency=tendencies["defense_tendency"]
             )
         )
 

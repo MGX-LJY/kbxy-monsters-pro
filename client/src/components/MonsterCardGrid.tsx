@@ -558,15 +558,15 @@ function MonsterCard(props: {
             </span>
           ) : null}
         </div>
-        {/* 战斗倾向显示 */}
-        {m.attack_tendency && m.defense_tendency && (
+        {/* 战斗倾向显示 - 修复仓库/未获取状态下无法显示的问题 */}
+        {(m.attack_tendency || m.defense_tendency) && (
           <div className="mt-1 text-center">
             <div className="flex justify-center gap-1">
               <span className="inline-block rounded-full bg-gradient-to-r from-red-100 to-orange-100 px-1.5 py-[2px] text-[9px] font-medium">
-                {m.attack_tendency}
+                {m.attack_tendency || '未分析'}
               </span>
               <span className="inline-block rounded-full bg-gradient-to-r from-blue-100 to-purple-100 px-1.5 py-[2px] text-[9px] font-medium">
-                {m.defense_tendency}
+                {m.defense_tendency || '未分析'}
               </span>
             </div>
           </div>

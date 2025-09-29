@@ -2198,8 +2198,8 @@ export default function MonstersPage() {
                   })()}
                 </div>
 
-                {/* 战斗倾向分析面板 */}
-                {selected.attack_tendency && selected.defense_tendency && (
+                {/* 战斗倾向分析面板 - 修复仓库/未获取状态下无法显示的问题 */}
+                {(selected.attack_tendency || selected.defense_tendency) && (
                   <div className="p-4 bg-gradient-to-r from-purple-50 to-violet-50 border border-purple-200 rounded-lg shadow-sm">
                     <div className="flex items-center gap-2 mb-3">
                       <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
@@ -2207,11 +2207,11 @@ export default function MonstersPage() {
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="text-center p-3 rounded-lg border border-purple-200/60">
-                        <div className="font-medium text-gray-800">{selected.attack_tendency}</div>
+                        <div className="font-medium text-gray-800">{selected.attack_tendency || '未分析'}</div>
                         <div className="text-xs text-gray-600">攻击倾向</div>
                       </div>
                       <div className="text-center p-3 rounded-lg border border-purple-200/60">
-                        <div className="font-medium text-gray-800">{selected.defense_tendency}</div>
+                        <div className="font-medium text-gray-800">{selected.defense_tendency || '未分析'}</div>
                         <div className="text-xs text-gray-600">防御倾向</div>
                       </div>
                     </div>
