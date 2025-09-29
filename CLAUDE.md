@@ -13,8 +13,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r server/requirements.txt
 
 # Run server (development mode with auto-reload)
-make server                    # Default: APP_ENV=test
-make server APP_ENV=dev        # Dev environment
+make server                    # Default: APP_ENV=dev
 uvicorn server.app.main:app --reload --port 8000  # Direct command
 ```
 
@@ -48,7 +47,8 @@ make dev        # Instructions to run both servers
 ### Tech Stack
 - **Backend**: FastAPI + SQLAlchemy 2.x + SQLite with WAL mode
 - **Frontend**: React + TypeScript + Vite + Tailwind CSS (local build)
-- **Data**: SQLite database with configurable environments (dev/test)
+- **Data**: SQLite database
+- **Deployment**: Docker (production environment)
 
 ### Key Components
 
@@ -68,8 +68,8 @@ make dev        # Instructions to run both servers
 - Tailwind CSS for styling (locally built, not CDN)
 
 #### Database Configuration
-- Environment controlled via `APP_ENV` environment variable
-- Default files: `kbxy-dev.db` (dev), `kbxy-test.db` (test)
+- Environment controlled via `APP_ENV` environment variable: `dev` (local development) or `prod` (docker production)
+- Default database file: `kbxy-dev.db` (located in `data/` directory)
 - Override with `KBXY_DB_PATH` environment variable
 - SQLite timeout settings configurable via environment variables
 
@@ -81,10 +81,11 @@ make dev        # Instructions to run both servers
 - Import preview/commit workflow
 
 ### Environment Variables
-- `APP_ENV`: dev/test (defaults to dev)
+- `APP_ENV`: dev (local development) or prod (docker production), defaults to dev
 - `KBXY_DB_PATH`: Override default database file path
 - `SQLITE_BUSY_TIMEOUT_MS`: SQLite busy timeout (default: 4000ms)
 - `SQLITE_CONNECT_TIMEOUT_S`: Connection timeout (default: 5s)
+- `TAG_USE_SELECTED_ONLY`: Use only selected skills for tag recognition (default: true)
 
 ### Development Notes
 - Backend runs on port 8000, frontend on port 5173

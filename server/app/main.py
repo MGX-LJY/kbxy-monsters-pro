@@ -82,10 +82,11 @@ if HAS_TAGS:
 
 def _init_schema_once_with_lock():
     """
-    只在 dev/test 环境做一次 schema 初始化（create_all, checkfirst=True），
+    在 dev 环境做一次 schema 初始化（create_all, checkfirst=True），
     用文件锁避免 uvicorn --reload 进程/多次导入的竞态。
+    生产环境（prod）不执行自动初始化。
     """
-    if settings.app_env not in ("dev", "test"):
+    if settings.app_env != "dev":
         return
 
     parent_dir = DB_INFO.get("db_parent_dir")

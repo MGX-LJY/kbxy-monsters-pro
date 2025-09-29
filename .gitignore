@@ -18,9 +18,6 @@
 kbxy-dev.db
 kbxy-dev.db-wal
 kbxy-dev.db-shm
-kbxy-test.db
-kbxy-test.db-wal
-kbxy-test.db-shm
 
 # ===== 日志与 PID =====
 .logs/

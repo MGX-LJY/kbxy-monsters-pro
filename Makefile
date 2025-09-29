@@ -1,16 +1,16 @@
 SHELL := /bin/bash
 
-.PHONY: install dev server client seed
+.PHONY: install dev server client
 
-# 默认环境：test；可通过 `make server APP_ENV=dev` 覆盖
-export APP_ENV ?= test
+# 默认环境：dev（本地开发），生产环境使用 docker
+export APP_ENV ?= dev
 
 install:
 	python3 -m venv .venv && source .venv/bin/activate && pip install -r server/requirements.txt
 	cd client && npm i
 
 server:
-	@echo "APP_ENV=$(APP_ENV)"
+	@echo "Starting server with APP_ENV=$(APP_ENV)"
 	uvicorn server.app.main:app --reload --port 8000 \
 	  --reload-dir server \
 	  --reload-exclude '.venv/*' \
