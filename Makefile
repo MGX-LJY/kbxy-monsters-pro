@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 .PHONY: install dev server client seed
 
-# 默认环境：dev；可通过 `make server APP_ENV=test` 覆盖
+# 默认环境：test；可通过 `make server APP_ENV=dev` 覆盖
 export APP_ENV ?= test
 
 install:
@@ -22,6 +22,3 @@ client:
 
 dev:
 	@echo "Open two terminals: \`make server\` and \`make client\`"
-
-seed:
-	python scripts/seed.py

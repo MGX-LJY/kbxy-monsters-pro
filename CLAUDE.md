@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Backend (FastAPI)
 ```bash
+# 注意：所有 make 命令必须在项目根目录执行
+
 # Install dependencies
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r server/requirements.txt
@@ -37,7 +39,8 @@ make dev        # Instructions to run both servers
 
 ### Database & Seeding
 ```bash
-make seed       # Run seed script (python scripts/seed.py)
+# 注：seed 脚本目前不存在，已在 Makefile 中注释
+# make seed       # Run seed script (python scripts/seed.py)
 ```
 
 ## Architecture Overview
