@@ -30,6 +30,10 @@ export interface Monster {
   // 图片（可选）
   image_url?: string | null
 
+  // 战斗倾向（可选）
+  attack_tendency?: string
+  defense_tendency?: string
+
   tags: string[]
   explain_json?: Record<string, any>
 

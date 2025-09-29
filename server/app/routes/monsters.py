@@ -12,8 +12,29 @@ from ..schemas import MonsterIn, MonsterOut, MonsterList
 from ..services.monsters_service import list_monsters, upsert_tags
 from ..services.skills_service import upsert_skills
 from ..services.image_service import get_image_resolver
+from ..services.combat_service import CombatAnalyzer
 
 router = APIRouter()
+
+
+def monster_to_out_with_combat(m: Monster, img_url: str = None) -> MonsterOut:
+    """将Monster转换为包含战斗倾向的MonsterOut"""
+    # 计算战斗倾向
+    tendencies = CombatAnalyzer.calculate_combat_tendencies(m)
+
+    return MonsterOut(
+        id=m.id, name=m.name, element=m.element,
+        hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
+        possess=getattr(m, "possess", None),
+        type=getattr(m, "type", None),
+        method=getattr(m, "method", None),
+        tags=[t.name for t in (m.tags or [])],
+        created_at=getattr(m, "created_at", None),
+        updated_at=getattr(m, "updated_at", None),
+        image_url=img_url or getattr(m, "image_url", None),
+        attack_tendency=tendencies["attack_tendency"],
+        defense_tendency=tendencies["defense_tendency"]
+    )
 
 
 
@@ -261,22 +282,7 @@ def list_api(
             getattr(m, "alias", None),
         ])
         
-        result.append(
-            MonsterOut(
-                id=m.id,
-                name=m.name,
-                element=m.element,
-                hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
-                possess=getattr(m, "possess", None),
-                type=getattr(m, "type", None),
-                method=getattr(m, "method", None),
-                tags=[t.name for t in (m.tags or [])],
-                explain_json=getattr(m, "explain_json", {}),
-                created_at=getattr(m, "created_at", None),
-                updated_at=getattr(m, "updated_at", None),
-                image_url=img_url,
-            )
-        )
+        result.append(monster_to_out_with_combat(m, img_url))
 
     etag = f'W/"monsters:{total}"'
     return {"items": result, "total": total, "has_more": page * page_size < total, "etag": etag}
@@ -294,17 +300,7 @@ def detail(monster_id: int, db: Session = Depends(get_db)):
     if not m:
         raise HTTPException(status_code=404, detail="not found")
 
-    return MonsterOut(
-        id=m.id, name=m.name, element=m.element,
-        hp=m.hp, speed=m.speed, attack=m.attack, defense=m.defense, magic=m.magic, resist=m.resist,
-        possess=getattr(m, "possess", None),
-        new_type=getattr(m, "new_type", None),
-        type=getattr(m, "type", None),
-        method=getattr(m, "method", None),
-        tags=[t.name for t in (m.tags or [])],
-        created_at=getattr(m, "created_at", None),
-        updated_at=getattr(m, "updated_at", None),
-    )
+    return monster_to_out_with_combat(m)
 
 
 # ---------- 只读：当前怪物的技能列表 ----------

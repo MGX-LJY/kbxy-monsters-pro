@@ -2089,12 +2089,31 @@ export default function MonstersPage() {
               <>
                 <div>
                   <h4 className="font-semibold mb-2">基础种族值（原始六维）</h4>
-                  <MonsterStatsRadar 
-                    monster={selected} 
+                  <MonsterStatsRadar
+                    monster={selected}
                     className="mt-2"
                   />
                 </div>
 
+                {/* 战斗倾向面板 */}
+                {selected.attack_tendency && selected.defense_tendency && (
+                  <div className="p-4 bg-gradient-to-r from-purple-50 to-violet-50 border border-purple-200 rounded-lg shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                      <h4 className="text-sm font-semibold text-gray-800">战斗倾向分析</h4>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="text-center p-3 rounded-lg border border-purple-200/60">
+                        <div className="font-medium text-gray-800">{selected.attack_tendency}</div>
+                        <div className="text-xs text-gray-600">攻击倾向</div>
+                      </div>
+                      <div className="text-center p-3 rounded-lg border border-purple-200/60">
+                        <div className="font-medium text-gray-800">{selected.defense_tendency}</div>
+                        <div className="text-xs text-gray-600">防御倾向</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <div className="flex items-center justify-between mb-2">

@@ -81,6 +81,10 @@ class MonsterOut(BaseModel):
     # ---- 新增：图片 URL ----
     image_url: Optional[str] = None
 
+    # ---- 新增：战斗倾向 ----
+    attack_tendency: Optional[str] = None
+    defense_tendency: Optional[str] = None
+
     class Config:
         from_attributes = True
 
