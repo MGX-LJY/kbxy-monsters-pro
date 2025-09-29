@@ -94,13 +94,17 @@ const ELEMENTS: Record<string, string> = {
   mulingxi: '木灵系', tuhuanxi: '土幻系', shuiyaoxi: '水妖系', yinxi: '音系', shengxi: '圣系',
   teshu: '特殊',
 }
-const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS))).filter(element => element !== '特殊')
+// 妖怪元素筛选选项（不包含特殊）
+const monsterElementOptions = Array.from(new Set(Object.values(ELEMENTS))).filter(element => element !== '特殊')
+
+// 技能元素筛选选项（包含特殊）
+const skillElementOptions = Array.from(new Set(Object.values(ELEMENTS)))
 
 // —— 元素简称（技能属性）到中文元素映射 —— //
 const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
   火: '火系', 水: '水系', 风: '风系', 雷: '雷系', 冰: '冰系', 木: '木系',
   土: '土系', 金: '金系', 圣: '圣系', 毒: '毒系', 幻: '幻系', 灵: '灵系',
-  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系'
+  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系', 特殊: '特殊' // 技能需要特殊属性
 }
 
 // —— 进度弹框状态（新增 cancelable + closing） —— //
@@ -453,7 +457,7 @@ export default function MonstersPage() {
   // 计算：用于“元素筛选（顶部第 1 个下拉）”的选项（文本显示百分比，value 仍是纯中文元素名）
   const filterElementOptionsLabeled = useMemo(() => {
     if (vsElement) {
-      const opts = elementOptionsFull.map((value) => {
+      const opts = monsterElementOptions.map((value) => {
         const pair = effectsPairByType[value]
         const { group, advMag, disadvMag } = classifyPair(pair)
         // —— 在下拉处改用百分比 —— //
@@ -472,7 +476,7 @@ export default function MonstersPage() {
 
       return opts.map(({ value, text }) => ({ value, text }))
     }
-    return elementOptionsFull.map(el => ({ value: el, text: el }))
+    return monsterElementOptions.map(el => ({ value: el, text: el }))
   }, [vsElement, effectsPairByType])
 
   // —— 列表数据 —— //
@@ -1064,8 +1068,8 @@ export default function MonstersPage() {
 
   // —— 一键全部分析（成功静默） —— //
 
-  // === 保留原始元素数组供“编辑表单/技能编辑”等处使用（纯文本，不带倍率） ===
-  const elementOptions = elementOptionsFull
+  // === 技能编辑用元素数组（包含特殊） ===
+  const elementOptions = skillElementOptions
   const acquireTypeOptions = [
     '无双宠物', '神宠', '珍宠', '罗盘宠物', 
     'BOSS宠物', '可捕捉宠物', 'VIP宠物', '商城宠物', 
@@ -1510,7 +1514,7 @@ export default function MonstersPage() {
           {/* 对面属性——仅用于给"元素下拉"标注百分比并排序 */}
           <select className="select" value={vsElement} onChange={e => { setVsElement(e.target.value); }}>
             <option value="">对面属性</option>
-            {elementOptionsFull.map(el => <option key={el} value={el}>{el}</option>)}
+            {monsterElementOptions.map(el => <option key={el} value={el}>{el}</option>)}
           </select>
 
 
@@ -2095,25 +2099,6 @@ export default function MonstersPage() {
                   />
                 </div>
 
-                {/* 战斗倾向面板 */}
-                {selected.attack_tendency && selected.defense_tendency && (
-                  <div className="p-4 bg-gradient-to-r from-purple-50 to-violet-50 border border-purple-200 rounded-lg shadow-sm">
-                    <div className="flex items-center gap-2 mb-3">
-                      <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                      <h4 className="text-sm font-semibold text-gray-800">战斗倾向分析</h4>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="text-center p-3 rounded-lg border border-purple-200/60">
-                        <div className="font-medium text-gray-800">{selected.attack_tendency}</div>
-                        <div className="text-xs text-gray-600">攻击倾向</div>
-                      </div>
-                      <div className="text-center p-3 rounded-lg border border-purple-200/60">
-                        <div className="font-medium text-gray-800">{selected.defense_tendency}</div>
-                        <div className="text-xs text-gray-600">防御倾向</div>
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 <div>
                   <div className="flex items-center justify-between mb-2">
@@ -2212,6 +2197,26 @@ export default function MonstersPage() {
                     )
                   })()}
                 </div>
+
+                {/* 战斗倾向分析面板 */}
+                {selected.attack_tendency && selected.defense_tendency && (
+                  <div className="p-4 bg-gradient-to-r from-purple-50 to-violet-50 border border-purple-200 rounded-lg shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                      <h4 className="text-sm font-semibold text-gray-800">战斗倾向分析</h4>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="text-center p-3 rounded-lg border border-purple-200/60">
+                        <div className="font-medium text-gray-800">{selected.attack_tendency}</div>
+                        <div className="text-xs text-gray-600">攻击倾向</div>
+                      </div>
+                      <div className="text-center p-3 rounded-lg border border-purple-200/60">
+                        <div className="font-medium text-gray-800">{selected.defense_tendency}</div>
+                        <div className="text-xs text-gray-600">防御倾向</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* 获取方式/渠道展示 */}
                 <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
