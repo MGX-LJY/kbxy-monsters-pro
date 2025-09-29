@@ -54,9 +54,9 @@ def _images_dir() -> str:
     if env_dir:
         p = Path(env_dir).expanduser().resolve(); p.mkdir(parents=True, exist_ok=True); return str(p)
     
-    # 默认路径：server/images/monsters
+    # 默认路径：data/images/monsters（统一使用项目根目录下的data目录）
     here = Path(__file__).resolve().parent  # server/app
-    p = here.parent / "images" / "monsters" # server/images/monsters
+    p = here.parent.parent / "data" / "images" / "monsters" # data/images/monsters
     p.mkdir(parents=True, exist_ok=True)
     return str(p)
 

@@ -101,9 +101,9 @@ def get_image_resolver() -> ImageResolver:
         if base:
             dir_path = Path(base)
         else:
-            # 默认：项目根/server/images/monsters
-            here = Path(__file__).resolve().parents[2]
-            dir_path = here / "images" / "monsters"
+            # 默认：项目根/data/images/monsters（统一使用data目录）
+            here = Path(__file__).resolve().parents[3]  # 项目根目录
+            dir_path = here / "data" / "images" / "monsters"
         _resolver = ImageResolver(dir_path)
         _resolver.reindex()
     return _resolver
