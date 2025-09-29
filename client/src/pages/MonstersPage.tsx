@@ -2150,15 +2150,15 @@ export default function MonstersPage() {
                         <div className="relative">
                           <div className="flex items-center gap-2 mb-2">
                             <div className="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
-                            <span className="text-xs font-medium text-green-700">增强类</span>
-                            {b.buf.length > 0 && <span className="text-xs text-green-600 bg-green-100 px-1.5 py-0.5 rounded-full">{b.buf.length}</span>}
+                            <span className="text-sm font-medium text-green-700">增强类</span>
+                            {b.buf.length > 0 && <span className="text-sm text-green-600 bg-green-100 px-1.5 py-0.5 rounded-full">{b.buf.length}</span>}
                           </div>
                           <div className="pl-4 flex flex-wrap gap-2">
                             {b.buf.length ? b.buf.map(t => 
                               <span key={t} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200 hover:bg-green-200 transition-colors">
                                 🟢 {tagLabel(t)}
                               </span>
-                            ) : <span className="text-xs text-gray-400 italic pl-1">暂无增强效果</span>}
+                            ) : <span className="text-sm text-gray-400 italic pl-1">暂无增强效果</span>}
                           </div>
                         </div>
 
@@ -2166,15 +2166,15 @@ export default function MonstersPage() {
                         <div className="relative">
                           <div className="flex items-center gap-2 mb-2">
                             <div className="w-1.5 h-1.5 bg-red-500 rounded-full"></div>
-                            <span className="text-xs font-medium text-red-700">削弱类</span>
-                            {b.deb.length > 0 && <span className="text-xs text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">{b.deb.length}</span>}
+                            <span className="text-sm font-medium text-red-700">削弱类</span>
+                            {b.deb.length > 0 && <span className="text-sm text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">{b.deb.length}</span>}
                           </div>
                           <div className="pl-4 flex flex-wrap gap-2">
                             {b.deb.length ? b.deb.map(t => 
                               <span key={t} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 border border-red-200 hover:bg-red-200 transition-colors">
                                 🔴 {tagLabel(t)}
                               </span>
-                            ) : <span className="text-xs text-gray-400 italic pl-1">暂无削弱效果</span>}
+                            ) : <span className="text-sm text-gray-400 italic pl-1">暂无削弱效果</span>}
                           </div>
                         </div>
 
@@ -2182,15 +2182,15 @@ export default function MonstersPage() {
                         <div className="relative">
                           <div className="flex items-center gap-2 mb-2">
                             <div className="w-1.5 h-1.5 bg-purple-500 rounded-full"></div>
-                            <span className="text-xs font-medium text-purple-700">特殊类</span>
-                            {b.util.length > 0 && <span className="text-xs text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded-full">{b.util.length}</span>}
+                            <span className="text-sm font-medium text-purple-700">特殊类</span>
+                            {b.util.length > 0 && <span className="text-sm text-purple-600 bg-purple-100 px-1.5 py-0.5 rounded-full">{b.util.length}</span>}
                           </div>
                           <div className="pl-4 flex flex-wrap gap-2">
                             {b.util.length ? b.util.map(t => 
                               <span key={t} className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800 border border-purple-200 hover:bg-purple-200 transition-colors">
                                 🟣 {tagLabel(t)}
                               </span>
-                            ) : <span className="text-xs text-gray-400 italic pl-1">暂无特殊效果</span>}
+                            ) : <span className="text-sm text-gray-400 italic pl-1">暂无特殊效果</span>}
                           </div>
                         </div>
                       </div>

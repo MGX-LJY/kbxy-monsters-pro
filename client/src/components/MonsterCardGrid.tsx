@@ -457,7 +457,7 @@ function MonsterCard(props: {
       {/* 元素标签显示在左上角 */}
       {m.element && (
         <div className="absolute left-2 top-2 z-10">
-          <span className={`inline-flex items-center rounded-full px-1.5 py-[2px] text-[10px] font-medium text-white shadow-sm ${getElementColor(m.element)}`}>
+          <span className={`inline-flex items-center rounded-full px-1.5 py-[2px] text-[11px] font-medium text-white shadow-sm ${getElementColor(m.element)}`}>
             {m.element}
           </span>
         </div>
@@ -466,7 +466,7 @@ function MonsterCard(props: {
       {/* 保留原有的ribbon作为备用 */}
       {ribbon && !m.element && (
         <div className="absolute left-2 top-2 z-10">
-          <span className={['inline-flex items-center rounded-full px-1.5 py-[2px] text-[10px] font-medium text-white shadow-sm',
+          <span className={['inline-flex items-center rounded-full px-1.5 py-[2px] text-[11px] font-medium text-white shadow-sm',
             ribbon.colorClass || 'bg-orange-500'].join(' ')}>
             {ribbon.text}
           </span>
@@ -546,14 +546,14 @@ function MonsterCard(props: {
 
       {/* 文本区 */}
       <div className="px-1.5 pb-2 pt-2">
-        <div className="truncate text-center text-[13px] font-semibold">{m.name}</div>
-        <div className="mt-0.5 flex items-center justify-center gap-1 text-[11px] text-gray-500">
+        <div className="truncate text-center text-[14px] font-semibold">{m.name}</div>
+        <div className="mt-0.5 flex items-center justify-center gap-1 text-[12px] text-gray-500">
           <span className="whitespace-nowrap">{m.type || '获取途径未知'}</span>
           {m.possess && <span className="badge badge-info">已拥有</span>}
         </div>
         <div className="mt-1 text-center">
           {props.showRawSummary ? (
-            <span className="inline-block rounded-full bg-gray-100 px-1.5 py-[2px] text-[10px]">
+            <span className="inline-block rounded-full bg-gray-100 px-1.5 py-[2px] text-[11px]">
               六维总和：<b>{rawSum}</b>
             </span>
           ) : null}
@@ -562,10 +562,10 @@ function MonsterCard(props: {
         {(m.attack_tendency || m.defense_tendency) && (
           <div className="mt-1 text-center">
             <div className="flex justify-center gap-1">
-              <span className="inline-block rounded-full bg-gradient-to-r from-red-100 to-orange-100 px-1.5 py-[2px] text-[9px] font-medium">
+              <span className="inline-block rounded-full bg-gradient-to-r from-red-100 to-orange-100 px-1.5 py-[2px] text-[10px] font-medium">
                 {m.attack_tendency || '未分析'}
               </span>
-              <span className="inline-block rounded-full bg-gradient-to-r from-blue-100 to-purple-100 px-1.5 py-[2px] text-[9px] font-medium">
+              <span className="inline-block rounded-full bg-gradient-to-r from-blue-100 to-purple-100 px-1.5 py-[2px] text-[10px] font-medium">
                 {m.defense_tendency || '未分析'}
               </span>
             </div>
