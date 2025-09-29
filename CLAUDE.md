@@ -36,10 +36,20 @@ make install    # Install both backend and frontend dependencies
 make dev        # Instructions to run both servers
 ```
 
-### Database & Seeding
+### Docker Deployment
 ```bash
-# 注：seed 脚本目前不存在，已在 Makefile 中注释
-# make seed       # Run seed script (python scripts/seed.py)
+# Build and run with docker-compose
+docker-compose up -d
+
+# View logs
+docker logs kbxy-backend
+docker logs kbxy-frontend
+
+# Stop services
+docker-compose down
+
+# Backend runs on port 8000, frontend on port 8080 (Nginx)
+# Data persisted in ./docker-data directory
 ```
 
 ## Architecture Overview
@@ -53,13 +63,13 @@ make dev        # Instructions to run both servers
 ### Key Components
 
 #### Backend Structure (`server/app/`)
-- `main.py` - FastAPI app with CORS, middleware, and route registration
-- `config.py` - Environment-based settings with `APP_ENV` support (dev/test)
-- `db.py` - SQLAlchemy setup with SQLite connection management
-- `models.py` - Database models
-- `schemas.py` - Pydantic schemas for API validation
-- `routes/` - API endpoints organized by feature
-- `services/` - Business logic layer
+- `main.py` - FastAPI app with CORS, middleware, route registration, and schema auto-init (dev only)
+- `config.py` - Environment-based settings with `APP_ENV` support (dev/prod)
+- `db.py` - SQLAlchemy setup with SQLite WAL mode and connection pooling
+- `models.py` - Database models (Monster, Skill, Tag, etc.)
+- `schemas.py` - Pydantic v2 schemas for API validation
+- `routes/` - API endpoints organized by feature (monsters, skills, crawl, warehouse, collections, etc.)
+- `services/` - Business logic layer (import_service, rules_engine, rating calculations)
 
 #### Frontend Structure (`client/`)
 - Built with Vite + React + TypeScript
@@ -88,8 +98,18 @@ make dev        # Instructions to run both servers
 - `TAG_USE_SELECTED_ONLY`: Use only selected skills for tag recognition (default: true)
 
 ### Development Notes
-- Backend runs on port 8000, frontend on port 5173
+- Backend runs on port 8000, frontend on port 5173 (dev) or 8080 (docker)
 - CORS configured for localhost development
 - Auto-reload enabled for server development
 - Use UTF-8 encoding for CSV imports
+- Schema auto-initialization only runs in dev environment (not prod)
+- SQLite uses WAL mode for better concurrency
+- Static image files served from `data/images/monsters/` (configurable via `KBXY_IMAGES_DIR`)
 - Project designed for local single-machine use
+
+### Docker Architecture
+- **Backend**: Python 3.11-slim with uvicorn, exposes port 8000
+- **Frontend**: Node 18 build stage + Nginx alpine runtime, exposes port 80
+- **Data Persistence**: `./docker-data` directory mounted to `/app/data` in backend container
+- **Networking**: Services communicate via `kbxy-network` (default bridge)
+- **Healthcheck**: Backend health endpoint (`/health`) checked every 30s
