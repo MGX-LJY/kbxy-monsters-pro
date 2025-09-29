@@ -780,14 +780,28 @@ class Kabu4399Crawler:
         返回: (img_url, monster_name)
         """
         try:
-            # 1. 从详情页URL提取系别信息
+            # 1. 从详情页URL提取系别信息 - 兼容两种路径格式
             path = urlparse(detail_url).path.strip("/")
             parts = path.split("/")
-            if len(parts) < 4 or parts[1] != "yaoguaidaquan":
+
+            # 支持两种格式：
+            # 1. /kabuxiyou/yaoguaidaquan/xxx/xxx.html (普通格式)
+            # 2. /gonglue/kabuxiyou/yaoguaidaquan/xxx/xxx.html (特殊格式)
+            if len(parts) < 4:
                 return None, None
-            
-            slug = parts[2]  # 提取系别 (如 huanxi)
-            detail_id = parts[3].split('.')[0]  # 提取详情页ID (如 350258)
+
+            # 查找 "yaoguaidaquan" 的位置
+            yaoguai_idx = -1
+            for i, part in enumerate(parts):
+                if part == "yaoguaidaquan":
+                    yaoguai_idx = i
+                    break
+
+            if yaoguai_idx == -1 or yaoguai_idx + 2 >= len(parts):
+                return None, None
+
+            slug = parts[yaoguai_idx + 1]  # 提取系别 (如 huanxi, lingxi)
+            detail_id = parts[yaoguai_idx + 2].split('.')[0]  # 提取详情页ID
             
             # 2. 构建对应的列表页URL
             list_url = _abs(self.BASE, f"{self.ROOT}{slug}/")
