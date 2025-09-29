@@ -94,13 +94,13 @@ const ELEMENTS: Record<string, string> = {
   mulingxi: '木灵系', tuhuanxi: '土幻系', shuiyaoxi: '水妖系', yinxi: '音系', shengxi: '圣系',
   teshu: '特殊',
 }
-const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS)))
+const elementOptionsFull = Array.from(new Set(Object.values(ELEMENTS))).filter(element => element !== '特殊')
 
 // —— 元素简称（技能属性）到中文元素映射 —— //
 const SHORT_ELEMENT_TO_LABEL: Record<string, string> = {
   火: '火系', 水: '水系', 风: '风系', 雷: '雷系', 冰: '冰系', 木: '木系',
   土: '土系', 金: '金系', 圣: '圣系', 毒: '毒系', 幻: '幻系', 灵: '灵系',
-  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系', 特殊: '特殊' // 技能特殊属性
+  妖: '妖系', 魔: '魔系', 音: '音系', 机械: '机械系'
 }
 
 // —— 进度弹框状态（新增 cancelable + closing） —— //

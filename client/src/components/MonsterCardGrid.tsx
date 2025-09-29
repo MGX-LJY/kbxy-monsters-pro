@@ -22,6 +22,36 @@ type Props = {
 const resolvedUrlCache = new Map<string, string | null>()
 const resolvingCache = new Map<string, Promise<string | null>>()
 
+// 元素系别颜色映射
+const getElementColor = (element: string): string => {
+  const colorMap: Record<string, string> = {
+    '火系': 'bg-red-500',
+    '水系': 'bg-blue-500',
+    '风系': 'bg-cyan-400',
+    '雷系': 'bg-yellow-500',
+    '冰系': 'bg-blue-300',
+    '木系': 'bg-green-500',
+    '土系': 'bg-amber-600',
+    '金系': 'bg-yellow-600',
+    '圣系': 'bg-yellow-200',
+    '毒系': 'bg-purple-600',
+    '幻系': 'bg-pink-500',
+    '灵系': 'bg-indigo-400',
+    '妖系': 'bg-violet-500',
+    '魔系': 'bg-gray-800',
+    '音系': 'bg-teal-500',
+    '机械系': 'bg-gray-500',
+    '翼系': 'bg-sky-400',
+    '怪系': 'bg-emerald-600',
+    '火风系': 'bg-gradient-to-r from-red-500 to-cyan-400',
+    '木灵系': 'bg-gradient-to-r from-green-500 to-indigo-400',
+    '土幻系': 'bg-gradient-to-r from-amber-600 to-pink-500',
+    '水妖系': 'bg-gradient-to-r from-blue-500 to-violet-500',
+    '特殊': 'bg-gray-400'
+  }
+  return colorMap[element] || 'bg-blue-500'
+}
+
 const BLOB_LIMIT_DEFAULT = 300
 let BLOB_LIMIT = BLOB_LIMIT_DEFAULT
 const blobLRU = new Map<string, string>() // key=原始URL，value=blob:URL
@@ -424,7 +454,17 @@ function MonsterCard(props: {
         'p-2.5'
       ].join(' ')}
     >
-      {ribbon && (
+      {/* 元素标签显示在左上角 */}
+      {m.element && (
+        <div className="absolute left-2 top-2 z-10">
+          <span className={`inline-flex items-center rounded-full px-1.5 py-[2px] text-[10px] font-medium text-white shadow-sm ${getElementColor(m.element)}`}>
+            {m.element}
+          </span>
+        </div>
+      )}
+
+      {/* 保留原有的ribbon作为备用 */}
+      {ribbon && !m.element && (
         <div className="absolute left-2 top-2 z-10">
           <span className={['inline-flex items-center rounded-full px-1.5 py-[2px] text-[10px] font-medium text-white shadow-sm',
             ribbon.colorClass || 'bg-orange-500'].join(' ')}>
@@ -508,9 +548,8 @@ function MonsterCard(props: {
       <div className="px-1.5 pb-2 pt-2">
         <div className="truncate text-center text-[13px] font-semibold">{m.name}</div>
         <div className="mt-0.5 flex items-center justify-center gap-1 text-[11px] text-gray-500">
-          <span className="whitespace-nowrap">{m.element || '—'}</span>
+          <span className="whitespace-nowrap">{m.type || '获取途径未知'}</span>
           {m.possess && <span className="badge badge-info">已拥有</span>}
-          {/* 已移除“可获取”徽标 */}
         </div>
         <div className="mt-1 text-center">
           {props.showRawSummary ? (
