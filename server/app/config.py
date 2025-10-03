@@ -12,7 +12,6 @@ DEFAULT_DB_FILENAME = "kbxy-dev.db"
 
 class Settings(BaseModel):
     app_name: str = "kbxy-monsters-pro"
-    # 环境：dev（本地开发）或 prod（docker生产环境），默认dev
     app_env: str = os.getenv("APP_ENV", "dev").lower()
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

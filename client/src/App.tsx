@@ -7,12 +7,17 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import MonstersPage from './pages/MonstersPage'
 import { SettingsProvider } from './context/SettingsContext'
 import TypeChartDialog from './components/TypeChartDialog'
+import { clearAllImageCache } from './components/MonsterCardGrid'
 
 export default function App() {
   const qc = useQueryClient()
   const [showTypeChart, setShowTypeChart] = useState(false)
 
   const onRefresh = () => {
+    // 清理所有图片缓存，强制重新加载图片
+    clearAllImageCache()
+
+    // 刷新所有数据查询
     qc.invalidateQueries({ queryKey: ['monsters'] })
     qc.invalidateQueries({ queryKey: ['tags'] })
     qc.invalidateQueries({ queryKey: ['roles'] })
