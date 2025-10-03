@@ -39,6 +39,7 @@ type WarehouseStatsDTO = {
 // 排序键：原生六维与六维总和
 type SortKey =
   | 'updated_at'
+  | 'name'
   | 'hp' | 'speed' | 'attack' | 'defense' | 'magic' | 'resist' | 'raw_sum'
 
 
@@ -1400,6 +1401,7 @@ export default function MonstersPage() {
 
   const sortOptions = [
     { value: 'updated_at', label: '更新时间' },
+    { value: 'name', label: '名称' },
     { value: 'raw_sum', label: '六维总和' },
     { value: 'hp', label: '体力' },
     { value: 'attack', label: '攻击' },
