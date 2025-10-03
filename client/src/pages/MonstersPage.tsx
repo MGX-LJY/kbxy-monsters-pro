@@ -11,7 +11,6 @@ import { useSettings } from '../context/SettingsContext'
 import MonsterCardGrid from '../components/MonsterCardGrid'
 import SkeletonCardGrid from '../components/SkeletonCardGrid'
 import TagSelector from '../components/TagSelector'
-import SkillRecommendationHelper from '../components/SkillRecommendationHelper'
 import Modal from '../components/Modal'
 import MonsterStatsRadar from '../components/MonsterStatsRadar'
 
@@ -198,10 +197,8 @@ export default function MonstersPage() {
   const [saving, setSaving] = useState(false)
   const [autoMatching, setAutoMatching] = useState(false)
 
-  // —— 新增模式 & 识别链接框 —— //
+  // —— 新增模式 —— //
   const [isCreating, setIsCreating] = useState<boolean>(false)
-  const [rawText, setRawText] = useState<string>('')         // 这里改成贴“链接”
-  const [recognizing, setRecognizing] = useState<boolean>(false)
 
   // 全屏模糊等待弹框 + 真实进度（类型化 + 可取消）
   const [overlay, setOverlay] = useState<OverlayState>({ show: false })
@@ -677,7 +674,6 @@ export default function MonstersPage() {
       setIsCreating(false)
       setSelected(null)
       setIsEditing(false)
-      setRawText('')
       return
     }
     setIsEditing(false)
@@ -817,7 +813,6 @@ export default function MonstersPage() {
 
       setIsCreating(false)
       setIsEditing(false)
-      setRawText('')
       alert('创建完成')
     } catch (e: any) {
       alert(e?.response?.data?.detail || '创建失败')
@@ -1205,7 +1200,6 @@ export default function MonstersPage() {
   const startCreate = () => {
     setIsCreating(true)
     setSelected({ id: 0 })
-    setRawText('')
     setEditName('')
     setEditElement('')
     setEditRole('')
@@ -1297,99 +1291,7 @@ export default function MonstersPage() {
     setCrawlUrl('')
   }
 
-  // ========== 识别链接功能（旧版，保留兼容） ==========
-  const extractUrls = (text: string): string[] => {
-    const re = /https?:\/\/[^\s)（）]+/gi
-    const raw = text.match(re) || []
-    const clean = raw
-      .map(u => u.replace(/[)，。；;,]+$/, ''))
-      .map(s => s.trim())
-      .filter(Boolean)
-    return Array.from(new Set(clean))
-  }
-
-  const recognizeAndPrefillFromLinks = async () => {
-    const urls = extractUrls(rawText)
-    if (!urls.length) {
-      alert('请在文本框中粘贴至少一个怪物详情页链接（支持 4399 图鉴详情页）')
-      return
-    }
-    const url = urls[0]
-    setRecognizing(true)
-    try {
-      let data: any
-      try {
-        // 推荐：POST JSON（包含图片处理选项）
-        data = (await api.post('/api/v1/crawl/fetch_one', { 
-          url, 
-          process_image: true,  // 启用图片处理
-          enable_upscale: true  // 启用图片超分
-        })).data
-      } catch {
-        // 兜底：GET query（包含图片处理选项）
-        data = (await api.get('/api/v1/crawl/fetch_one', { 
-          params: { 
-            url, 
-            process_image: true, 
-            enable_upscale: true 
-          } 
-        })).data
-      }
-      if (!data || typeof data !== 'object') {
-        alert('未识别到有效数据'); return
-      }
-
-      // 基础信息
-      if (data.name) setEditName(data.name)
-      if (data.element) setEditElement(data.element)
-      // 仓库状态已移至AddMonsterDrawer组件内部处理
-      if (data.type) setEditType(data.type)
-      if (data.method) setEditMethod(data.method)
-
-      // 六维（优先覆盖为 >0 的数值）
-      const n = (x: any) => (typeof x === 'number' && Number.isFinite(x) ? x : null)
-      const hv = (k: string) => Math.max(0, n(data[k]) ?? 0)
-      if (n(data.hp) != null) setHp(hv('hp'))
-      if (n(data.speed) != null) setSpeed(hv('speed'))
-      if (n(data.attack) != null) setAttack(hv('attack'))
-      if (n(data.defense) != null) setDefense(hv('defense'))
-      if (n(data.magic) != null) setMagic(hv('magic'))
-      if (n(data.resist) != null) setResist(hv('resist'))
-
-      // 技能（selected_skills）
-      const rows: SkillDTO[] = Array.isArray(data.selected_skills) ? data.selected_skills
-        .filter((s: any) => isValidSkillName(s?.name))
-        .map((s: any) => ({
-          name: s.name || '',
-          element: s.element || '',
-          kind: s.kind || '',
-          power: (typeof s.power === 'number' && Number.isFinite(s.power)) ? s.power : null,
-          pp: (typeof s.pp === 'number' && Number.isFinite(s.pp)) ? s.pp : null,
-          description: s.description || '',
-          selected: s.selected ?? false
-        }))
-        : []
-      setEditSkills(rows.length ? rows : [{ name: '', element: '', kind: '', power: null, pp: null, description: '', selected: false }])
-
-      // 显示识别成功信息，包含图片处理状态
-      const imgStatus = data.img_processed ? 
-        (data.img_url ? '✅ 图片已下载并处理' : '⚠️ 图片处理失败') : 
-        'ℹ️ 未处理图片'
-      alert(`已从链接识别并填充，可继续手动调整。\n\n${imgStatus}${data.img_url ? `\n图片路径: ${data.img_url}` : ''}`)
-    } catch (e: any) {
-      const errorMsg = e?.response?.data?.detail || e?.message || '识别失败'
-      if (errorMsg.includes('fetch failed')) {
-        alert('识别失败：无法解析该链接。\n\n请确认：\n1. 链接是最新的4399图鉴详情页\n2. URL格式类似：https://news.4399.com/kabuxiyou/yaoguaidaquan/[系别]/[日期]-[编号].html\n3. 页面可以正常访问')
-      } else {
-        alert(`识别失败：${errorMsg}\n\n请确认链接是否可访问，或尝试使用最新的图鉴详情页URL`)
-      }
-    } finally {
-      setRecognizing(false)
-    }
-  }
-  // ========== 识别链接功能（结束） ==========
-
-  // 计算“本页可见是否全选”
+  // 计算"本页可见是否全选"
   const allVisibleSelected = useMemo(() => {
     const ids = filteredItems.map(i => i.id)
     return ids.length > 0 && ids.every(id => selectedIds.has(id))
@@ -1911,7 +1813,7 @@ export default function MonstersPage() {
       </div>
 
       {/* 详情抽屉 */}
-      <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false); setIsCreating(false); setRawText('') }} title={isCreating ? '新增妖怪' : ((selected as any)?.name || (selected as any)?.name_final)}>
+      <SideDrawer open={!!selected} onClose={() => { setSelected(null); setIsEditing(false); setIsCreating(false) }} title={isCreating ? '新增妖怪' : ((selected as any)?.name || (selected as any)?.name_final)}>
         {selected && (
           <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -1937,22 +1839,6 @@ export default function MonstersPage() {
 
             {isEditing ? (
               <>
-                {/* 识别链接框（仅编辑态显示；新增和编辑都可用） */}
-                <div className="card p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-semibold">识别链接（自动爬取并填充）</h4>
-                    <button className={`btn ${BTN_FX}`} onClick={recognizeAndPrefillFromLinks} disabled={recognizing}>
-                      {recognizing ? '识别中…' : '识别并填充'}
-                    </button>
-                  </div>
-                  <textarea
-                    className="input h-32"
-                    placeholder="将 4399 图鉴详情页链接粘贴到这里（可混在一段文字里；支持多条，默认取第 1 条）&#10;&#10;示例URL格式：&#10;https://news.4399.com/kabuxiyou/yaoguaidaquan/yaoxi/202509-19-1006841.html&#10;&#10;注意：请使用最新的图鉴详情页URL，旧格式链接可能无法解析"
-                    value={rawText}
-                    onChange={e => setRawText(e.target.value)}
-                  />
-                </div>
-
                 {/* 基础信息编辑 */}
                 <div className="card p-3 space-y-3">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1979,7 +1865,7 @@ export default function MonstersPage() {
                     </div>
                     <div className="md:col-span-2">
                       <label className="label">获取方式（可填原文/说明）</label>
-                      <textarea className="input h-24" value={editMethod} onChange={e => setEditMethod(e.target.value)} placeholder="示例：2025年8月1日起，在青龙山探索捕获灯碟碟" />
+                      <textarea className="input h-16" value={editMethod} onChange={e => setEditMethod(e.target.value)} placeholder="示例：2025年8月1日起，在青龙山探索捕获灯碟碟" />
                     </div>
 
                     <div className="md:col-span-2">
@@ -2000,15 +1886,7 @@ export default function MonstersPage() {
                     <h4 className="font-semibold">技能</h4>
                     <button className={`btn ${BTN_FX}`} onClick={addSkill}>+ 新增技能</button>
                   </div>
-                  
-                  {/* 推荐技能快捷操作 */}
-                  {editSkills.length > 0 && (
-                    <SkillRecommendationHelper
-                      skills={editSkills}
-                      onUpdateSkills={setEditSkills}
-                    />
-                  )}
-                  
+
                   <ul className="space-y-3">
                     {editSkills.map((s, idx) => (
                       <li key={idx} className="p-3 bg-gray-50 rounded">
