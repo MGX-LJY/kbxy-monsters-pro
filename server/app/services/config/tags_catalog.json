@@ -12,17 +12,12 @@
       "buf_acc_up": "命中↑",
       "buf_crit_up": "暴击↑",
       "buf_heal": "治疗",
-      "buf_shield": "护盾/减伤",
       "buf_purify": "净化己减益",
       "buf_immunity": "免疫异常",
       "buf_phys_immunity": "免疫物理",
-      "buf_mag_immunity": "免疫法术",
-      "buf_dmg_cut_all": "全局减伤",
       "buf_phys_cut": "物伤减免",
       "buf_mag_cut": "法伤减免",
       "buf_guaranteed_crit": "必暴",
-      "buf_evasion_up": "闪避↑",
-
       "deb_atk_down": "攻↓",
       "deb_mag_down": "法↓",
       "deb_def_down": "防↓",
@@ -42,10 +37,7 @@
       "deb_corrosion": "腐蚀",
       "deb_dispel": "驱散敌增益",
       "deb_fatigue": "疲劳",
-      "deb_vulnerable": "易伤",
-      "deb_heal_block": "治疗受限",
       "deb_marked": "标记",
-
       "util_first": "先手",
       "util_multi": "多段",
       "util_pp_drain": "PP消耗",
@@ -57,7 +49,6 @@
       "util_steal_buff": "偷取增益",
       "util_transfer_debuff": "转移负面",
       "util_invert_buffs": "增益反转"
-
     },
     "en": {
       "buf_atk_up": "ATK Up",
@@ -68,17 +59,12 @@
       "buf_acc_up": "ACC Up",
       "buf_crit_up": "Crit Rate Up",
       "buf_heal": "Heal",
-      "buf_shield": "Shield / Damage Cut",
       "buf_purify": "Cleanse (Self)",
       "buf_immunity": "Status Immunity",
       "buf_phys_immunity": "Physical Immunity",
-      "buf_mag_immunity": "Magic Immunity",
-      "buf_dmg_cut_all": "Damage Cut (All)",
       "buf_phys_cut": "Physical Damage Cut",
       "buf_mag_cut": "Magic Damage Cut",
       "buf_guaranteed_crit": "Guaranteed Crit",
-      "buf_evasion_up": "Evasion Up",
-
       "deb_atk_down": "ATK Down",
       "deb_mag_down": "MAG Down",
       "deb_def_down": "DEF Down",
@@ -98,10 +84,7 @@
       "deb_corrosion": "Corrosion",
       "deb_dispel": "Dispel Enemy Buffs",
       "deb_fatigue": "Fatigue",
-      "deb_vulnerable": "Vulnerable (Damage Taken Up)",
-      "deb_heal_block": "Heal Block",
       "deb_marked": "Marked",
-
       "util_first": "First Strike",
       "util_multi": "Multi-hit",
       "util_pp_drain": "PP Drain",
@@ -125,16 +108,12 @@
       "buf_acc_up",
       "buf_crit_up",
       "buf_guaranteed_crit",
-      "buf_evasion_up",
       "buf_heal",
-      "buf_shield",
-      "buf_dmg_cut_all",
       "buf_phys_cut",
       "buf_mag_cut",
       "buf_purify",
       "buf_immunity",
-      "buf_phys_immunity",
-      "buf_mag_immunity"
+      "buf_phys_immunity"
     ],
     "debuff": [
       "deb_atk_down",
@@ -156,8 +135,6 @@
       "deb_corrosion",
       "deb_dispel",
       "deb_fatigue",
-      "deb_vulnerable",
-      "deb_heal_block",
       "deb_marked"
     ],
     "special": [
@@ -243,11 +220,6 @@
       "buf_guaranteed_crit": [
         "(命中时)?必定暴击|必暴"
       ],
-      "buf_evasion_up": [
-        "{SELF}.*?(闪避|回避|躲避)(率)?{UP}",
-        "(闪避|回避|躲避)(率)?{UP}.*?{SELF}",
-        "(闪避|回避|躲避)(率)?{UP}"
-      ],
       "buf_heal": [
         "(回复|治疗|恢复).*?({SELF}|自身体力|自身HP|自身生命|自身最大血量)",
         "给对手造成伤害的\\s*1/2\\s*回复",
@@ -264,15 +236,6 @@
         "{SELF}.*?治疗.*?{UP}",
         "每回合.*?{SELF}.*?回复",
         "每回合.*?{SELF}.*?(回复|治疗|恢复)"
-      ],
-      "buf_shield": [
-        "护盾|护体|结界",
-        "(所受|受到).*(法术|物理)?伤害.*(减少|降低|减半|减免|降低\\d+%|减少\\d+%|减)(?!.*敌方)",
-        "伤害(减少|降低|减半|减免|降低\\d+%|减少\\d+%)",
-        "减伤(?!.*敌方)|庇护|保护"
-      ],
-      "buf_dmg_cut_all": [
-        "(?:{TURNS})?\\s*(所受|受到).*?伤害.*?(减半|降低\\s*\\d+%|减少\\s*\\d+%|减免|削减)"
       ],
       "buf_phys_cut": [
         "(?:{TURNS})?\\s*所受物理伤害.*?(减半|降低\\s*\\d+%|减少\\s*\\d+%|减免)"
@@ -316,12 +279,6 @@
         "{SELF}.*?免疫.*?(物理|物理攻击)",
         "免疫物理(攻击)?"
       ],
-      "buf_mag_immunity": [
-        "([一二三四五六七八九十]+|\\d+)\\s*回合.*?免疫.*?(法术|魔法|法术攻击|魔法攻击)",
-        "{SELF}.*?免疫.*?(法术|魔法|法术攻击|魔法攻击)",
-        "免疫(法术|魔法)(攻击)?"
-      ],
-
       "deb_atk_down": [
         "(?:{ENEMY}.*?)?攻击{DOWN}{LEVEL}",
         "{DOWN}.*?{ENEMY}.*?攻击{LEVEL}",
@@ -516,15 +473,6 @@
         "消除{ENEMY}.*?的增益效果",
         "{ENEMY}.*?状态.*?被驱散"
       ],
-      "deb_vulnerable": [
-        "(受到|所受).*?伤害.*?(增加|提高|提升|加深|加重)",
-        "易伤(状态)?"
-      ],
-      "deb_heal_block": [
-        "无法(回复|治疗|恢复)",
-        "(治疗|回复|恢复)效果.*?(降低|减少|减半)",
-        "(治疗|回复|恢复).*?被.*?(抑制|削弱)"
-      ],
       "deb_marked": [
         "(标记|弱点|破绽)(状态|目标)?",
         "被标记"
@@ -656,12 +604,6 @@
       "必定暴击",
       "必暴"
     ],
-    "buf_evasion_up": [
-      "闪避 提升",
-      "回避 提升",
-      "躲避 提升",
-      "闪避率 上升"
-    ],
     "buf_heal": [
       "治疗",
       "回复",
@@ -688,20 +630,6 @@
       "吸收拳",
       "续命决",
       "移花接木"
-    ],
-    "buf_shield": [
-      "护盾",
-      "结界",
-      "减伤",
-      "庇护",
-      "保护"
-    ],
-    "buf_dmg_cut_all": [
-      "减伤",
-      "伤害减少",
-      "伤害减半",
-      "伤害降低",
-      "伤害减免"
     ],
     "buf_phys_cut": [
       "物伤减半",
@@ -759,12 +687,6 @@
       "免疫物理",
       "免疫物理攻击"
     ],
-    "buf_mag_immunity": [
-      "免疫法术",
-      "免疫魔法",
-      "免疫法术攻击"
-    ],
-
     "deb_atk_down": [
       "攻击 降低",
       "攻击力下降",
@@ -975,27 +897,12 @@
       "驱散对方",
       "消除对方增益"
     ],
-    "deb_vulnerable": [
-      "易伤",
-      "受伤加深",
-      "伤害增加",
-      "易伤状态"
-    ],
-    "deb_heal_block": [
-      "治疗受限",
-      "无法治疗",
-      "回复降低",
-      "恢复减半",
-      "重伤",
-      "治疗被抑制"
-    ],
     "deb_marked": [
       "标记",
       "弱点标记",
       "破绽标记",
       "被标记"
     ],
-
     "util_first": [
       "先手",
       "先制",
