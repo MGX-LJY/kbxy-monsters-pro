@@ -26,7 +26,8 @@ from PIL import Image
 log = logging.getLogger(__name__)
 
 # ---------- 图片处理配置 ----------
-IMAGES_DIR = Path(__file__).parent.parent.parent / "images" / "monsters"
+# 使用 data/images/monsters 作为图片保存目录（与主配置一致）
+IMAGES_DIR = Path(__file__).parent.parent.parent / "data" / "images" / "monsters"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 
@@ -76,8 +77,8 @@ def download_image(url: str, save_path: Path, timeout: float = 15.0) -> bool:
             save_path.unlink(missing_ok=True)  # 删除空文件
             return False
         
-        # 提高最小尺寸阈值，检测4399 logo等小图片
-        if bytes_written < 5000:  # 小于5KB的图片很可能是logo或错误图片
+        # 检测文件大小，过滤明显的错误图片（降低阈值以支持小图片）
+        if bytes_written < 1500:  # 小于1.5KB的图片可能是logo或错误图片
             log.warning(f"Downloaded image is too small ({bytes_written} bytes), likely a logo or error image: {url}")
             save_path.unlink(missing_ok=True)  # 删除无效文件
             return False

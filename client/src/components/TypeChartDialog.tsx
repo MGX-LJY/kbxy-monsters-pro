@@ -247,7 +247,8 @@ export default function TypeChartDialog({
             <div className="text-xs text-gray-500">
               <span className="mr-3">×1.0 = 正常</span>
               <span className="mr-3">×&gt;1 = 加成</span>
-              <span>×&lt;1 = 减免</span>
+              <span className="mr-3">×&lt;1 = 减免</span>
+              <span className="text-blue-600">💡 点击属性名称可切换</span>
             </div>
           </div>
         </div>
@@ -263,6 +264,7 @@ export default function TypeChartDialog({
           {!isLoading && !hasError && (
             <RadarChart
               base={base}
+              setBase={setBase}
               rows={rows}
               allTypes={allTypes}
             />
@@ -284,10 +286,12 @@ export default function TypeChartDialog({
 
 function RadarChart({
   base,
+  setBase,
   rows,
   allTypes,
 }: {
   base: string
+  setBase: (type: string) => void
   rows: MatrixRows
   allTypes: string[]
 }) {
@@ -423,37 +427,46 @@ function RadarChart({
             {base}
           </text>
 
-          {/* 属性标签 */}
+          {/* 属性标签 - 可点击跳转 */}
           {typePositions.map(({ type, angle }, i) => {
             const labelRadius = maxRadius + svgSize * 0.08
             const labelX = centerX + labelRadius * Math.cos(angle)
             const labelY = centerY + labelRadius * Math.sin(angle)
             const attackMultiplier = attackData[i]?.multiplier || 1
             const defenseMultiplier = defenseData[i]?.multiplier || 1
-            
+
             return (
               <g key={`label-${i}`}>
+                {/* 属性名称 - 可点击切换基准元素 */}
                 <text
                   x={labelX}
                   y={labelY}
                   textAnchor="middle"
-                  className="fill-gray-900 text-base font-medium"
+                  className="fill-gray-900 text-base font-medium cursor-pointer hover:fill-blue-600 transition-colors"
+                  onClick={() => setBase(type)}
+                  style={{ userSelect: 'none' }}
                 >
                   {type}
                 </text>
+                {/* 攻击倍率 - 可点击跳转 */}
                 <text
                   x={labelX}
                   y={labelY + 12}
                   textAnchor="middle"
-                  className="fill-blue-600 text-[10px]"
+                  className="fill-blue-600 text-[10px] cursor-pointer hover:fill-blue-800 transition-colors"
+                  onClick={() => setBase(type)}
+                  style={{ userSelect: 'none' }}
                 >
                   攻:{formatMultiplier(attackMultiplier)}
                 </text>
+                {/* 防守倍率 - 可点击跳转 */}
                 <text
                   x={labelX}
                   y={labelY + 22}
                   textAnchor="middle"
-                  className="fill-red-600 text-[10px]"
+                  className="fill-red-600 text-[10px] cursor-pointer hover:fill-red-800 transition-colors"
+                  onClick={() => setBase(type)}
+                  style={{ userSelect: 'none' }}
                 >
                   守:{formatMultiplier(defenseMultiplier)}
                 </text>
