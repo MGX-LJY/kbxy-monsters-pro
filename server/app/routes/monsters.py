@@ -454,6 +454,16 @@ def auto_match(body: AutoMatchIdsIn, db: Session = Depends(get_db)):
 # ---------- 创建 ----------
 @router.post("/monsters", response_model=MonsterOut)
 def create(payload: MonsterIn, db: Session = Depends(get_db)):
+    # 检查名字是否已存在
+    existing = db.execute(
+        select(Monster).where(Monster.name == payload.name)
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"妖怪名字 '{payload.name}' 已存在（ID: {existing.id}），请使用其他名字"
+        )
+
     m = Monster(
         name=payload.name,
         element=payload.element,
@@ -503,6 +513,17 @@ def update(monster_id: int, payload: MonsterIn, db: Session = Depends(get_db)):
     m = db.get(Monster, monster_id)
     if not m:
         raise HTTPException(status_code=404, detail="not found")
+
+    # 检查名字是否重复（如果修改了名字）
+    if hasattr(payload, "name") and payload.name != m.name:
+        existing = db.execute(
+            select(Monster).where(Monster.name == payload.name)
+        ).scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"妖怪名字 '{payload.name}' 已存在（ID: {existing.id}），请使用其他名字"
+            )
 
     # 写基础字段（除了仓库相关字段）
     for k in ["name", "element", "hp", "speed", "attack", "defense", "magic", "resist"]:
